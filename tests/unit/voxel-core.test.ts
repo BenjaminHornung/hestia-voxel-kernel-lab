@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { VOLUME_SIZE, VOLUME_VOXEL_COUNT, VoxelMaterial } from '../../src/voxel/constants';
-import { voxelIndex } from '../../src/voxel/coordinates';
+import { voxelCoordinates, voxelIndex } from '../../src/voxel/coordinates';
 import { DenseVoxelVolume } from '../../src/voxel/denseVolume';
 import { createVisibleFaceFixture, FIXTURE_SHA256 } from '../../src/voxel/fixtures';
 import { meshVisibleFaces } from '../../src/voxel/visibleFaceMesher';
@@ -15,6 +15,10 @@ function volumeWith(...voxels: ReadonlyArray<readonly [number, number, number, V
 }
 
 describe('DenseVoxelVolume', () => {
+  it('reserves material zero for air', () => {
+    expect(VoxelMaterial.Air).toBe(0);
+  });
+
   it('uses x-fast indexing and rejects invalid coordinates', () => {
     expect(voxelIndex(0, 0, 0)).toBe(0);
     expect(voxelIndex(1, 0, 0)).toBe(1);
@@ -23,6 +27,31 @@ describe('DenseVoxelVolume', () => {
     expect(voxelIndex(31, 31, 31)).toBe(VOLUME_VOXEL_COUNT - 1);
     expect(() => voxelIndex(-1, 0, 0)).toThrow(RangeError);
     expect(() => voxelIndex(0.5, 0, 0)).toThrow(RangeError);
+  });
+
+  it('round-trips boundary and fixed inner coordinates through the inverse index mapping', () => {
+    const coordinates = [
+      [0, 0, 0],
+      [31, 0, 0],
+      [0, 31, 0],
+      [0, 0, 31],
+      [31, 31, 0],
+      [31, 0, 31],
+      [0, 31, 31],
+      [31, 31, 31],
+      [1, 2, 3],
+      [7, 13, 29],
+      [16, 16, 16],
+    ] as const;
+
+    for (const [x, y, z] of coordinates) {
+      expect(voxelCoordinates(voxelIndex(x, y, z))).toEqual([x, y, z]);
+    }
+    expect(voxelCoordinates(0)).toEqual([0, 0, 0]);
+    expect(voxelCoordinates(VOLUME_VOXEL_COUNT - 1)).toEqual([31, 31, 31]);
+    for (const invalid of [-1, VOLUME_VOXEL_COUNT, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => voxelCoordinates(invalid)).toThrow(RangeError);
+    }
   });
 
   it('owns its data and returns defensive snapshots', () => {
@@ -44,6 +73,13 @@ describe('DenseVoxelVolume', () => {
     const data = new Uint8Array(VOLUME_VOXEL_COUNT);
     data[0] = 5;
     expect(() => new DenseVoxelVolume(data)).toThrow(RangeError);
+  });
+
+  it('rejects invalid coordinates when reading', () => {
+    const volume = new DenseVoxelVolume();
+    expect(() => volume.get(-1, 0, 0)).toThrow(RangeError);
+    expect(() => volume.get(0, VOLUME_SIZE, 0)).toThrow(RangeError);
+    expect(() => volume.get(0, 0, 1.5)).toThrow(RangeError);
   });
 });
 
@@ -94,7 +130,7 @@ describe('visible-face mesher', () => {
         ab[2]! * ac[0]! - ab[0]! * ac[2]!,
         ab[0]! * ac[1]! - ab[1]! * ac[0]!,
       ];
-      expect(cross).toEqual(normal);
+      expect(cross.map((value) => value === 0 ? 0 : value)).toEqual(normal);
       expect(Array.from(mesh.indices.slice(quad * 6, quad * 6 + 6))).toEqual([
         quad * 4,
         quad * 4 + 1,
@@ -117,6 +153,20 @@ describe('visible-face mesher', () => {
     ));
     expect(mesh.quadCount).toBe(10);
     expect(mesh.triangleCount).toBe(20);
+  });
+
+  it('emits only the 24 outside quads of a complete 2×2×2 block', () => {
+    const voxels: Array<readonly [number, number, number, VoxelMaterial]> = [];
+    for (let z = 8; z < 10; z += 1) {
+      for (let y = 8; y < 10; y += 1) {
+        for (let x = 8; x < 10; x += 1) {
+          voxels.push([x, y, z, VoxelMaterial.Platform]);
+        }
+      }
+    }
+    const mesh = meshVisibleFaces(volumeWith(...voxels));
+    expect(mesh.quadCount).toBe(24);
+    expect(mesh.triangleCount).toBe(48);
   });
 
   it('is byte-identical across repeated runs', () => {
@@ -152,5 +202,32 @@ describe('WP01 fixture', () => {
     expect(mesh.materialIds).toHaveLength(8_952);
     expect(mesh.indices).toHaveLength(13_428);
     expect(mesh.bounds).toEqual({ min: [2, 0, 2], max: [30, 9, 30] });
+  });
+
+  it('keeps every triangle axis-aligned with outward winding', () => {
+    const mesh = meshVisibleFaces(createVisibleFaceFixture());
+    const axisNormals = new Set(['-1,0,0', '1,0,0', '0,-1,0', '0,1,0', '0,0,-1', '0,0,1']);
+
+    for (let offset = 0; offset < mesh.normals.length; offset += 3) {
+      expect(axisNormals.has(Array.from(mesh.normals.slice(offset, offset + 3)).join(','))).toBe(true);
+    }
+
+    for (let triangle = 0; triangle < mesh.triangleCount; triangle += 1) {
+      const indices = Array.from(mesh.indices.slice(triangle * 3, triangle * 3 + 3));
+      const [a, b, c] = indices.map((index) => Array.from(mesh.positions.slice(index! * 3, index! * 3 + 3)));
+      const normal = Array.from(mesh.normals.slice(indices[0]! * 3, indices[0]! * 3 + 3));
+      const planeAxis = normal.findIndex((value) => value !== 0);
+      expect(a![planeAxis]).toBe(b![planeAxis]);
+      expect(a![planeAxis]).toBe(c![planeAxis]);
+
+      const ab = a!.map((value, axis) => b![axis]! - value);
+      const ac = a!.map((value, axis) => c![axis]! - value);
+      const cross = [
+        ab[1]! * ac[2]! - ab[2]! * ac[1]!,
+        ab[2]! * ac[0]! - ab[0]! * ac[2]!,
+        ab[0]! * ac[1]! - ab[1]! * ac[0]!,
+      ];
+      expect(cross.map((value) => value === 0 ? 0 : value)).toEqual(normal);
+    }
   });
 });

@@ -1,8 +1,8 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
-const screenshotPath = path.join(process.cwd(), 'evidence', 'wp01', 'visible-face-baseline.png');
+const evidencePath = path.join(process.cwd(), 'evidence', 'wp01', 'visible-face-baseline.png');
 
 async function imageDifference(page: Page, left: Buffer, right: Buffer): Promise<number> {
   return page.evaluate(async ({ leftBase64, rightBase64 }) => {
@@ -32,14 +32,38 @@ async function imageDifference(page: Page, left: Buffer, right: Buffer): Promise
   }, { leftBase64: left.toString('base64'), rightBase64: right.toString('base64') });
 }
 
-test('renders the deterministic visible-face fixture in the production preview', async ({ context, page }) => {
-  const errors: string[] = [];
+async function decodePngDimensions(context: BrowserContext, png: Buffer): Promise<{ width: number; height: number }> {
+  const decoder = await context.newPage();
+  const dimensions = await decoder.evaluate(async (base64) => {
+    const response = await fetch(`data:image/png;base64,${base64}`);
+    const bitmap = await createImageBitmap(await response.blob());
+    const result = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return result;
+  }, png.toString('base64'));
+  await decoder.close();
+  return dimensions;
+}
+
+test('renders the deterministic visible-face fixture in the production preview', async ({ context, page }, testInfo) => {
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const requestFailures: string[] = [];
+  const httpErrors: string[] = [];
   page.on('console', (message) => {
     if (message.type() === 'error') {
-      errors.push(`console: ${message.text()}`);
+      consoleErrors.push(message.text());
     }
   });
-  page.on('pageerror', (error) => errors.push(`page: ${error.message}`));
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('requestfailed', (request) => {
+    requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? 'unknown failure'}`);
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400) {
+      httpErrors.push(`${response.status()} ${response.url()}`);
+    }
+  });
 
   await page.goto('/');
   const app = page.getByTestId('voxel-app');
@@ -51,6 +75,7 @@ test('renders the deterministic visible-face fixture in the production preview',
   await expect(page.getByTestId('metric-quads')).toHaveText('2,238');
   await expect(page.getByTestId('metric-triangles')).toHaveText('4,476');
   await expect(page.getByTestId('metric-draw-calls')).toHaveText('2');
+  await expect(page.getByTestId('telemetry-classification')).toContainText('not a steady-state benchmark');
 
   for (const testId of ['metric-frame-current', 'metric-frame-p50', 'metric-frame-p95']) {
     const value = Number.parseFloat(await page.getByTestId(testId).innerText());
@@ -62,19 +87,10 @@ test('renders the deterministic visible-face fixture in the production preview',
   const p95 = Number.parseFloat(await page.getByTestId('metric-frame-p95').innerText());
   expect(p50).toBeLessThanOrEqual(p95);
 
+  const screenshotPath = testInfo.outputPath('visible-face-baseline.png');
   await mkdir(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath });
-  const png = await readFile(screenshotPath);
-  const decoder = await context.newPage();
-  const dimensions = await decoder.evaluate(async (base64) => {
-    const response = await fetch(`data:image/png;base64,${base64}`);
-    const bitmap = await createImageBitmap(await response.blob());
-    const result = { width: bitmap.width, height: bitmap.height };
-    bitmap.close();
-    return result;
-  }, png.toString('base64'));
-  await decoder.close();
-  expect(dimensions).toEqual({ width: 1920, height: 1080 });
+  expect(await decodePngDimensions(context, await readFile(screenshotPath))).toEqual({ width: 1920, height: 1080 });
 
   const normalToggle = page.getByTestId('normal-toggle');
   await normalToggle.check();
@@ -111,6 +127,21 @@ test('renders the deterministic visible-face fixture in the production preview',
   await page.waitForTimeout(500);
   const resetDifference = await imageDifference(page, initialView, await canvas.screenshot());
   expect(resetDifference).toBeLessThan(Math.min(rotatedDifference, zoomedDifference) * 0.1);
+  expect(await page.evaluate(() => 'TestBridge' in window)).toBe(false);
   expect(await page.evaluate(() => '__VOXEL_TEST__' in window)).toBe(false);
-  expect(errors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+  expect(requestFailures).toEqual([]);
+  expect(httpErrors).toEqual([]);
+});
+
+test('@evidence captures the curated WP01 baseline after warm-up', async ({ context, page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('voxel-app')).toHaveAttribute('data-ready', 'true');
+  await page.waitForTimeout(3_000);
+  await expect(page.getByTestId('metric-draw-calls')).toHaveText('2');
+
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await page.screenshot({ path: evidencePath });
+  expect(await decodePngDimensions(context, await readFile(evidencePath))).toEqual({ width: 1920, height: 1080 });
 });

@@ -1,6 +1,6 @@
 :root {
-  color: #f1f3f5;
-  background: #23272d;
+  color: #1d2630;
+  background: #e7eaee;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
 }
@@ -31,28 +31,28 @@ canvas {
   left: 24px;
   width: min(320px, calc(100vw - 48px));
   padding: 20px;
-  border: 1px solid #4b535e;
+  border: 1px solid #aeb7c1;
   border-radius: 6px;
-  background: #1c2025;
-  box-shadow: 0 12px 30px rgb(0 0 0 / 28%);
+  background: #f8fafc;
+  box-shadow: 0 12px 30px rgb(31 41 51 / 18%);
 }
 
 .hud header {
   padding-bottom: 15px;
-  border-bottom: 1px solid #3b424c;
+  border-bottom: 1px solid #ccd2d8;
 }
 
 .eyebrow,
 .hint,
 .status {
   margin: 0;
-  color: #aeb8c4;
+  color: #52616f;
   font-size: 0.75rem;
   letter-spacing: 0.04em;
 }
 
 .eyebrow {
-  color: #e0bd72;
+  color: #7a5520;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -68,7 +68,7 @@ h1 {
   grid-template-columns: 1fr 1fr;
   gap: 10px 14px;
   padding: 16px 0;
-  border-bottom: 1px solid #3b424c;
+  border-bottom: 1px solid #ccd2d8;
 }
 
 .controls label {
@@ -81,26 +81,26 @@ h1 {
 
 input,
 button {
-  accent-color: #d7b46a;
+  accent-color: #8a5d12;
 }
 
 button {
   grid-column: 1 / -1;
   min-height: 34px;
-  border: 1px solid #65707d;
+  border: 1px solid #9ca7b2;
   border-radius: 4px;
   color: inherit;
-  background: #30363e;
+  background: #e8edf1;
   cursor: pointer;
 }
 
 button:hover {
-  background: #3a424c;
+  background: #dce3e8;
 }
 
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid #f0c975;
+  outline: 2px solid #9a6700;
   outline-offset: 2px;
 }
 
@@ -118,18 +118,25 @@ dl div {
 }
 
 dt {
-  color: #aeb8c4;
+  color: #52616f;
 }
 
 dd {
   margin: 0;
-  color: #f5f0e6;
+  color: #111820;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
+.telemetry-note {
+  margin: 0 0 12px;
+  color: #52616f;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
 .status {
-  color: #8fd3a6;
+  color: #216e3a;
   font-weight: 700;
   text-transform: uppercase;
 }

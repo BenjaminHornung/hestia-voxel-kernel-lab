@@ -129,7 +129,7 @@ export class ThreeVoxelRenderer {
 
     this.#renderer = new WebGLRenderer({ canvas, context, antialias: true });
     this.#renderer.outputColorSpace = SRGBColorSpace;
-    this.#renderer.setClearColor(0x23272d, 1);
+    this.#renderer.setClearColor(0xe7eaee, 1);
     this.#renderer.setPixelRatio(window.devicePixelRatio);
 
     const scene = new Scene();
@@ -163,13 +163,13 @@ export class ThreeVoxelRenderer {
 
     this.#edgeGeometry = new BufferGeometry();
     this.#edgeGeometry.setAttribute('position', new BufferAttribute(createEdgePositions(data.positions), 3));
-    this.#edgeMaterial = new LineBasicMaterial({ color: 0x15191f, transparent: true, opacity: 0.72 });
+    this.#edgeMaterial = new LineBasicMaterial({ color: 0x111820, transparent: true, opacity: 0.88 });
     this.#edgeLines = new LineSegments(this.#edgeGeometry, this.#edgeMaterial);
     scene.add(this.#edgeLines);
 
     this.#normalGeometry = new BufferGeometry();
     this.#normalGeometry.setAttribute('position', new BufferAttribute(createNormalPositions(data), 3));
-    this.#normalMaterial = new LineBasicMaterial({ color: 0xffd36a });
+    this.#normalMaterial = new LineBasicMaterial({ color: 0xa33d0b });
     this.#normalLines = new LineSegments(this.#normalGeometry, this.#normalMaterial);
     this.#normalLines.visible = false;
     scene.add(this.#normalLines);
