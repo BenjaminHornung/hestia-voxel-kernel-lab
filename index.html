@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" />
+    <title>Hestia Voxel Kernel Lab — Visible Faces</title>
+  </head>
+  <body>
+    <main id="voxel-app" data-testid="voxel-app" data-ready="false">
+      <canvas data-testid="voxel-canvas" aria-label="Interactive voxel fixture viewport"></canvas>
+
+      <aside class="hud" data-testid="voxel-hud" aria-label="Voxel renderer diagnostics">
+        <header>
+          <p class="eyebrow">WP01 · Visible-face baseline</p>
+          <h1>Voxel Kernel Lab</h1>
+          <p class="hint">Drag to orbit · Wheel to zoom</p>
+        </header>
+
+        <div class="controls" aria-label="View controls">
+          <label>
+            <input type="checkbox" data-testid="wireframe-toggle" />
+            Wireframe
+          </label>
+          <label>
+            <input type="checkbox" data-testid="normal-toggle" />
+            Face normals
+          </label>
+          <button type="button" data-testid="camera-reset">Reset camera</button>
+        </div>
+
+        <dl>
+          <div><dt>Renderer</dt><dd data-testid="metric-renderer">—</dd></div>
+          <div><dt>Volume</dt><dd data-testid="metric-volume">—</dd></div>
+          <div><dt>Occupied</dt><dd data-testid="metric-occupied">—</dd></div>
+          <div><dt>Quads</dt><dd data-testid="metric-quads">—</dd></div>
+          <div><dt>Triangles</dt><dd data-testid="metric-triangles">—</dd></div>
+          <div><dt>Draw calls</dt><dd data-testid="metric-draw-calls">—</dd></div>
+          <div><dt>Frame current</dt><dd data-testid="metric-frame-current">—</dd></div>
+          <div><dt>Frame p50</dt><dd data-testid="metric-frame-p50">—</dd></div>
+          <div><dt>Frame p95</dt><dd data-testid="metric-frame-p95">—</dd></div>
+        </dl>
+
+        <p class="status" data-testid="app-status" role="status">Starting WebGL2…</p>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

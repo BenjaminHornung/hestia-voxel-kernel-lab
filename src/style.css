@@ -1,0 +1,144 @@
+:root {
+  color: #f1f3f5;
+  background: #23272d;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#voxel-app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.hud {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  width: min(320px, calc(100vw - 48px));
+  padding: 20px;
+  border: 1px solid #4b535e;
+  border-radius: 6px;
+  background: #1c2025;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 28%);
+}
+
+.hud header {
+  padding-bottom: 15px;
+  border-bottom: 1px solid #3b424c;
+}
+
+.eyebrow,
+.hint,
+.status {
+  margin: 0;
+  color: #aeb8c4;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+}
+
+.eyebrow {
+  color: #e0bd72;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 5px 0 4px;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  padding: 16px 0;
+  border-bottom: 1px solid #3b424c;
+}
+
+.controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+input,
+button {
+  accent-color: #d7b46a;
+}
+
+button {
+  grid-column: 1 / -1;
+  min-height: 34px;
+  border: 1px solid #65707d;
+  border-radius: 4px;
+  color: inherit;
+  background: #30363e;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3a424c;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #f0c975;
+  outline-offset: 2px;
+}
+
+dl {
+  display: grid;
+  gap: 7px;
+  margin: 16px 0;
+  font-size: 0.8rem;
+}
+
+dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+dt {
+  color: #aeb8c4;
+}
+
+dd {
+  margin: 0;
+  color: #f5f0e6;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.status {
+  color: #8fd3a6;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+@media (max-width: 640px) {
+  .hud {
+    top: 12px;
+    left: 12px;
+    width: min(290px, calc(100vw - 24px));
+    padding: 16px;
+  }
+}
