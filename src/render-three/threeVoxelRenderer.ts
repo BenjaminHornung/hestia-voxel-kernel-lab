@@ -14,21 +14,64 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { FrameIntervalTelemetry } from '../diagnostics/telemetry';
+import { FrameIntervalTelemetry, type DurationSummary } from '../diagnostics/telemetry';
 import { VOLUME_SIZE, VoxelMaterial } from '../voxel/constants';
 import { MATERIAL_COLORS } from '../voxel/palette';
-import type { VisibleFaceMesh } from '../voxel/types';
+import type { ChunkVisibleFaceMesh, Vec3, VisibleFaceMesh } from '../voxel/types';
+
+export interface RendererCameraPreset {
+  readonly id: string;
+  readonly label: string;
+  readonly positionMeters: Vec3;
+  readonly targetMeters: Vec3;
+  readonly zoneId: string | null;
+}
+
+export interface VoxelLabScene {
+  readonly lab: 'wp01' | 'wp02';
+  readonly sceneLabel: string;
+  readonly voxelSizeMeters: number;
+  readonly worldCells: Vec3;
+  readonly worldMeters: Vec3;
+  readonly chunkEdge: number;
+  readonly candidateChunks: number;
+  readonly materializedChunks: number;
+  readonly occupiedVoxels: number;
+  readonly fixtureBuildDurationMs: number;
+  readonly haloTiming: DurationSummary;
+  readonly meshTiming: DurationSummary;
+  readonly chunks: readonly ChunkVisibleFaceMesh[];
+  readonly cameraPresets: readonly RendererCameraPreset[];
+  readonly zoneCount: number;
+  readonly worldHash: string;
+}
 
 interface HudElements {
+  readonly lab: HTMLElement;
   readonly renderer: HTMLElement;
   readonly volume: HTMLElement;
+  readonly worldMeters: HTMLElement;
+  readonly voxelSize: HTMLElement;
+  readonly chunkEdge: HTMLElement;
+  readonly candidateChunks: HTMLElement;
+  readonly materializedChunks: HTMLElement;
   readonly occupied: HTMLElement;
   readonly quads: HTMLElement;
   readonly triangles: HTMLElement;
+  readonly residentChunkMeshes: HTMLElement;
   readonly drawCalls: HTMLElement;
+  readonly fixtureBuild: HTMLElement;
+  readonly haloTotal: HTMLElement;
+  readonly haloP50: HTMLElement;
+  readonly haloP95: HTMLElement;
+  readonly meshTotal: HTMLElement;
+  readonly meshP50: HTMLElement;
+  readonly meshP95: HTMLElement;
   readonly current: HTMLElement;
   readonly p50: HTMLElement;
   readonly p95: HTMLElement;
+  readonly activePreset: HTMLElement;
+  readonly activeZone: HTMLElement;
   readonly status: HTMLElement;
 }
 
@@ -87,70 +130,138 @@ function createNormalPositions(mesh: VisibleFaceMesh): Float32Array {
   return lines;
 }
 
+function appendTransformedPositions(
+  target: number[],
+  positions: Float32Array,
+  chunk: ChunkVisibleFaceMesh,
+  voxelSizeMeters: number,
+): void {
+  const originX = chunk.coord.x * VOLUME_SIZE * voxelSizeMeters;
+  const originY = chunk.coord.y * VOLUME_SIZE * voxelSizeMeters;
+  const originZ = chunk.coord.z * VOLUME_SIZE * voxelSizeMeters;
+  for (let offset = 0; offset < positions.length; offset += 3) {
+    target.push(
+      positions[offset]! * voxelSizeMeters + originX,
+      positions[offset + 1]! * voxelSizeMeters + originY,
+      positions[offset + 2]! * voxelSizeMeters + originZ,
+    );
+  }
+}
+
+function createChunkBoundsPositions(chunks: readonly ChunkVisibleFaceMesh[], voxelSizeMeters: number): Float32Array {
+  const positions: number[] = [];
+  const edges = [[0, 1], [1, 3], [3, 2], [2, 0], [4, 5], [5, 7], [7, 6], [6, 4], [0, 4], [1, 5], [2, 6], [3, 7]] as const;
+  for (const chunk of chunks) {
+    const minX = chunk.coord.x * VOLUME_SIZE * voxelSizeMeters;
+    const minY = chunk.coord.y * VOLUME_SIZE * voxelSizeMeters;
+    const minZ = chunk.coord.z * VOLUME_SIZE * voxelSizeMeters;
+    const maxX = minX + VOLUME_SIZE * voxelSizeMeters;
+    const maxY = minY + VOLUME_SIZE * voxelSizeMeters;
+    const maxZ = minZ + VOLUME_SIZE * voxelSizeMeters;
+    const corners = [
+      [minX, minY, minZ], [maxX, minY, minZ], [minX, maxY, minZ], [maxX, maxY, minZ],
+      [minX, minY, maxZ], [maxX, minY, maxZ], [minX, maxY, maxZ], [maxX, maxY, maxZ],
+    ] as const;
+    for (const [start, end] of edges) {
+      positions.push(...corners[start], ...corners[end]);
+    }
+  }
+  return new Float32Array(positions);
+}
+
+function createVertexColors(materialIds: Uint8Array): Float32Array {
+  const colors = new Float32Array(materialIds.length * 3);
+  const color = new Color();
+  for (let vertex = 0; vertex < materialIds.length; vertex += 1) {
+    const material = materialIds[vertex] as Exclude<VoxelMaterial, VoxelMaterial.Air>;
+    color.setHex(MATERIAL_COLORS[material]);
+    colors[vertex * 3] = color.r;
+    colors[vertex * 3 + 1] = color.g;
+    colors[vertex * 3 + 2] = color.b;
+  }
+  return colors;
+}
+
 export class ThreeVoxelRenderer {
   readonly #root: HTMLElement;
+  readonly #canvas: HTMLCanvasElement;
   readonly #renderer: WebGLRenderer;
   readonly #camera: PerspectiveCamera;
   readonly #controls: OrbitControls;
-  readonly #meshGeometry: BufferGeometry;
+  readonly #meshGeometries: BufferGeometry[] = [];
   readonly #meshMaterial: MeshLambertMaterial;
-  readonly #voxelMesh: Mesh;
+  readonly #voxelMeshes: Mesh[] = [];
   readonly #edgeGeometry: BufferGeometry;
   readonly #edgeMaterial: LineBasicMaterial;
   readonly #edgeLines: LineSegments;
   readonly #normalGeometry: BufferGeometry;
   readonly #normalMaterial: LineBasicMaterial;
   readonly #normalLines: LineSegments;
+  readonly #chunkBoundsGeometry: BufferGeometry;
+  readonly #chunkBoundsMaterial: LineBasicMaterial;
+  readonly #chunkBoundsLines: LineSegments;
   readonly #hud: HudElements;
   readonly #telemetry = new FrameIntervalTelemetry();
   readonly #wireframeToggle: HTMLInputElement;
+  readonly #blockEdgeToggle: HTMLInputElement;
   readonly #normalToggle: HTMLInputElement;
+  readonly #chunkBoundsToggle: HTMLInputElement;
+  readonly #cameraPresetSelect: HTMLSelectElement;
+  readonly #cameraPresets: readonly RendererCameraPreset[];
   readonly #resetButton: HTMLButtonElement;
   readonly #resize = (): void => this.resize();
   readonly #toggleWireframe = (): void => {
-    this.#voxelMesh.visible = !this.#wireframeToggle.checked;
-    this.#edgeLines.visible = true;
+    for (const mesh of this.#voxelMeshes) {
+      mesh.visible = !this.#wireframeToggle.checked;
+    }
+    this.#edgeLines.visible = this.#wireframeToggle.checked || this.#blockEdgeToggle.checked;
+  };
+  readonly #toggleBlockEdges = (): void => {
+    this.#edgeLines.visible = this.#wireframeToggle.checked || this.#blockEdgeToggle.checked;
   };
   readonly #toggleNormals = (): void => {
     this.#normalLines.visible = this.#normalToggle.checked;
+  };
+  readonly #toggleChunkBounds = (): void => {
+    this.#chunkBoundsLines.visible = this.#chunkBoundsToggle.checked;
+  };
+  readonly #changeCameraPreset = (): void => this.applyCameraPreset(this.#cameraPresetSelect.value);
+  readonly #keyboardCameraPreset = (event: KeyboardEvent): void => {
+    if (event.key === 'Home') {
+      event.preventDefault();
+      this.#controls.reset();
+      return;
+    }
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+      return;
+    }
+    event.preventDefault();
+    const current = this.#cameraPresets.findIndex(({ id }) => id === this.#cameraPresetSelect.value);
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    const next = (current + direction + this.#cameraPresets.length) % this.#cameraPresets.length;
+    this.applyCameraPreset(this.#cameraPresets[next]!.id);
   };
   readonly #resetCamera = (): void => this.#controls.reset();
   #animationFrame = 0;
   #lastFrameTime = 0;
   #disposed = false;
 
-  constructor(root: HTMLElement, data: VisibleFaceMesh, occupiedCount: number) {
+  constructor(root: HTMLElement, data: VoxelLabScene) {
     this.#root = root;
     const canvas = requiredElement<HTMLCanvasElement>(root, '[data-testid="voxel-canvas"]');
+    this.#canvas = canvas;
     const context = canvas.getContext('webgl2', { antialias: true, alpha: false });
     if (!context) {
-      throw new Error('WebGL2 is required for the visible-face baseline.');
+      throw new Error('WebGL2 is required for the visible-face lab.');
     }
 
     this.#renderer = new WebGLRenderer({ canvas, context, antialias: true });
     this.#renderer.outputColorSpace = SRGBColorSpace;
-    this.#renderer.setClearColor(0xe7eaee, 1);
+    this.#renderer.setClearColor(0xe9edf0, 1);
     this.#renderer.setPixelRatio(window.devicePixelRatio);
 
     const scene = new Scene();
-    this.#camera = new PerspectiveCamera(42, 1, 0.1, 200);
-    this.#camera.position.set(43, 32, -17);
-
-    this.#meshGeometry = new BufferGeometry();
-    this.#meshGeometry.setAttribute('position', new BufferAttribute(data.positions, 3));
-    this.#meshGeometry.setAttribute('normal', new BufferAttribute(data.normals, 3));
-    this.#meshGeometry.setIndex(new BufferAttribute(data.indices, 1));
-    const colors = new Float32Array(data.materialIds.length * 3);
-    const color = new Color();
-    for (let vertex = 0; vertex < data.materialIds.length; vertex += 1) {
-      const material = data.materialIds[vertex] as Exclude<VoxelMaterial, VoxelMaterial.Air>;
-      color.setHex(MATERIAL_COLORS[material]);
-      colors[vertex * 3] = color.r;
-      colors[vertex * 3 + 1] = color.g;
-      colors[vertex * 3 + 2] = color.b;
-    }
-    this.#meshGeometry.setAttribute('color', new BufferAttribute(colors, 3));
-    this.#meshGeometry.computeBoundingSphere();
+    this.#camera = new PerspectiveCamera(42, 1, 0.05, 500);
     this.#meshMaterial = new MeshLambertMaterial({
       vertexColors: true,
       flatShading: true,
@@ -158,59 +269,145 @@ export class ThreeVoxelRenderer {
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
     });
-    this.#voxelMesh = new Mesh(this.#meshGeometry, this.#meshMaterial);
-    scene.add(this.#voxelMesh);
+
+    const edgePositions: number[] = [];
+    const normalPositions: number[] = [];
+    for (const chunk of data.chunks) {
+      if (chunk.quadCount === 0) {
+        continue;
+      }
+      const geometry = new BufferGeometry();
+      geometry.setAttribute('position', new BufferAttribute(chunk.positions, 3));
+      geometry.setAttribute('normal', new BufferAttribute(chunk.normals, 3));
+      geometry.setAttribute('color', new BufferAttribute(createVertexColors(chunk.materialIds), 3));
+      geometry.setIndex(new BufferAttribute(chunk.indices, 1));
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      const mesh = new Mesh(geometry, this.#meshMaterial);
+      mesh.position.set(
+        chunk.coord.x * VOLUME_SIZE * data.voxelSizeMeters,
+        chunk.coord.y * VOLUME_SIZE * data.voxelSizeMeters,
+        chunk.coord.z * VOLUME_SIZE * data.voxelSizeMeters,
+      );
+      mesh.scale.setScalar(data.voxelSizeMeters);
+      scene.add(mesh);
+      this.#meshGeometries.push(geometry);
+      this.#voxelMeshes.push(mesh);
+      appendTransformedPositions(edgePositions, createEdgePositions(chunk.positions), chunk, data.voxelSizeMeters);
+      appendTransformedPositions(normalPositions, createNormalPositions(chunk), chunk, data.voxelSizeMeters);
+    }
 
     this.#edgeGeometry = new BufferGeometry();
-    this.#edgeGeometry.setAttribute('position', new BufferAttribute(createEdgePositions(data.positions), 3));
+    this.#edgeGeometry.setAttribute('position', new BufferAttribute(new Float32Array(edgePositions), 3));
     this.#edgeMaterial = new LineBasicMaterial({ color: 0x111820, transparent: true, opacity: 0.88 });
     this.#edgeLines = new LineSegments(this.#edgeGeometry, this.#edgeMaterial);
     scene.add(this.#edgeLines);
 
     this.#normalGeometry = new BufferGeometry();
-    this.#normalGeometry.setAttribute('position', new BufferAttribute(createNormalPositions(data), 3));
+    this.#normalGeometry.setAttribute('position', new BufferAttribute(new Float32Array(normalPositions), 3));
     this.#normalMaterial = new LineBasicMaterial({ color: 0xa33d0b });
     this.#normalLines = new LineSegments(this.#normalGeometry, this.#normalMaterial);
     this.#normalLines.visible = false;
     scene.add(this.#normalLines);
 
+    this.#chunkBoundsGeometry = new BufferGeometry();
+    this.#chunkBoundsGeometry.setAttribute('position', new BufferAttribute(createChunkBoundsPositions(data.chunks, data.voxelSizeMeters), 3));
+    this.#chunkBoundsMaterial = new LineBasicMaterial({ color: 0x246b91, transparent: true, opacity: 0.78 });
+    this.#chunkBoundsLines = new LineSegments(this.#chunkBoundsGeometry, this.#chunkBoundsMaterial);
+    this.#chunkBoundsLines.visible = false;
+    scene.add(this.#chunkBoundsLines);
+
     scene.add(new HemisphereLight(0xd9e5f2, 0x35302a, 2.25));
     const keyLight = new DirectionalLight(0xffffff, 2.8);
-    keyLight.position.set(-12, 30, 18);
+    keyLight.position.set(-48, 72, 38);
     scene.add(keyLight);
 
     this.#controls = new OrbitControls(this.#camera, canvas);
-    this.#controls.minDistance = 18;
-    this.#controls.maxDistance = 100;
-    this.#controls.target.set(16, 3.5, 16);
-    this.#controls.update();
-    this.#controls.saveState();
+    this.#controls.minDistance = 1.5;
+    this.#controls.maxDistance = 300;
 
     this.#wireframeToggle = requiredElement<HTMLInputElement>(root, '[data-testid="wireframe-toggle"]');
+    this.#blockEdgeToggle = requiredElement<HTMLInputElement>(root, '[data-testid="block-edge-toggle"]');
     this.#normalToggle = requiredElement<HTMLInputElement>(root, '[data-testid="normal-toggle"]');
+    this.#chunkBoundsToggle = requiredElement<HTMLInputElement>(root, '[data-testid="chunk-bounds-toggle"]');
+    this.#cameraPresetSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="camera-preset"]');
+    this.#cameraPresets = data.cameraPresets;
     this.#resetButton = requiredElement<HTMLButtonElement>(root, '[data-testid="camera-reset"]');
     this.#hud = {
+      lab: requiredElement(root, '[data-testid="metric-lab"]'),
       renderer: requiredElement(root, '[data-testid="metric-renderer"]'),
       volume: requiredElement(root, '[data-testid="metric-volume"]'),
+      worldMeters: requiredElement(root, '[data-testid="metric-world-meters"]'),
+      voxelSize: requiredElement(root, '[data-testid="metric-voxel-size"]'),
+      chunkEdge: requiredElement(root, '[data-testid="metric-chunk-edge"]'),
+      candidateChunks: requiredElement(root, '[data-testid="metric-candidate-chunks"]'),
+      materializedChunks: requiredElement(root, '[data-testid="metric-materialized-chunks"]'),
       occupied: requiredElement(root, '[data-testid="metric-occupied"]'),
       quads: requiredElement(root, '[data-testid="metric-quads"]'),
       triangles: requiredElement(root, '[data-testid="metric-triangles"]'),
+      residentChunkMeshes: requiredElement(root, '[data-testid="metric-resident-chunk-meshes"]'),
       drawCalls: requiredElement(root, '[data-testid="metric-draw-calls"]'),
+      fixtureBuild: requiredElement(root, '[data-testid="metric-fixture-build"]'),
+      haloTotal: requiredElement(root, '[data-testid="metric-halo-total"]'),
+      haloP50: requiredElement(root, '[data-testid="metric-halo-p50"]'),
+      haloP95: requiredElement(root, '[data-testid="metric-halo-p95"]'),
+      meshTotal: requiredElement(root, '[data-testid="metric-mesh-total"]'),
+      meshP50: requiredElement(root, '[data-testid="metric-mesh-p50"]'),
+      meshP95: requiredElement(root, '[data-testid="metric-mesh-p95"]'),
       current: requiredElement(root, '[data-testid="metric-frame-current"]'),
       p50: requiredElement(root, '[data-testid="metric-frame-p50"]'),
       p95: requiredElement(root, '[data-testid="metric-frame-p95"]'),
+      activePreset: requiredElement(root, '[data-testid="metric-active-preset"]'),
+      activeZone: requiredElement(root, '[data-testid="active-zone"]'),
       status: requiredElement(root, '[data-testid="app-status"]'),
     };
 
-    this.#hud.renderer.textContent = `Three.js WebGL2 · ${this.#renderer.capabilities.getMaxAnisotropy()}× max AF`;
-    this.#hud.volume.textContent = `${VOLUME_SIZE} × ${VOLUME_SIZE} × ${VOLUME_SIZE}`;
-    this.#hud.occupied.textContent = occupiedCount.toLocaleString('en-US');
-    this.#hud.quads.textContent = data.quadCount.toLocaleString('en-US');
-    this.#hud.triangles.textContent = data.triangleCount.toLocaleString('en-US');
+    const quads = data.chunks.reduce((total, chunk) => total + chunk.quadCount, 0);
+    const triangles = data.chunks.reduce((total, chunk) => total + chunk.triangleCount, 0);
+    const formatVec = (value: Vec3): string => value.join(' × ');
+    const formatDuration = (value: number): string => `${value.toFixed(1)} ms`;
+    this.#hud.lab.textContent = data.sceneLabel;
+    this.#hud.renderer.textContent = 'Three/WebGL2 · Visible Faces';
+    this.#hud.volume.textContent = formatVec(data.worldCells);
+    this.#hud.worldMeters.textContent = `${formatVec(data.worldMeters)} m`;
+    this.#hud.voxelSize.textContent = `${data.voxelSizeMeters.toFixed(2)} m`;
+    this.#hud.chunkEdge.textContent = String(data.chunkEdge);
+    this.#hud.candidateChunks.textContent = data.candidateChunks.toLocaleString('en-US');
+    this.#hud.materializedChunks.textContent = data.materializedChunks.toLocaleString('en-US');
+    this.#hud.occupied.textContent = data.occupiedVoxels.toLocaleString('en-US');
+    this.#hud.quads.textContent = quads.toLocaleString('en-US');
+    this.#hud.triangles.textContent = triangles.toLocaleString('en-US');
+    this.#hud.residentChunkMeshes.textContent = this.#voxelMeshes.length.toLocaleString('en-US');
+    this.#hud.fixtureBuild.textContent = formatDuration(data.fixtureBuildDurationMs);
+    this.#hud.haloTotal.textContent = formatDuration(data.haloTiming.total);
+    this.#hud.haloP50.textContent = formatDuration(data.haloTiming.p50);
+    this.#hud.haloP95.textContent = formatDuration(data.haloTiming.p95);
+    this.#hud.meshTotal.textContent = formatDuration(data.meshTiming.total);
+    this.#hud.meshP50.textContent = formatDuration(data.meshTiming.p50);
+    this.#hud.meshP95.textContent = formatDuration(data.meshTiming.p95);
     this.#hud.status.textContent = 'Ready';
+    this.#root.dataset.lab = data.lab;
+    this.#root.dataset.zoneCount = String(data.zoneCount);
+    this.#root.dataset.worldHash = data.worldHash;
+
+    this.#cameraPresetSelect.replaceChildren(...this.#cameraPresets.map((preset) => {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.label;
+      return option;
+    }));
+    const initialPreset = this.#cameraPresets[0];
+    if (!initialPreset) {
+      throw new RangeError('At least one camera preset is required.');
+    }
+    this.applyCameraPreset(initialPreset.id);
 
     this.#wireframeToggle.addEventListener('change', this.#toggleWireframe);
+    this.#blockEdgeToggle.addEventListener('change', this.#toggleBlockEdges);
     this.#normalToggle.addEventListener('change', this.#toggleNormals);
+    this.#chunkBoundsToggle.addEventListener('change', this.#toggleChunkBounds);
+    this.#cameraPresetSelect.addEventListener('change', this.#changeCameraPreset);
+    this.#canvas.addEventListener('keydown', this.#keyboardCameraPreset);
     this.#resetButton.addEventListener('click', this.#resetCamera);
     window.addEventListener('resize', this.#resize);
     this.resize();
@@ -241,15 +438,23 @@ export class ThreeVoxelRenderer {
     cancelAnimationFrame(this.#animationFrame);
     window.removeEventListener('resize', this.#resize);
     this.#wireframeToggle.removeEventListener('change', this.#toggleWireframe);
+    this.#blockEdgeToggle.removeEventListener('change', this.#toggleBlockEdges);
     this.#normalToggle.removeEventListener('change', this.#toggleNormals);
+    this.#chunkBoundsToggle.removeEventListener('change', this.#toggleChunkBounds);
+    this.#cameraPresetSelect.removeEventListener('change', this.#changeCameraPreset);
+    this.#canvas.removeEventListener('keydown', this.#keyboardCameraPreset);
     this.#resetButton.removeEventListener('click', this.#resetCamera);
     this.#controls.dispose();
-    this.#meshGeometry.dispose();
+    for (const geometry of this.#meshGeometries) {
+      geometry.dispose();
+    }
     this.#meshMaterial.dispose();
     this.#edgeGeometry.dispose();
     this.#edgeMaterial.dispose();
     this.#normalGeometry.dispose();
     this.#normalMaterial.dispose();
+    this.#chunkBoundsGeometry.dispose();
+    this.#chunkBoundsMaterial.dispose();
     this.#renderer.dispose();
     this.#renderer.forceContextLoss();
   }
@@ -260,6 +465,21 @@ export class ThreeVoxelRenderer {
     this.#renderer.setSize(width, height, false);
     this.#camera.aspect = width / height;
     this.#camera.updateProjectionMatrix();
+  }
+
+  private applyCameraPreset(id: string): void {
+    const preset = this.#cameraPresets.find((candidate) => candidate.id === id);
+    if (!preset) {
+      throw new RangeError(`Unknown camera preset: ${id}`);
+    }
+    this.#camera.position.set(...preset.positionMeters);
+    this.#controls.target.set(...preset.targetMeters);
+    this.#controls.update();
+    this.#controls.saveState();
+    this.#cameraPresetSelect.value = preset.id;
+    this.#hud.activePreset.textContent = preset.label;
+    const zone = preset.zoneId ? this.#cameraPresets.find((candidate) => candidate.id === preset.zoneId) : null;
+    this.#hud.activeZone.textContent = zone?.label ?? preset.label;
   }
 
   private updateHud(): boolean {

@@ -4,6 +4,28 @@ export interface FrameIntervalSnapshot {
   readonly p95: number;
 }
 
+export interface DurationSummary {
+  readonly total: number;
+  readonly p50: number;
+  readonly p95: number;
+}
+
+export function summarizeDurations(samples: readonly number[]): DurationSummary {
+  if (samples.length === 0) {
+    return { total: 0, p50: 0, p95: 0 };
+  }
+  if (samples.some((sample) => !Number.isFinite(sample) || sample < 0)) {
+    throw new RangeError('Duration samples must be finite non-negative numbers.');
+  }
+  const sorted = samples.slice().sort((left, right) => left - right);
+  const percentile = (value: number): number => sorted[Math.ceil(sorted.length * value) - 1] ?? 0;
+  return {
+    total: samples.reduce((total, sample) => total + sample, 0),
+    p50: percentile(0.5),
+    p95: percentile(0.95),
+  };
+}
+
 export class FrameIntervalTelemetry {
   readonly #samples: number[] = [];
 

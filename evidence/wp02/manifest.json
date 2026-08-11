@@ -1,0 +1,80 @@
+{
+  "basisSha": "07d23c16838109a06c9764ac1d1994bcf4eed155",
+  "fixture": {
+    "id": "wp02-large-sparse-fixture",
+    "version": 1,
+    "seed": 1212502868
+  },
+  "voxelSizeMeters": 0.25,
+  "worldCells": [
+    512,
+    128,
+    512
+  ],
+  "worldMeters": [
+    128,
+    32,
+    128
+  ],
+  "chunkEdge": 32,
+  "candidateChunks": 1024,
+  "zoneIds": [
+    "solid-cube",
+    "hollow-shell",
+    "staircase",
+    "hard-voxel-sphere",
+    "tunnel",
+    "checkerboard",
+    "sparse-10-percent",
+    "random-50-percent",
+    "multi-component-field"
+  ],
+  "fixtureByteWorldHash": "fnv1a32:b58829bb",
+  "materializedChunks": 51,
+  "occupiedVoxels": 97989,
+  "exposedQuads": 59350,
+  "triangles": 118700,
+  "screenshots": [
+    {
+      "path": "evidence/wp02/large-fixture-overview.png",
+      "cameraPreset": "overview",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "3de4e5b981df7308c897780ca5a641e0b99d212bcc687ff286fd3d52d9d3ed5e"
+    },
+    {
+      "path": "evidence/wp02/chunk-seam-closeup.png",
+      "cameraPreset": "chunk-seam-closeup",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "7c3c6f181b2206d1e6c5c1d8f9377ba12a8e31960ed0dd73638418b37919ccf7"
+    },
+    {
+      "path": "evidence/wp02/checkerboard-closeup.png",
+      "cameraPreset": "checkerboard",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "18dc8eae409b378c7ee6140b6430b591b53065821e039aaa3e4123d09703249a"
+    }
+  ],
+  "diagnostics": {
+    "classification": "120-frame rolling diagnostics · startup values are not a steady-state benchmark.",
+    "fixtureBuildMs": 96.3,
+    "haloCopyMs": {
+      "total": 241.7,
+      "p50": 4.6,
+      "p95": 6.2
+    },
+    "chunkMeshMs": {
+      "total": 67.7,
+      "p50": 0.8,
+      "p95": 5.1
+    },
+    "frameMs": {
+      "current": 16.7,
+      "p50": 16.7,
+      "p95": 16.8
+    },
+    "drawCalls": 9
+  }
+}

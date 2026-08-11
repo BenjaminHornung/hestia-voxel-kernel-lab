@@ -1,75 +1,20 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { imageDifference, pngDimensions, trackPageFailures } from './support';
 
 const evidencePath = path.join(process.cwd(), 'evidence', 'wp01', 'visible-face-baseline.png');
 
-async function imageDifference(page: Page, left: Buffer, right: Buffer): Promise<number> {
-  return page.evaluate(async ({ leftBase64, rightBase64 }) => {
-    const decode = async (base64: string): Promise<ImageBitmap> => {
-      const response = await fetch(`data:image/png;base64,${base64}`);
-      return createImageBitmap(await response.blob());
-    };
-    const [leftImage, rightImage] = await Promise.all([decode(leftBase64), decode(rightBase64)]);
-    const canvas = new OffscreenCanvas(leftImage.width, leftImage.height);
-    const context2d = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context2d || leftImage.width !== rightImage.width || leftImage.height !== rightImage.height) {
-      throw new Error('Screenshot comparison requires equal decodable images.');
-    }
-    context2d.drawImage(leftImage, 0, 0);
-    const leftPixels = context2d.getImageData(0, 0, canvas.width, canvas.height).data;
-    context2d.drawImage(rightImage, 0, 0);
-    const rightPixels = context2d.getImageData(0, 0, canvas.width, canvas.height).data;
-    let difference = 0;
-    for (let index = 0; index < leftPixels.length; index += 4) {
-      difference += Math.abs(leftPixels[index]! - rightPixels[index]!);
-      difference += Math.abs(leftPixels[index + 1]! - rightPixels[index + 1]!);
-      difference += Math.abs(leftPixels[index + 2]! - rightPixels[index + 2]!);
-    }
-    leftImage.close();
-    rightImage.close();
-    return difference / (canvas.width * canvas.height * 3 * 255);
-  }, { leftBase64: left.toString('base64'), rightBase64: right.toString('base64') });
-}
-
-async function decodePngDimensions(context: BrowserContext, png: Buffer): Promise<{ width: number; height: number }> {
-  const decoder = await context.newPage();
-  const dimensions = await decoder.evaluate(async (base64) => {
-    const response = await fetch(`data:image/png;base64,${base64}`);
-    const bitmap = await createImageBitmap(await response.blob());
-    const result = { width: bitmap.width, height: bitmap.height };
-    bitmap.close();
-    return result;
-  }, png.toString('base64'));
-  await decoder.close();
-  return dimensions;
-}
-
 test('renders the deterministic visible-face fixture in the production preview', async ({ context, page }, testInfo) => {
-  const consoleErrors: string[] = [];
-  const pageErrors: string[] = [];
-  const requestFailures: string[] = [];
-  const httpErrors: string[] = [];
-  page.on('console', (message) => {
-    if (message.type() === 'error') {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on('pageerror', (error) => pageErrors.push(error.message));
-  page.on('requestfailed', (request) => {
-    requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? 'unknown failure'}`);
-  });
-  page.on('response', (response) => {
-    if (response.status() >= 400) {
-      httpErrors.push(`${response.status()} ${response.url()}`);
-    }
-  });
+  const failures = trackPageFailures(page);
 
-  await page.goto('/');
+  await page.goto('/?lab=wp01');
   const app = page.getByTestId('voxel-app');
   await expect(app).toHaveAttribute('data-ready', 'true');
   await expect(page.getByTestId('app-status')).toHaveText('Ready');
-  await expect(page.getByTestId('metric-renderer')).toContainText('Three.js WebGL2');
+  await expect(page.getByTestId('metric-renderer')).toHaveText('Three/WebGL2 · Visible Faces');
+  await expect(page.getByTestId('metric-lab')).toHaveText('WP01 · Visible-face baseline');
+  await expect(page.getByTestId('metric-voxel-size')).toHaveText('0.25 m');
   await expect(page.getByTestId('metric-volume')).toHaveText('32 × 32 × 32');
   await expect(page.getByTestId('metric-occupied')).toHaveText('1,169');
   await expect(page.getByTestId('metric-quads')).toHaveText('2,238');
@@ -90,7 +35,7 @@ test('renders the deterministic visible-face fixture in the production preview',
   const screenshotPath = testInfo.outputPath('visible-face-baseline.png');
   await mkdir(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath });
-  expect(await decodePngDimensions(context, await readFile(screenshotPath))).toEqual({ width: 1920, height: 1080 });
+  expect(await pngDimensions(context, await readFile(screenshotPath))).toEqual({ width: 1920, height: 1080 });
 
   const normalToggle = page.getByTestId('normal-toggle');
   await normalToggle.check();
@@ -129,19 +74,18 @@ test('renders the deterministic visible-face fixture in the production preview',
   expect(resetDifference).toBeLessThan(Math.min(rotatedDifference, zoomedDifference) * 0.1);
   expect(await page.evaluate(() => 'TestBridge' in window)).toBe(false);
   expect(await page.evaluate(() => '__VOXEL_TEST__' in window)).toBe(false);
-  expect(consoleErrors).toEqual([]);
-  expect(pageErrors).toEqual([]);
-  expect(requestFailures).toEqual([]);
-  expect(httpErrors).toEqual([]);
+  expect(failures).toEqual({ consoleErrors: [], pageErrors: [], requestFailures: [], httpErrors: [] });
 });
 
-test('@evidence captures the curated WP01 baseline after warm-up', async ({ context, page }) => {
-  await page.goto('/');
+test('@evidence-wp01 captures the curated WP01 baseline after warm-up', async ({ context, page }) => {
+  const failures = trackPageFailures(page);
+  await page.goto('/?lab=wp01');
   await expect(page.getByTestId('voxel-app')).toHaveAttribute('data-ready', 'true');
   await page.waitForTimeout(3_000);
   await expect(page.getByTestId('metric-draw-calls')).toHaveText('2');
 
   await mkdir(path.dirname(evidencePath), { recursive: true });
   await page.screenshot({ path: evidencePath });
-  expect(await decodePngDimensions(context, await readFile(evidencePath))).toEqual({ width: 1920, height: 1080 });
+  expect(await pngDimensions(context, await readFile(evidencePath))).toEqual({ width: 1920, height: 1080 });
+  expect(failures).toEqual({ consoleErrors: [], pageErrors: [], requestFailures: [], httpErrors: [] });
 });

@@ -29,8 +29,10 @@ canvas {
   position: absolute;
   top: 24px;
   left: 24px;
-  width: min(320px, calc(100vw - 48px));
-  padding: 20px;
+  width: min(350px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  padding: 18px;
+  overflow-y: auto;
   border: 1px solid #aeb7c1;
   border-radius: 6px;
   background: #f8fafc;
@@ -49,6 +51,12 @@ canvas {
   color: #52616f;
   font-size: 0.75rem;
   letter-spacing: 0.04em;
+}
+
+.active-zone {
+  margin: 10px 0 0;
+  color: #394957;
+  font-size: 0.78rem;
 }
 
 .eyebrow {
@@ -71,6 +79,12 @@ h1 {
   border-bottom: 1px solid #ccd2d8;
 }
 
+.preset-control {
+  grid-column: 1 / -1;
+  align-items: stretch !important;
+  flex-direction: column;
+}
+
 .controls label {
   display: flex;
   align-items: center;
@@ -80,8 +94,18 @@ h1 {
 }
 
 input,
+select,
 button {
   accent-color: #8a5d12;
+}
+
+select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #9ca7b2;
+  border-radius: 4px;
+  color: inherit;
+  background: #fff;
 }
 
 button {
@@ -99,16 +123,18 @@ button:hover {
 }
 
 button:focus-visible,
-input:focus-visible {
+select:focus-visible,
+input:focus-visible,
+canvas:focus-visible {
   outline: 2px solid #9a6700;
   outline-offset: 2px;
 }
 
 dl {
   display: grid;
-  gap: 7px;
-  margin: 16px 0;
-  font-size: 0.8rem;
+  gap: 5px;
+  margin: 14px 0;
+  font-size: 0.76rem;
 }
 
 dl div {

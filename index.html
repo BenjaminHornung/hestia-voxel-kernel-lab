@@ -5,17 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" />
-    <title>Hestia Voxel Kernel Lab — Visible Faces</title>
+    <title>Hestia Voxel Kernel Lab — Sparse Chunks</title>
   </head>
   <body>
     <main id="voxel-app" data-testid="voxel-app" data-ready="false">
-      <canvas data-testid="voxel-canvas" aria-label="Interactive voxel fixture viewport"></canvas>
+      <canvas data-testid="voxel-canvas" aria-label="Interactive voxel fixture viewport" aria-describedby="viewport-keyboard-hint" tabindex="0"></canvas>
 
       <aside class="hud" data-testid="voxel-hud" aria-label="Voxel renderer diagnostics">
         <header>
-          <p class="eyebrow">WP01 · Visible-face baseline</p>
+          <p class="eyebrow" data-testid="lab-heading">WP02 · Sparse chunk fixture</p>
           <h1>Voxel Kernel Lab</h1>
-          <p class="hint">Drag to orbit · Wheel to zoom</p>
+          <p class="hint" id="viewport-keyboard-hint">Drag to orbit · Wheel to zoom · Arrow keys change preset</p>
+          <p class="active-zone" aria-live="polite" aria-atomic="true">Active zone: <strong data-testid="active-zone">—</strong></p>
         </header>
 
         <div class="controls" aria-label="View controls">
@@ -24,22 +25,49 @@
             Wireframe
           </label>
           <label>
+            <input type="checkbox" data-testid="block-edge-toggle" checked />
+            Block edges
+          </label>
+          <label>
             <input type="checkbox" data-testid="normal-toggle" />
             Face normals
+          </label>
+          <label>
+            <input type="checkbox" data-testid="chunk-bounds-toggle" />
+            Chunk bounds
+          </label>
+          <label class="preset-control">
+            Camera preset
+            <select data-testid="camera-preset" aria-label="Camera preset"></select>
           </label>
           <button type="button" data-testid="camera-reset">Reset camera</button>
         </div>
 
         <dl>
+          <div><dt>Lab scene</dt><dd data-testid="metric-lab">—</dd></div>
           <div><dt>Renderer</dt><dd data-testid="metric-renderer">—</dd></div>
-          <div><dt>Volume</dt><dd data-testid="metric-volume">—</dd></div>
-          <div><dt>Occupied</dt><dd data-testid="metric-occupied">—</dd></div>
-          <div><dt>Quads</dt><dd data-testid="metric-quads">—</dd></div>
+          <div><dt>Voxel size</dt><dd data-testid="metric-voxel-size">—</dd></div>
+          <div><dt>World cells</dt><dd data-testid="metric-volume">—</dd></div>
+          <div><dt>World meters</dt><dd data-testid="metric-world-meters">—</dd></div>
+          <div><dt>Chunk edge</dt><dd data-testid="metric-chunk-edge">—</dd></div>
+          <div><dt>Candidate chunks</dt><dd data-testid="metric-candidate-chunks">—</dd></div>
+          <div><dt>Materialized chunks</dt><dd data-testid="metric-materialized-chunks">—</dd></div>
+          <div><dt>Occupied voxels</dt><dd data-testid="metric-occupied">—</dd></div>
+          <div><dt>Exposed quads</dt><dd data-testid="metric-quads">—</dd></div>
           <div><dt>Triangles</dt><dd data-testid="metric-triangles">—</dd></div>
+          <div><dt>Resident chunk meshes</dt><dd data-testid="metric-resident-chunk-meshes">—</dd></div>
           <div><dt>Draw calls</dt><dd data-testid="metric-draw-calls">—</dd></div>
+          <div><dt>Fixture build</dt><dd data-testid="metric-fixture-build">—</dd></div>
+          <div><dt>Halo copy total</dt><dd data-testid="metric-halo-total">—</dd></div>
+          <div><dt>Halo copy p50</dt><dd data-testid="metric-halo-p50">—</dd></div>
+          <div><dt>Halo copy p95</dt><dd data-testid="metric-halo-p95">—</dd></div>
+          <div><dt>Chunk mesh total</dt><dd data-testid="metric-mesh-total">—</dd></div>
+          <div><dt>Chunk mesh p50</dt><dd data-testid="metric-mesh-p50">—</dd></div>
+          <div><dt>Chunk mesh p95</dt><dd data-testid="metric-mesh-p95">—</dd></div>
           <div><dt>Frame current</dt><dd data-testid="metric-frame-current">—</dd></div>
           <div><dt>Frame p50</dt><dd data-testid="metric-frame-p50">—</dd></div>
           <div><dt>Frame p95</dt><dd data-testid="metric-frame-p95">—</dd></div>
+          <div><dt>Active camera preset</dt><dd data-testid="metric-active-preset">—</dd></div>
         </dl>
 
         <p class="telemetry-note" data-testid="telemetry-classification">
