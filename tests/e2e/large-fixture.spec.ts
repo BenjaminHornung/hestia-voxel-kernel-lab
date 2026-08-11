@@ -8,12 +8,18 @@ import {
   LARGE_FIXTURE_VERSION,
   ZONE_IDS,
 } from '../../src/voxel/largeFixture';
+import { WP02_FIXTURE_GOLDEN } from '../contracts/wp02FixtureGolden';
 import { imageDifference, pngDimensions, trackPageFailures } from './support';
 
 const wp02EvidenceDirectory = path.join(process.cwd(), 'evidence', 'wp02');
 
 async function metricNumber(page: Page, testId: string): Promise<number> {
-  return Number((await page.getByTestId(testId).innerText()).replaceAll(',', '').replace(' ms', '').trim());
+  return Number((await page.getByTestId(testId).innerText())
+    .replaceAll(',', '')
+    .replace(' ms', '')
+    .replace(' B', '')
+    .replace(' estimate', '')
+    .trim());
 }
 
 test('renders the large sparse chunk fixture in the production preview', async ({ context, page }, testInfo) => {
@@ -46,6 +52,26 @@ test('renders the large sparse chunk fixture in the production preview', async (
   expect(triangles).toBe(quads * 2);
   expect(resident).toBeGreaterThan(0);
   expect(resident).toBe(materialized);
+  expect(await metricNumber(page, 'metric-candidate-dense-voxel-bytes')).toBe(33_554_432);
+  expect(await metricNumber(page, 'metric-materialized-voxel-payload-bytes')).toBe(1_671_168);
+  expect(await metricNumber(page, 'metric-chunk-metadata-bytes-estimate')).toBeGreaterThan(0);
+  const haloBytes = await metricNumber(page, 'metric-halo-bytes-per-snapshot');
+  expect(haloBytes).toBe(39_304);
+  expect(await metricNumber(page, 'metric-halo-bytes-total-processed')).toBe(haloBytes * materialized);
+  const meshBytes = [
+    await metricNumber(page, 'metric-mesh-position-bytes'),
+    await metricNumber(page, 'metric-mesh-normal-bytes'),
+    await metricNumber(page, 'metric-mesh-index-bytes'),
+    await metricNumber(page, 'metric-mesh-material-id-bytes'),
+  ];
+  expect(await metricNumber(page, 'metric-mesh-total-bytes')).toBe(meshBytes.reduce((sum, value) => sum + value, 0));
+  for (const testId of [
+    'metric-debug-edge-bytes', 'metric-debug-normal-bytes', 'metric-debug-chunk-bounds-bytes',
+    'metric-renderer-color-attribute-bytes',
+  ]) {
+    expect(await metricNumber(page, testId)).toBeGreaterThan(0);
+  }
+  await expect(page.getByTestId('metric-gpu-memory-bytes')).toHaveText('Unknown / unavailable');
 
   for (const testId of [
     'metric-fixture-build', 'metric-halo-total', 'metric-halo-p50', 'metric-halo-p95',
@@ -126,6 +152,10 @@ test('@evidence-wp02 captures curated WP02 views and manifest after warm-up', as
   await expect(app).toHaveAttribute('data-ready', 'true');
   await page.waitForTimeout(3_000);
   await mkdir(wp02EvidenceDirectory, { recursive: true });
+  await page.getByTestId('wireframe-toggle').uncheck();
+  await page.getByTestId('block-edge-toggle').check();
+  await page.getByTestId('normal-toggle').uncheck();
+  await page.getByTestId('chunk-bounds-toggle').uncheck();
 
   const captures = [
     { preset: 'overview', file: 'large-fixture-overview.png' },
@@ -141,11 +171,10 @@ test('@evidence-wp02 captures curated WP02 views and manifest after warm-up', as
   }> = [];
   for (const capture of captures) {
     await page.getByTestId('camera-preset').selectOption(capture.preset);
-    if (capture.preset === 'chunk-seam-closeup') {
-      await page.getByTestId('chunk-bounds-toggle').check();
-    } else {
-      await page.getByTestId('chunk-bounds-toggle').uncheck();
-    }
+    await expect(page.getByTestId('wireframe-toggle')).not.toBeChecked();
+    await expect(page.getByTestId('block-edge-toggle')).toBeChecked();
+    await expect(page.getByTestId('normal-toggle')).not.toBeChecked();
+    await expect(page.getByTestId('chunk-bounds-toggle')).not.toBeChecked();
     await page.waitForTimeout(600);
     const outputPath = path.join(wp02EvidenceDirectory, capture.file);
     await page.screenshot({ path: outputPath });
@@ -174,6 +203,41 @@ test('@evidence-wp02 captures curated WP02 views and manifest after warm-up', as
     occupiedVoxels: await metricNumber(page, 'metric-occupied'),
     exposedQuads: await metricNumber(page, 'metric-quads'),
     triangles: await metricNumber(page, 'metric-triangles'),
+    golden: WP02_FIXTURE_GOLDEN,
+    memory: {
+      classifications: {
+        candidateDenseVoxelBytes: 'theoretical candidate capacity',
+        materializedVoxelPayloadBytes: 'exact resident TypedArray byteLength sum',
+        chunkMetadataBytesEstimate: 'estimate; JavaScript Map/object overhead is not directly measurable',
+        haloBytesPerSnapshot: 'exact Uint8Array byteLength',
+        haloBytesTotalProcessed: 'exact Uint8Array byteLength sum',
+        meshPositionBytes: 'exact Float32Array byteLength sum',
+        meshNormalBytes: 'exact Float32Array byteLength sum',
+        meshIndexBytes: 'exact Uint32Array byteLength sum',
+        meshMaterialIdBytes: 'exact Uint8Array byteLength sum',
+        meshTotalBytes: 'exact neutral mesh TypedArray byteLength sum',
+        debugEdgeBytes: 'exact renderer Float32Array byteLength',
+        debugNormalBytes: 'exact renderer Float32Array byteLength',
+        debugChunkBoundsBytes: 'exact renderer Float32Array byteLength',
+        colorAttributeBytes: 'exact renderer Float32Array byteLength',
+        gpuMemoryBytes: 'unknown / unavailable; no portable WebGL byte source',
+      },
+      candidateDenseVoxelBytes: await metricNumber(page, 'metric-candidate-dense-voxel-bytes'),
+      materializedVoxelPayloadBytes: await metricNumber(page, 'metric-materialized-voxel-payload-bytes'),
+      chunkMetadataBytesEstimate: await metricNumber(page, 'metric-chunk-metadata-bytes-estimate'),
+      haloBytesPerSnapshot: await metricNumber(page, 'metric-halo-bytes-per-snapshot'),
+      haloBytesTotalProcessed: await metricNumber(page, 'metric-halo-bytes-total-processed'),
+      meshPositionBytes: await metricNumber(page, 'metric-mesh-position-bytes'),
+      meshNormalBytes: await metricNumber(page, 'metric-mesh-normal-bytes'),
+      meshIndexBytes: await metricNumber(page, 'metric-mesh-index-bytes'),
+      meshMaterialIdBytes: await metricNumber(page, 'metric-mesh-material-id-bytes'),
+      meshTotalBytes: await metricNumber(page, 'metric-mesh-total-bytes'),
+      debugEdgeBytes: await metricNumber(page, 'metric-debug-edge-bytes'),
+      debugNormalBytes: await metricNumber(page, 'metric-debug-normal-bytes'),
+      debugChunkBoundsBytes: await metricNumber(page, 'metric-debug-chunk-bounds-bytes'),
+      colorAttributeBytes: await metricNumber(page, 'metric-renderer-color-attribute-bytes'),
+      gpuMemoryBytes: await page.getByTestId('metric-gpu-memory-bytes').innerText(),
+    },
     screenshots: screenshotEntries,
     diagnostics: {
       classification: await page.getByTestId('telemetry-classification').innerText(),
@@ -200,6 +264,16 @@ test('@evidence-wp02 captures curated WP02 views and manifest after warm-up', as
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   const parsed = JSON.parse(await readFile(manifestPath, 'utf8')) as typeof manifest;
   expect(parsed.screenshots).toEqual(screenshotEntries);
+  expect(parsed.fixtureByteWorldHash).toBe(WP02_FIXTURE_GOLDEN.worldHash);
+  expect(parsed.materializedChunks).toBe(WP02_FIXTURE_GOLDEN.materializedChunks);
+  expect(parsed.occupiedVoxels).toBe(WP02_FIXTURE_GOLDEN.occupiedVoxels);
+  expect(parsed.exposedQuads).toBe(WP02_FIXTURE_GOLDEN.exposedQuads);
+  expect(parsed.triangles).toBe(WP02_FIXTURE_GOLDEN.triangles);
+  expect(parsed.memory.meshTotalBytes).toBe(
+    parsed.memory.meshPositionBytes + parsed.memory.meshNormalBytes
+      + parsed.memory.meshIndexBytes + parsed.memory.meshMaterialIdBytes,
+  );
+  expect(parsed.memory.gpuMemoryBytes).toBe('Unknown / unavailable');
   expect(parsed.screenshots.every(({ sha256 }) => /^[0-9a-f]{64}$/.test(sha256))).toBe(true);
   expect((await readdir(wp02EvidenceDirectory)).sort()).toEqual([
     'checkerboard-closeup.png',

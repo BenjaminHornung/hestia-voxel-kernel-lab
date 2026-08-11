@@ -34,44 +34,110 @@
   "occupiedVoxels": 97989,
   "exposedQuads": 59350,
   "triangles": 118700,
+  "golden": {
+    "id": "wp02-large-sparse-fixture",
+    "version": 1,
+    "seed": 1212502868,
+    "worldHash": "fnv1a32:b58829bb",
+    "materializedChunks": 51,
+    "occupiedVoxels": 97989,
+    "exposedQuads": 59350,
+    "triangles": 118700,
+    "zoneIds": [
+      "solid-cube",
+      "hollow-shell",
+      "staircase",
+      "hard-voxel-sphere",
+      "tunnel",
+      "checkerboard",
+      "sparse-10-percent",
+      "random-50-percent",
+      "multi-component-field"
+    ],
+    "zoneHashes": {
+      "solid-cube": "fnv1a32:10407d05",
+      "hollow-shell": "fnv1a32:c55f2555",
+      "staircase": "fnv1a32:e6c1d5c5",
+      "hard-voxel-sphere": "fnv1a32:72435dd5",
+      "tunnel": "fnv1a32:d15bdfc5",
+      "checkerboard": "fnv1a32:3792d8c5",
+      "sparse-10-percent": "fnv1a32:20cfee35",
+      "random-50-percent": "fnv1a32:f4d8a372",
+      "multi-component-field": "fnv1a32:03f8db65"
+    }
+  },
+  "memory": {
+    "classifications": {
+      "candidateDenseVoxelBytes": "theoretical candidate capacity",
+      "materializedVoxelPayloadBytes": "exact resident TypedArray byteLength sum",
+      "chunkMetadataBytesEstimate": "estimate; JavaScript Map/object overhead is not directly measurable",
+      "haloBytesPerSnapshot": "exact Uint8Array byteLength",
+      "haloBytesTotalProcessed": "exact Uint8Array byteLength sum",
+      "meshPositionBytes": "exact Float32Array byteLength sum",
+      "meshNormalBytes": "exact Float32Array byteLength sum",
+      "meshIndexBytes": "exact Uint32Array byteLength sum",
+      "meshMaterialIdBytes": "exact Uint8Array byteLength sum",
+      "meshTotalBytes": "exact neutral mesh TypedArray byteLength sum",
+      "debugEdgeBytes": "exact renderer Float32Array byteLength",
+      "debugNormalBytes": "exact renderer Float32Array byteLength",
+      "debugChunkBoundsBytes": "exact renderer Float32Array byteLength",
+      "colorAttributeBytes": "exact renderer Float32Array byteLength",
+      "gpuMemoryBytes": "unknown / unavailable; no portable WebGL byte source"
+    },
+    "candidateDenseVoxelBytes": 33554432,
+    "materializedVoxelPayloadBytes": 1671168,
+    "chunkMetadataBytesEstimate": 5110,
+    "haloBytesPerSnapshot": 39304,
+    "haloBytesTotalProcessed": 2004504,
+    "meshPositionBytes": 2848800,
+    "meshNormalBytes": 2848800,
+    "meshIndexBytes": 1424400,
+    "meshMaterialIdBytes": 237400,
+    "meshTotalBytes": 7359400,
+    "debugEdgeBytes": 2692944,
+    "debugNormalBytes": 1424400,
+    "debugChunkBoundsBytes": 14688,
+    "colorAttributeBytes": 2848800,
+    "gpuMemoryBytes": "Unknown / unavailable"
+  },
   "screenshots": [
     {
       "path": "evidence/wp02/large-fixture-overview.png",
       "cameraPreset": "overview",
       "width": 1920,
       "height": 1080,
-      "sha256": "3de4e5b981df7308c897780ca5a641e0b99d212bcc687ff286fd3d52d9d3ed5e"
+      "sha256": "4f97b7a8521147bf975bf6d35e5d494cd7c5e9b6de1b6dd62b2ce48f70f2179d"
     },
     {
       "path": "evidence/wp02/chunk-seam-closeup.png",
       "cameraPreset": "chunk-seam-closeup",
       "width": 1920,
       "height": 1080,
-      "sha256": "7c3c6f181b2206d1e6c5c1d8f9377ba12a8e31960ed0dd73638418b37919ccf7"
+      "sha256": "04c65ad1545f01a5105ae80479ea92ad7d95b97f5897cd2c447485ae977f0fdb"
     },
     {
       "path": "evidence/wp02/checkerboard-closeup.png",
       "cameraPreset": "checkerboard",
       "width": 1920,
       "height": 1080,
-      "sha256": "18dc8eae409b378c7ee6140b6430b591b53065821e039aaa3e4123d09703249a"
+      "sha256": "bf5a87404d5448c7943c5da921c54260a19bf5f6a930a0b3ac183ab7fb511e02"
     }
   ],
   "diagnostics": {
     "classification": "120-frame rolling diagnostics · startup values are not a steady-state benchmark.",
-    "fixtureBuildMs": 96.3,
+    "fixtureBuildMs": 200.9,
     "haloCopyMs": {
-      "total": 241.7,
-      "p50": 4.6,
-      "p95": 6.2
+      "total": 407.9,
+      "p50": 7.8,
+      "p95": 9.5
     },
     "chunkMeshMs": {
-      "total": 67.7,
-      "p50": 0.8,
-      "p95": 5.1
+      "total": 105.8,
+      "p50": 1.2,
+      "p95": 8.1
     },
     "frameMs": {
-      "current": 16.7,
+      "current": 16.8,
       "p50": 16.7,
       "p95": 16.8
     },

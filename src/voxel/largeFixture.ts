@@ -81,15 +81,6 @@ function toMeters([x, y, z]: Vec3): Vec3 {
   return [x * VOXEL_SIZE_METERS, y * VOXEL_SIZE_METERS, z * VOXEL_SIZE_METERS];
 }
 
-function fnvAdd(hash: number, value: number): number {
-  hash ^= value & 0xff;
-  hash = Math.imul(hash, 0x01000193) >>> 0;
-  hash ^= (value >>> 8) & 0xff;
-  hash = Math.imul(hash, 0x01000193) >>> 0;
-  hash ^= (value >>> 16) & 0xff;
-  return Math.imul(hash, 0x01000193) >>> 0;
-}
-
 function seededHash(x: number, y: number, z: number, seed: number): number {
   let hash = seed | 0;
   hash = Math.imul(hash ^ x, 0x45d9f3b);
@@ -101,9 +92,8 @@ function seededHash(x: number, y: number, z: number, seed: number): number {
 
 class FixtureAssembler {
   readonly #chunks = new Map<ChunkKey, { readonly coord: ChunkCoord; readonly voxels: Uint8Array }>();
-  readonly #zoneHashes = Object.fromEntries(ZONE_IDS.map((id) => [id, 0x811c9dc5])) as Record<FixtureZoneId, number>;
 
-  set(zoneId: FixtureZoneId, x: number, y: number, z: number, material: Exclude<VoxelMaterial, VoxelMaterial.Air>): void {
+  set(x: number, y: number, z: number, material: Exclude<VoxelMaterial, VoxelMaterial.Air>): void {
     if (
       x < WORLD_CELL_BOUNDS.min.x || x >= WORLD_CELL_BOUNDS.maxExclusive.x
       || y < WORLD_CELL_BOUNDS.min.y || y >= WORLD_CELL_BOUNDS.maxExclusive.y
@@ -119,27 +109,15 @@ class FixtureAssembler {
       this.#chunks.set(key, payload);
     }
     payload.voxels[voxelIndex(local.x, local.y, local.z)] = material;
-    let hash = this.#zoneHashes[zoneId];
-    hash = fnvAdd(hash, x);
-    hash = fnvAdd(hash, y);
-    hash = fnvAdd(hash, z);
-    this.#zoneHashes[zoneId] = fnvAdd(hash, material);
   }
 
   chunks(): readonly ChunkPayload[] {
     return [...this.#chunks.values()];
   }
-
-  zoneHashes(): Readonly<Record<FixtureZoneId, string>> {
-    return Object.fromEntries(
-      ZONE_IDS.map((id) => [id, `fnv1a32:${this.#zoneHashes[id].toString(16).padStart(8, '0')}`]),
-    ) as Readonly<Record<FixtureZoneId, string>>;
-  }
 }
 
 function fillBounds(
   assembler: FixtureAssembler,
-  zoneId: FixtureZoneId,
   bounds: AxisAlignedBounds,
   material: Exclude<VoxelMaterial, VoxelMaterial.Air>,
   include: (x: number, y: number, z: number) => boolean = () => true,
@@ -148,7 +126,7 @@ function fillBounds(
     for (let y = bounds.min[1]; y < bounds.maxExclusive[1]; y += 1) {
       for (let x = bounds.min[0]; x < bounds.maxExclusive[0]; x += 1) {
         if (include(x, y, z)) {
-          assembler.set(zoneId, x, y, z, material);
+          assembler.set(x, y, z, material);
         }
       }
     }
@@ -156,10 +134,10 @@ function fillBounds(
 }
 
 function buildZones(assembler: FixtureAssembler, seed: number): void {
-  fillBounds(assembler, 'solid-cube', ZONE_DEFINITIONS[0]!.bounds, VoxelMaterial.Platform);
+  fillBounds(assembler, ZONE_DEFINITIONS[0]!.bounds, VoxelMaterial.Platform);
 
   const shell = ZONE_DEFINITIONS[1]!.bounds;
-  fillBounds(assembler, 'hollow-shell', shell, VoxelMaterial.Shell, (x, y, z) => {
+  fillBounds(assembler, shell, VoxelMaterial.Shell, (x, y, z) => {
     const boundary = x === shell.min[0] || x === shell.maxExclusive[0] - 1
       || y === shell.min[1] || y === shell.maxExclusive[1] - 1
       || z === shell.min[2] || z === shell.maxExclusive[2] - 1;
@@ -168,26 +146,26 @@ function buildZones(assembler: FixtureAssembler, seed: number): void {
   });
 
   const stairs = ZONE_DEFINITIONS[2]!.bounds;
-  fillBounds(assembler, 'staircase', stairs, VoxelMaterial.Stairs, (x, y) => y < Math.floor((x - stairs.min[0]) / 2) + 1);
+  fillBounds(assembler, stairs, VoxelMaterial.Stairs, (x, y) => y < Math.floor((x - stairs.min[0]) / 2) + 1);
 
   const sphere = ZONE_DEFINITIONS[3]!.bounds;
-  fillBounds(assembler, 'hard-voxel-sphere', sphere, VoxelMaterial.Roof, (x, y, z) => {
+  fillBounds(assembler, sphere, VoxelMaterial.Roof, (x, y, z) => {
     const dx = x + 160;
     const dy = y - 22;
     return dx * dx + dy * dy + z * z <= 18 ** 2;
   });
 
   const tunnel = ZONE_DEFINITIONS[4]!.bounds;
-  fillBounds(assembler, 'tunnel', tunnel, VoxelMaterial.Shell, (x, y) => (
+  fillBounds(assembler, tunnel, VoxelMaterial.Shell, (x, y) => (
     x < tunnel.min[0] + 2 || x >= tunnel.maxExclusive[0] - 2
     || y < tunnel.min[1] + 2 || y >= tunnel.maxExclusive[1] - 2
   ));
 
-  fillBounds(assembler, 'checkerboard', ZONE_DEFINITIONS[5]!.bounds, VoxelMaterial.Roof, (x, y, z) => (x + y + z) % 2 === 0);
-  fillBounds(assembler, 'sparse-10-percent', ZONE_DEFINITIONS[6]!.bounds, VoxelMaterial.Stairs, (x, y, z) => (
+  fillBounds(assembler, ZONE_DEFINITIONS[5]!.bounds, VoxelMaterial.Roof, (x, y, z) => (x + y + z) % 2 === 0);
+  fillBounds(assembler, ZONE_DEFINITIONS[6]!.bounds, VoxelMaterial.Stairs, (x, y, z) => (
     seededHash(x, y, z, seed ^ 0x10) % 100 < 10
   ));
-  fillBounds(assembler, 'random-50-percent', ZONE_DEFINITIONS[7]!.bounds, VoxelMaterial.Platform, (x, y, z) => (
+  fillBounds(assembler, ZONE_DEFINITIONS[7]!.bounds, VoxelMaterial.Platform, (x, y, z) => (
     seededHash(x, y, z, seed ^ 0x50) % 2 === 0
   ));
 
@@ -199,7 +177,7 @@ function buildZones(assembler: FixtureAssembler, seed: number): void {
       for (let y = 0; y < height; y += 1) {
         for (let dz = 0; dz < 2; dz += 1) {
           for (let dx = 0; dx < 2; dx += 1) {
-            assembler.set('multi-component-field', x + dx, y, z + dz, VoxelMaterial.Stairs);
+            assembler.set(x + dx, y, z + dz, VoxelMaterial.Stairs);
           }
         }
       }
@@ -209,11 +187,27 @@ function buildZones(assembler: FixtureAssembler, seed: number): void {
     for (let dz = 0; dz < 4; dz += 1) {
       for (let dy = 0; dy < 4; dy += 1) {
         for (let dx = 0; dx < 4; dx += 1) {
-          assembler.set('multi-component-field', x + dx, y + dy, z + dz, VoxelMaterial.Shell);
+          assembler.set(x + dx, y + dy, z + dz, VoxelMaterial.Shell);
         }
       }
     }
   }
+}
+
+function createZoneHashes(world: SparseChunkWorld): Readonly<Record<FixtureZoneId, string>> {
+  const hashes = ZONE_DEFINITIONS.map(({ id, bounds }) => {
+    let hash = 0x811c9dc5;
+    for (let z = bounds.min[2]; z < bounds.maxExclusive[2]; z += 1) {
+      for (let y = bounds.min[1]; y < bounds.maxExclusive[1]; y += 1) {
+        for (let x = bounds.min[0]; x < bounds.maxExclusive[0]; x += 1) {
+          hash ^= world.getCell(x, y, z);
+          hash = Math.imul(hash, 0x01000193) >>> 0;
+        }
+      }
+    }
+    return [id, `fnv1a32:${hash.toString(16).padStart(8, '0')}`] as const;
+  });
+  return Object.fromEntries(hashes) as Readonly<Record<FixtureZoneId, string>>;
 }
 
 function createZones(): readonly FixtureZone[] {
@@ -282,7 +276,7 @@ export function createLargeChunkFixture(seed = DEFAULT_FIXTURE_SEED): LargeChunk
     world,
     worldHash: world.signature(),
     zones,
-    zoneHashes: assembler.zoneHashes(),
+    zoneHashes: createZoneHashes(world),
     cameraPresets: [overview, ...zones.map((zone) => zone.cameraPreset), seam],
     buildDurationMs: performance.now() - started,
   };

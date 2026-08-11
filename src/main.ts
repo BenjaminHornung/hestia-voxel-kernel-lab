@@ -1,4 +1,5 @@
 import './style.css';
+import { candidateDenseVoxelBytes, summarizeMeshMemory } from './diagnostics/memory';
 import { summarizeDurations } from './diagnostics/telemetry';
 import { ThreeVoxelRenderer, type VoxelLabScene } from './render-three/threeVoxelRenderer';
 import {
@@ -11,6 +12,7 @@ import {
 import { createChunkHaloSnapshot, createVolumeHaloSnapshot } from './voxel/chunkHalo';
 import { createVisibleFaceFixture, FIXTURE_SHA256 } from './voxel/fixtures';
 import { createLargeChunkFixture } from './voxel/largeFixture';
+import { estimateChunkMetadataBytes } from './voxel/sparseChunkWorld';
 import { meshChunkVisibleFaces } from './voxel/visibleFaceMesher';
 
 const root = document.querySelector<HTMLElement>('#voxel-app');
@@ -39,6 +41,7 @@ function createWp01Scene(): VoxelLabScene {
   const meshStarted = performance.now();
   const chunk = meshChunkVisibleFaces(halo);
   const meshTiming = summarizeDurations([performance.now() - meshStarted]);
+  const meshMemory = summarizeMeshMemory([chunk]);
   return {
     lab: 'wp01',
     sceneLabel: 'WP01 · Visible-face baseline',
@@ -52,6 +55,14 @@ function createWp01Scene(): VoxelLabScene {
     fixtureBuildDurationMs,
     haloTiming,
     meshTiming,
+    memory: {
+      candidateDenseVoxelBytes: candidateDenseVoxelBytes(1),
+      materializedVoxelPayloadBytes: volume.storageByteLength,
+      chunkMetadataBytesEstimate: estimateChunkMetadataBytes('0,0,0'),
+      haloBytesPerSnapshot: halo.voxels.byteLength,
+      haloBytesTotalProcessed: halo.voxels.byteLength,
+      ...meshMemory,
+    },
     chunks: [chunk],
     cameraPresets: [{
       id: 'wp01',
@@ -69,15 +80,20 @@ function createWp02Scene(): VoxelLabScene {
   const fixture = createLargeChunkFixture();
   const haloSamples: number[] = [];
   const meshSamples: number[] = [];
+  let haloBytesTotalProcessed = 0;
+  let haloBytesPerSnapshot = 0;
   const chunks = fixture.world.chunkCoords().map((coord) => {
     const haloStarted = performance.now();
     const halo = createChunkHaloSnapshot(fixture.world, coord);
+    haloBytesPerSnapshot = halo.voxels.byteLength;
+    haloBytesTotalProcessed += halo.voxels.byteLength;
     haloSamples.push(performance.now() - haloStarted);
     const meshStarted = performance.now();
     const mesh = meshChunkVisibleFaces(halo);
     meshSamples.push(performance.now() - meshStarted);
     return mesh;
   });
+  const meshMemory = summarizeMeshMemory(chunks);
   return {
     lab: 'wp02',
     sceneLabel: 'WP02 · Large sparse chunk fixture',
@@ -91,6 +107,14 @@ function createWp02Scene(): VoxelLabScene {
     fixtureBuildDurationMs: fixture.buildDurationMs,
     haloTiming: summarizeDurations(haloSamples),
     meshTiming: summarizeDurations(meshSamples),
+    memory: {
+      candidateDenseVoxelBytes: candidateDenseVoxelBytes(),
+      materializedVoxelPayloadBytes: fixture.world.materializedVoxelPayloadBytes,
+      chunkMetadataBytesEstimate: fixture.world.chunkMetadataBytesEstimate,
+      haloBytesPerSnapshot,
+      haloBytesTotalProcessed,
+      ...meshMemory,
+    },
     chunks,
     cameraPresets: fixture.cameraPresets,
     zoneCount: fixture.zones.length,

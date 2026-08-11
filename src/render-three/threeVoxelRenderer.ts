@@ -14,10 +14,12 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import type { MemoryDiagnostics, SceneMemoryDiagnostics } from '../diagnostics/memory';
 import { FrameIntervalTelemetry, type DurationSummary } from '../diagnostics/telemetry';
 import { VOLUME_SIZE, VoxelMaterial } from '../voxel/constants';
 import { MATERIAL_COLORS } from '../voxel/palette';
 import type { ChunkVisibleFaceMesh, Vec3, VisibleFaceMesh } from '../voxel/types';
+import { createWorldEdgePositions } from './worldEdgeAggregation';
 
 export interface RendererCameraPreset {
   readonly id: string;
@@ -44,6 +46,7 @@ export interface VoxelLabScene {
   readonly cameraPresets: readonly RendererCameraPreset[];
   readonly zoneCount: number;
   readonly worldHash: string;
+  readonly memory: SceneMemoryDiagnostics;
 }
 
 interface HudElements {
@@ -72,6 +75,21 @@ interface HudElements {
   readonly p95: HTMLElement;
   readonly activePreset: HTMLElement;
   readonly activeZone: HTMLElement;
+  readonly candidateDenseVoxelBytes: HTMLElement;
+  readonly materializedVoxelPayloadBytes: HTMLElement;
+  readonly chunkMetadataBytesEstimate: HTMLElement;
+  readonly haloBytesPerSnapshot: HTMLElement;
+  readonly haloBytesTotalProcessed: HTMLElement;
+  readonly meshPositionBytes: HTMLElement;
+  readonly meshNormalBytes: HTMLElement;
+  readonly meshIndexBytes: HTMLElement;
+  readonly meshMaterialIdBytes: HTMLElement;
+  readonly meshTotalBytes: HTMLElement;
+  readonly debugEdgeBytes: HTMLElement;
+  readonly debugNormalBytes: HTMLElement;
+  readonly debugChunkBoundsBytes: HTMLElement;
+  readonly colorAttributeBytes: HTMLElement;
+  readonly gpuMemoryBytes: HTMLElement;
   readonly status: HTMLElement;
 }
 
@@ -81,34 +99,6 @@ function requiredElement<T extends Element>(root: ParentNode, selector: string):
     throw new Error(`Required element not found: ${selector}`);
   }
   return element;
-}
-
-function createEdgePositions(positions: Float32Array): Float32Array {
-  const edges = new Map<string, readonly [number, number]>();
-  const edgeCorners = [[0, 1], [1, 2], [2, 3], [3, 0]] as const;
-
-  for (let quad = 0; quad < positions.length / 12; quad += 1) {
-    const baseVertex = quad * 4;
-    for (const [startCorner, endCorner] of edgeCorners) {
-      const start = baseVertex + startCorner;
-      const end = baseVertex + endCorner;
-      const startOffset = start * 3;
-      const endOffset = end * 3;
-      const startKey = `${positions[startOffset]},${positions[startOffset + 1]},${positions[startOffset + 2]}`;
-      const endKey = `${positions[endOffset]},${positions[endOffset + 1]},${positions[endOffset + 2]}`;
-      const key = startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
-      edges.set(key, [start, end]);
-    }
-  }
-
-  const lines = new Float32Array(edges.size * 6);
-  let offset = 0;
-  for (const [start, end] of edges.values()) {
-    lines.set(positions.subarray(start * 3, start * 3 + 3), offset);
-    lines.set(positions.subarray(end * 3, end * 3 + 3), offset + 3);
-    offset += 6;
-  }
-  return lines;
 }
 
 function createNormalPositions(mesh: VisibleFaceMesh): Float32Array {
@@ -130,22 +120,27 @@ function createNormalPositions(mesh: VisibleFaceMesh): Float32Array {
   return lines;
 }
 
-function appendTransformedPositions(
-  target: number[],
-  positions: Float32Array,
-  chunk: ChunkVisibleFaceMesh,
+export function createWorldNormalPositions(
+  chunks: readonly ChunkVisibleFaceMesh[],
   voxelSizeMeters: number,
-): void {
-  const originX = chunk.coord.x * VOLUME_SIZE * voxelSizeMeters;
-  const originY = chunk.coord.y * VOLUME_SIZE * voxelSizeMeters;
-  const originZ = chunk.coord.z * VOLUME_SIZE * voxelSizeMeters;
-  for (let offset = 0; offset < positions.length; offset += 3) {
-    target.push(
-      positions[offset]! * voxelSizeMeters + originX,
-      positions[offset + 1]! * voxelSizeMeters + originY,
-      positions[offset + 2]! * voxelSizeMeters + originZ,
-    );
+): Float32Array {
+  const positions: number[] = [];
+  for (const chunk of chunks) {
+    const localPositions = createNormalPositions(chunk);
+    const origin = [
+      chunk.coord.x * VOLUME_SIZE * voxelSizeMeters,
+      chunk.coord.y * VOLUME_SIZE * voxelSizeMeters,
+      chunk.coord.z * VOLUME_SIZE * voxelSizeMeters,
+    ];
+    for (let offset = 0; offset < localPositions.length; offset += 3) {
+      positions.push(
+        localPositions[offset]! * voxelSizeMeters + origin[0]!,
+        localPositions[offset + 1]! * voxelSizeMeters + origin[1]!,
+        localPositions[offset + 2]! * voxelSizeMeters + origin[2]!,
+      );
+    }
   }
+  return new Float32Array(positions);
 }
 
 function createChunkBoundsPositions(chunks: readonly ChunkVisibleFaceMesh[], voxelSizeMeters: number): Float32Array {
@@ -270,8 +265,7 @@ export class ThreeVoxelRenderer {
       polygonOffsetUnits: 1,
     });
 
-    const edgePositions: number[] = [];
-    const normalPositions: number[] = [];
+    let colorAttributeBytes = 0;
     for (const chunk of data.chunks) {
       if (chunk.quadCount === 0) {
         continue;
@@ -279,7 +273,9 @@ export class ThreeVoxelRenderer {
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new BufferAttribute(chunk.positions, 3));
       geometry.setAttribute('normal', new BufferAttribute(chunk.normals, 3));
-      geometry.setAttribute('color', new BufferAttribute(createVertexColors(chunk.materialIds), 3));
+      const colors = createVertexColors(chunk.materialIds);
+      colorAttributeBytes += colors.byteLength;
+      geometry.setAttribute('color', new BufferAttribute(colors, 3));
       geometry.setIndex(new BufferAttribute(chunk.indices, 1));
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
@@ -293,25 +289,34 @@ export class ThreeVoxelRenderer {
       scene.add(mesh);
       this.#meshGeometries.push(geometry);
       this.#voxelMeshes.push(mesh);
-      appendTransformedPositions(edgePositions, createEdgePositions(chunk.positions), chunk, data.voxelSizeMeters);
-      appendTransformedPositions(normalPositions, createNormalPositions(chunk), chunk, data.voxelSizeMeters);
     }
 
+    const edgePositions = createWorldEdgePositions(data.chunks, data.voxelSizeMeters);
+    const normalPositionArray = createWorldNormalPositions(data.chunks, data.voxelSizeMeters);
     this.#edgeGeometry = new BufferGeometry();
-    this.#edgeGeometry.setAttribute('position', new BufferAttribute(new Float32Array(edgePositions), 3));
+    this.#edgeGeometry.setAttribute('position', new BufferAttribute(edgePositions, 3));
     this.#edgeMaterial = new LineBasicMaterial({ color: 0x111820, transparent: true, opacity: 0.88 });
     this.#edgeLines = new LineSegments(this.#edgeGeometry, this.#edgeMaterial);
     scene.add(this.#edgeLines);
 
     this.#normalGeometry = new BufferGeometry();
-    this.#normalGeometry.setAttribute('position', new BufferAttribute(new Float32Array(normalPositions), 3));
+    this.#normalGeometry.setAttribute('position', new BufferAttribute(normalPositionArray, 3));
     this.#normalMaterial = new LineBasicMaterial({ color: 0xa33d0b });
     this.#normalLines = new LineSegments(this.#normalGeometry, this.#normalMaterial);
     this.#normalLines.visible = false;
     scene.add(this.#normalLines);
 
     this.#chunkBoundsGeometry = new BufferGeometry();
-    this.#chunkBoundsGeometry.setAttribute('position', new BufferAttribute(createChunkBoundsPositions(data.chunks, data.voxelSizeMeters), 3));
+    const chunkBoundsPositions = createChunkBoundsPositions(data.chunks, data.voxelSizeMeters);
+    const memory: MemoryDiagnostics = {
+      ...data.memory,
+      debugEdgeBytes: edgePositions.byteLength,
+      debugNormalBytes: normalPositionArray.byteLength,
+      debugChunkBoundsBytes: chunkBoundsPositions.byteLength,
+      colorAttributeBytes,
+      gpuMemoryBytes: null,
+    };
+    this.#chunkBoundsGeometry.setAttribute('position', new BufferAttribute(chunkBoundsPositions, 3));
     this.#chunkBoundsMaterial = new LineBasicMaterial({ color: 0x246b91, transparent: true, opacity: 0.78 });
     this.#chunkBoundsLines = new LineSegments(this.#chunkBoundsGeometry, this.#chunkBoundsMaterial);
     this.#chunkBoundsLines.visible = false;
@@ -359,6 +364,21 @@ export class ThreeVoxelRenderer {
       p95: requiredElement(root, '[data-testid="metric-frame-p95"]'),
       activePreset: requiredElement(root, '[data-testid="metric-active-preset"]'),
       activeZone: requiredElement(root, '[data-testid="active-zone"]'),
+      candidateDenseVoxelBytes: requiredElement(root, '[data-testid="metric-candidate-dense-voxel-bytes"]'),
+      materializedVoxelPayloadBytes: requiredElement(root, '[data-testid="metric-materialized-voxel-payload-bytes"]'),
+      chunkMetadataBytesEstimate: requiredElement(root, '[data-testid="metric-chunk-metadata-bytes-estimate"]'),
+      haloBytesPerSnapshot: requiredElement(root, '[data-testid="metric-halo-bytes-per-snapshot"]'),
+      haloBytesTotalProcessed: requiredElement(root, '[data-testid="metric-halo-bytes-total-processed"]'),
+      meshPositionBytes: requiredElement(root, '[data-testid="metric-mesh-position-bytes"]'),
+      meshNormalBytes: requiredElement(root, '[data-testid="metric-mesh-normal-bytes"]'),
+      meshIndexBytes: requiredElement(root, '[data-testid="metric-mesh-index-bytes"]'),
+      meshMaterialIdBytes: requiredElement(root, '[data-testid="metric-mesh-material-id-bytes"]'),
+      meshTotalBytes: requiredElement(root, '[data-testid="metric-mesh-total-bytes"]'),
+      debugEdgeBytes: requiredElement(root, '[data-testid="metric-debug-edge-bytes"]'),
+      debugNormalBytes: requiredElement(root, '[data-testid="metric-debug-normal-bytes"]'),
+      debugChunkBoundsBytes: requiredElement(root, '[data-testid="metric-debug-chunk-bounds-bytes"]'),
+      colorAttributeBytes: requiredElement(root, '[data-testid="metric-renderer-color-attribute-bytes"]'),
+      gpuMemoryBytes: requiredElement(root, '[data-testid="metric-gpu-memory-bytes"]'),
       status: requiredElement(root, '[data-testid="app-status"]'),
     };
 
@@ -366,6 +386,7 @@ export class ThreeVoxelRenderer {
     const triangles = data.chunks.reduce((total, chunk) => total + chunk.triangleCount, 0);
     const formatVec = (value: Vec3): string => value.join(' × ');
     const formatDuration = (value: number): string => `${value.toFixed(1)} ms`;
+    const formatBytes = (value: number): string => `${value.toLocaleString('en-US')} B`;
     this.#hud.lab.textContent = data.sceneLabel;
     this.#hud.renderer.textContent = 'Three/WebGL2 · Visible Faces';
     this.#hud.volume.textContent = formatVec(data.worldCells);
@@ -377,6 +398,21 @@ export class ThreeVoxelRenderer {
     this.#hud.occupied.textContent = data.occupiedVoxels.toLocaleString('en-US');
     this.#hud.quads.textContent = quads.toLocaleString('en-US');
     this.#hud.triangles.textContent = triangles.toLocaleString('en-US');
+    this.#hud.candidateDenseVoxelBytes.textContent = formatBytes(memory.candidateDenseVoxelBytes);
+    this.#hud.materializedVoxelPayloadBytes.textContent = formatBytes(memory.materializedVoxelPayloadBytes);
+    this.#hud.chunkMetadataBytesEstimate.textContent = `${formatBytes(memory.chunkMetadataBytesEstimate)} estimate`;
+    this.#hud.haloBytesPerSnapshot.textContent = formatBytes(memory.haloBytesPerSnapshot);
+    this.#hud.haloBytesTotalProcessed.textContent = formatBytes(memory.haloBytesTotalProcessed);
+    this.#hud.meshPositionBytes.textContent = formatBytes(memory.meshPositionBytes);
+    this.#hud.meshNormalBytes.textContent = formatBytes(memory.meshNormalBytes);
+    this.#hud.meshIndexBytes.textContent = formatBytes(memory.meshIndexBytes);
+    this.#hud.meshMaterialIdBytes.textContent = formatBytes(memory.meshMaterialIdBytes);
+    this.#hud.meshTotalBytes.textContent = formatBytes(memory.meshTotalBytes);
+    this.#hud.debugEdgeBytes.textContent = formatBytes(memory.debugEdgeBytes);
+    this.#hud.debugNormalBytes.textContent = formatBytes(memory.debugNormalBytes);
+    this.#hud.debugChunkBoundsBytes.textContent = formatBytes(memory.debugChunkBoundsBytes);
+    this.#hud.colorAttributeBytes.textContent = formatBytes(memory.colorAttributeBytes);
+    this.#hud.gpuMemoryBytes.textContent = memory.gpuMemoryBytes === null ? 'Unknown / unavailable' : formatBytes(memory.gpuMemoryBytes);
     this.#hud.residentChunkMeshes.textContent = this.#voxelMeshes.length.toLocaleString('en-US');
     this.#hud.fixtureBuild.textContent = formatDuration(data.fixtureBuildDurationMs);
     this.#hud.haloTotal.textContent = formatDuration(data.haloTiming.total);

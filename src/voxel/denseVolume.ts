@@ -4,6 +4,7 @@ import { voxelIndex } from './coordinates';
 export class DenseVoxelVolume {
   readonly size = VOLUME_SIZE;
   readonly occupiedCount: number;
+  readonly storageByteLength: number;
   readonly #voxels: Uint8Array;
 
   constructor(voxels: Uint8Array = new Uint8Array(VOLUME_VOXEL_COUNT)) {
@@ -15,6 +16,7 @@ export class DenseVoxelVolume {
     }
 
     this.#voxels = voxels.slice();
+    this.storageByteLength = this.#voxels.byteLength;
     this.occupiedCount = this.#voxels.reduce(
       (count, material) => count + Number(material !== VoxelMaterial.Air),
       0,

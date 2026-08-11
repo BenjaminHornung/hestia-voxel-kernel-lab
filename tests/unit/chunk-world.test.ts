@@ -71,6 +71,8 @@ describe('SparseChunkWorld', () => {
     snapshot.voxels[voxelIndex(1, 2, 3)] = VoxelMaterial.Roof;
     expect(world.getCell(1, 2, 3)).toBe(VoxelMaterial.Stairs);
     expect(world.materializedChunkCount).toBe(1);
+    expect(world.materializedVoxelPayloadBytes).toBe(VOLUME_VOXEL_COUNT);
+    expect(world.chunkMetadataBytesEstimate).toBeGreaterThan(0);
     expect(world.occupiedCount).toBe(1);
   });
 
@@ -153,5 +155,15 @@ describe('chunk halo and seam meshing', () => {
     expect(first.normals).toEqual(second.normals);
     expect(first.indices).toEqual(second.indices);
     expect(first.materialIds).toEqual(second.materialIds);
+  });
+
+  it('rejects malformed halo products at the mesher boundary', () => {
+    const valid = createChunkHaloSnapshot(new SparseChunkWorld(), ORIGIN);
+    expect(() => meshChunkVisibleFaces({ ...valid, key: '1,0,0' })).toThrow(/does not match/);
+    expect(() => meshChunkVisibleFaces({ ...valid, coord: { x: 0.5, y: 0, z: 0 } })).toThrow(/safe integer/);
+    expect(() => meshChunkVisibleFaces({ ...valid, voxels: valid.voxels.slice(1) })).toThrow(/halo snapshot/);
+    const invalidMaterial = valid.voxels.slice();
+    invalidMaterial[0] = VoxelMaterial.Roof + 1;
+    expect(() => meshChunkVisibleFaces({ ...valid, voxels: invalidMaterial })).toThrow(/invalid voxel material/);
   });
 });

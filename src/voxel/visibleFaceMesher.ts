@@ -1,5 +1,6 @@
 import { VOLUME_SIZE, VoxelMaterial } from './constants';
 import { haloIndex, createVolumeHaloSnapshot, type ChunkHaloSnapshot } from './chunkHalo';
+import { chunkCoordToKey } from './coordinates';
 import type { DenseVoxelVolume } from './denseVolume';
 import type { ChunkVisibleFaceMesh, Vec3, VisibleFaceMesh } from './types';
 
@@ -26,8 +27,17 @@ export function meshVisibleFaces(volume: DenseVoxelVolume): VisibleFaceMesh {
 }
 
 export function meshChunkVisibleFaces(halo: ChunkHaloSnapshot): ChunkVisibleFaceMesh {
+  const expectedKey = chunkCoordToKey(halo.coord);
+  if (halo.key !== expectedKey) {
+    throw new RangeError(`Halo key ${halo.key} does not match coordinate ${expectedKey}.`);
+  }
   if (halo.voxels.length !== (VOLUME_SIZE + 2) ** 3) {
     throw new RangeError(`Expected a ${(VOLUME_SIZE + 2)}³ halo snapshot.`);
+  }
+  for (const material of halo.voxels) {
+    if (material > VoxelMaterial.Roof) {
+      throw new RangeError(`Halo contains invalid voxel material ${material}.`);
+    }
   }
   const positions: number[] = [];
   const normals: number[] = [];

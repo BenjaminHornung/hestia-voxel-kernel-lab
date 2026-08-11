@@ -3,6 +3,12 @@ import { chunkCoordToKey, worldCellToChunkLocal } from './coordinates';
 import { DenseVoxelVolume } from './denseVolume';
 import type { ChunkCoord, ChunkKey } from './types';
 
+const CHUNK_METADATA_BASE_BYTES_ESTIMATE = 64;
+
+export function estimateChunkMetadataBytes(key: ChunkKey): number {
+  return CHUNK_METADATA_BASE_BYTES_ESTIMATE + key.length * 2 + 3 * Float64Array.BYTES_PER_ELEMENT;
+}
+
 export interface ChunkPayload {
   readonly coord: ChunkCoord;
   readonly voxels: Uint8Array;
@@ -36,6 +42,14 @@ export class SparseChunkWorld {
 
   get materializedChunkCount(): number {
     return this.#chunks.size;
+  }
+
+  get materializedVoxelPayloadBytes(): number {
+    return [...this.#chunks.values()].reduce((total, { volume }) => total + volume.storageByteLength, 0);
+  }
+
+  get chunkMetadataBytesEstimate(): number {
+    return [...this.#chunks.keys()].reduce((total, key) => total + estimateChunkMetadataBytes(key), 0);
   }
 
   getCell(x: number, y: number, z: number): VoxelMaterial {

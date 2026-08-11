@@ -4,9 +4,14 @@ import { MAX_MATERIALIZED_CHUNKS, VOXEL_SIZE_METERS, WORLD_CELL_BOUNDS, VoxelMat
 import {
   createLargeChunkFixture,
   DEFAULT_FIXTURE_SEED,
+  LARGE_FIXTURE_ID,
+  LARGE_FIXTURE_VERSION,
   ZONE_IDS,
   type FixtureZoneId,
 } from '../../src/voxel/largeFixture';
+import { createChunkHaloSnapshot } from '../../src/voxel/chunkHalo';
+import { meshChunkVisibleFaces } from '../../src/voxel/visibleFaceMesher';
+import { WP02_FIXTURE_GOLDEN } from '../contracts/wp02FixtureGolden';
 
 describe('WP02 large sparse fixture', () => {
   it('contains exactly nine unique in-bounds technical zones and fixed world metadata', () => {
@@ -80,13 +85,30 @@ describe('WP02 large sparse fixture', () => {
     expect(random.occupied / random.cells).toBeLessThan(0.55);
   });
 
-  it('is byte/hash-identical for the same seed', () => {
-    const first = createLargeChunkFixture(DEFAULT_FIXTURE_SEED);
-    const second = createLargeChunkFixture(DEFAULT_FIXTURE_SEED);
-    expect(first.worldHash).toBe(second.worldHash);
-    expect(first.zoneHashes).toEqual(second.zoneHashes);
-    expect(first.world.materializedChunkCount).toBe(second.world.materializedChunkCount);
-    expect(first.world.occupiedCount).toBe(second.world.occupiedCount);
+  it('locks the default fixture and final-byte zone hashes to the versioned golden contract', () => {
+    const fixture = createLargeChunkFixture();
+    expect(LARGE_FIXTURE_ID).toBe(WP02_FIXTURE_GOLDEN.id);
+    expect(LARGE_FIXTURE_VERSION).toBe(WP02_FIXTURE_GOLDEN.version);
+    expect(DEFAULT_FIXTURE_SEED).toBe(WP02_FIXTURE_GOLDEN.seed);
+    expect(fixture.worldHash).toBe(WP02_FIXTURE_GOLDEN.worldHash);
+    expect(fixture.world.materializedChunkCount).toBe(WP02_FIXTURE_GOLDEN.materializedChunks);
+    expect(fixture.world.occupiedCount).toBe(WP02_FIXTURE_GOLDEN.occupiedVoxels);
+    expect(fixture.zones.map(({ id }) => id)).toEqual(WP02_FIXTURE_GOLDEN.zoneIds);
+    expect(fixture.zoneHashes).toEqual(WP02_FIXTURE_GOLDEN.zoneHashes);
+  });
+
+  it('locks the sums from the actually meshed chunks to the golden geometry counts', () => {
+    const fixture = createLargeChunkFixture();
+    const totals = fixture.world.chunkCoords()
+      .map((coord) => meshChunkVisibleFaces(createChunkHaloSnapshot(fixture.world, coord)))
+      .reduce((sum, mesh) => ({
+        quads: sum.quads + mesh.quadCount,
+        triangles: sum.triangles + mesh.triangleCount,
+      }), { quads: 0, triangles: 0 });
+    expect(totals).toEqual({
+      quads: WP02_FIXTURE_GOLDEN.exposedQuads,
+      triangles: WP02_FIXTURE_GOLDEN.triangles,
+    });
   });
 
   it('changes only seeded sparse/random zones when the seed changes', () => {

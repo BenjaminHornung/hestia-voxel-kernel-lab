@@ -65,6 +65,7 @@ describe('DenseVoxelVolume', () => {
 
     expect(volume.get(1, 2, 3)).toBe(VoxelMaterial.Stairs);
     expect(volume.occupiedCount).toBe(1);
+    expect(volume.storageByteLength).toBe(VOLUME_VOXEL_COUNT * Uint8Array.BYTES_PER_ELEMENT);
     expect(volume.snapshot()[voxelIndex(1, 2, 3)]).toBe(VoxelMaterial.Stairs);
   });
 
