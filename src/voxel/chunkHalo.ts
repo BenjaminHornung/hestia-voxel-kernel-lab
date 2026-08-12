@@ -10,6 +10,21 @@ export interface ChunkHaloSnapshot {
   readonly voxels: Uint8Array;
 }
 
+export function assertValidChunkHaloSnapshot(halo: ChunkHaloSnapshot): void {
+  const expectedKey = chunkCoordToKey(halo.coord);
+  if (halo.key !== expectedKey) {
+    throw new RangeError(`Halo key ${halo.key} does not match coordinate ${expectedKey}.`);
+  }
+  if (halo.voxels.length !== HALO_VOXEL_COUNT) {
+    throw new RangeError(`Expected a ${HALO_EDGE}³ halo snapshot.`);
+  }
+  for (const material of halo.voxels) {
+    if (material > VoxelMaterial.Roof) {
+      throw new RangeError(`Halo contains invalid voxel material ${material}.`);
+    }
+  }
+}
+
 export function haloIndex(x: number, y: number, z: number): number {
   if (![x, y, z].every((value) => Number.isInteger(value) && value >= -1 && value <= VOLUME_SIZE)) {
     throw new RangeError(`Halo coordinate (${x}, ${y}, ${z}) is outside -1..${VOLUME_SIZE}.`);

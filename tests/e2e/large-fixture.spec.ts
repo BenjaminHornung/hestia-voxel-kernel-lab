@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import {
   DEFAULT_FIXTURE_SEED,
   LARGE_FIXTURE_ID,
@@ -9,18 +9,9 @@ import {
   ZONE_IDS,
 } from '../../src/voxel/largeFixture';
 import { WP02_FIXTURE_GOLDEN } from '../contracts/wp02FixtureGolden';
-import { imageDifference, pngDimensions, trackPageFailures } from './support';
+import { imageDifference, metricNumber, pngDimensions, trackPageFailures } from './support';
 
 const wp02EvidenceDirectory = path.join(process.cwd(), 'evidence', 'wp02');
-
-async function metricNumber(page: Page, testId: string): Promise<number> {
-  return Number((await page.getByTestId(testId).innerText())
-    .replaceAll(',', '')
-    .replace(' ms', '')
-    .replace(' B', '')
-    .replace(' estimate', '')
-    .trim());
-}
 
 test('renders the large sparse chunk fixture in the production preview', async ({ context, page }, testInfo) => {
   const failures = trackPageFailures(page);
@@ -133,8 +124,8 @@ test('renders the large sparse chunk fixture in the production preview', async (
   expect(failures).toEqual({ consoleErrors: [], pageErrors: [], requestFailures: [], httpErrors: [] });
 });
 
-test('defaults to WP02 and rejects inconsistent lab values', async ({ page }) => {
-  await page.goto('/');
+test('keeps explicit WP02 routing and rejects inconsistent lab values', async ({ page }) => {
+  await page.goto('/?lab=wp02');
   await expect(page.getByTestId('voxel-app')).toHaveAttribute('data-ready', 'true');
   await expect(page.getByTestId('voxel-app')).toHaveAttribute('data-lab', 'wp02');
   for (const route of ['/?lab=', '/?lab=wp99', '/?lab=wp01&lab=wp01', '/?lab=wp01&lab=wp02']) {

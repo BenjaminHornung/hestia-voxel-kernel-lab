@@ -93,6 +93,25 @@ h1 {
   cursor: pointer;
 }
 
+.wp03-only {
+  display: none !important;
+}
+
+#voxel-app[data-lab="wp03"] .wp03-only {
+  display: flex !important;
+}
+
+#voxel-app[data-lab="wp03"] .hud-scroll-note {
+  display: block !important;
+  padding: 6px 0;
+  border-top: 1px solid #ccd2d8;
+  border-bottom: 1px solid #ccd2d8;
+}
+
+#voxel-app[data-lab="wp03"] .hud {
+  scrollbar-gutter: stable;
+}
+
 input,
 select,
 button {

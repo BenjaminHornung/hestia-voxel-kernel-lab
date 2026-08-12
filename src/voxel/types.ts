@@ -7,6 +7,7 @@ export interface ChunkCoord {
 }
 
 export type ChunkKey = string;
+export type MesherMode = 'visible' | 'greedy';
 
 export interface MeshBounds {
   readonly min: Vec3;
@@ -21,6 +22,8 @@ export interface VisibleFaceMesh {
   readonly bounds: MeshBounds | null;
   readonly quadCount: number;
   readonly triangleCount: number;
+  readonly coveredUnitFaces: number;
+  readonly mesherMode: MesherMode;
 }
 
 export interface ChunkVisibleFaceMesh extends VisibleFaceMesh {

@@ -16,22 +16,51 @@ function worldCellVertex(chunk: ChunkVisibleFaceMesh, vertex: number): WorldCell
   return point;
 }
 
-function edgeKey(start: WorldCellVertex, end: WorldCellVertex): string {
+function edgeKey(start: WorldCellVertex, end: WorldCellVertex, requireUnitLength: boolean): string {
   const differences = end.map((value, axis) => value - start[axis]!) as [number, number, number];
   const edgeAxis = differences.findIndex((value) => value !== 0);
   if (edgeAxis < 0 || differences.some((value, axis) => axis !== edgeAxis && value !== 0)) {
     throw new RangeError('Chunk mesh edges must be axis-aligned.');
   }
   const minimum = differences[edgeAxis]! > 0 ? start : end;
-  if (Math.abs(differences[edgeAxis]!) !== 1) {
+  if (requireUnitLength && Math.abs(differences[edgeAxis]!) !== 1) {
     throw new RangeError('Chunk mesh edges must span exactly one world cell.');
   }
-  return `${edgeAxis}:${minimum[0]},${minimum[1]},${minimum[2]}`;
+  const maximum = differences[edgeAxis]! > 0 ? end : start;
+  return requireUnitLength
+    ? `${edgeAxis}:${minimum[0]},${minimum[1]},${minimum[2]}`
+    : `${edgeAxis}:${minimum[0]},${minimum[1]},${minimum[2]}|${maximum[0]},${maximum[1]},${maximum[2]}`;
 }
 
 export function createWorldEdgePositions(
   chunks: readonly ChunkVisibleFaceMesh[],
   voxelSizeMeters: number,
+): Float32Array {
+  return createEdgePositions(chunks, voxelSizeMeters, true);
+}
+
+export function createWorldQuadEdgePositions(
+  chunks: readonly ChunkVisibleFaceMesh[],
+  voxelSizeMeters: number,
+): Float32Array {
+  return createEdgePositions(chunks, voxelSizeMeters, false);
+}
+
+export function createMesherEdgeProducts(
+  visibleChunks: readonly ChunkVisibleFaceMesh[],
+  activeChunks: readonly ChunkVisibleFaceMesh[],
+  voxelSizeMeters: number,
+): { readonly blockEdgePositions: Float32Array; readonly meshQuadEdgePositions: Float32Array } {
+  return {
+    blockEdgePositions: createWorldEdgePositions(visibleChunks, voxelSizeMeters),
+    meshQuadEdgePositions: createWorldQuadEdgePositions(activeChunks, voxelSizeMeters),
+  };
+}
+
+function createEdgePositions(
+  chunks: readonly ChunkVisibleFaceMesh[],
+  voxelSizeMeters: number,
+  requireUnitLength: boolean,
 ): Float32Array {
   const edges = new Map<string, readonly [WorldCellVertex, WorldCellVertex]>();
   const corners = [[0, 1], [1, 2], [2, 3], [3, 0]] as const;
@@ -43,7 +72,7 @@ export function createWorldEdgePositions(
       for (const [startCorner, endCorner] of corners) {
         const start = worldCellVertex(chunk, quad * 4 + startCorner);
         const end = worldCellVertex(chunk, quad * 4 + endCorner);
-        edges.set(edgeKey(start, end), differencesForCanonicalEndpoint(start, end));
+        edges.set(edgeKey(start, end, requireUnitLength), differencesForCanonicalEndpoint(start, end));
       }
     }
   }

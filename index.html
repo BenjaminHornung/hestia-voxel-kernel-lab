@@ -15,7 +15,7 @@
         <header>
           <p class="eyebrow" data-testid="lab-heading">WP02 · Sparse chunk fixture</p>
           <h1>Voxel Kernel Lab</h1>
-          <p class="hint" id="viewport-keyboard-hint">Drag to orbit · Wheel to zoom · Arrow keys change preset</p>
+          <p class="hint" id="viewport-keyboard-hint">Drag to orbit · Wheel to zoom · Left/Right arrows change preset · Home resets camera</p>
           <p class="active-zone" aria-live="polite" aria-atomic="true">Active zone: <strong data-testid="active-zone">—</strong></p>
         </header>
 
@@ -28,6 +28,10 @@
             <input type="checkbox" data-testid="block-edge-toggle" checked />
             Block edges
           </label>
+          <label class="wp03-only">
+            <input type="checkbox" data-testid="mesh-quad-edge-toggle" />
+            Mesh quad edges
+          </label>
           <label>
             <input type="checkbox" data-testid="normal-toggle" />
             Face normals
@@ -39,6 +43,13 @@
           <label class="preset-control">
             Camera preset
             <select data-testid="camera-preset" aria-label="Camera preset"></select>
+          </label>
+          <label class="preset-control wp03-only">
+            Mesher
+            <select data-testid="mesher-select" aria-label="Mesher">
+              <option value="visible">Visible Faces</option>
+              <option value="greedy">Greedy</option>
+            </select>
           </label>
           <button type="button" data-testid="camera-reset">Reset camera</button>
         </div>
@@ -53,8 +64,24 @@
           <div><dt>Candidate chunks</dt><dd data-testid="metric-candidate-chunks">—</dd></div>
           <div><dt>Materialized chunks</dt><dd data-testid="metric-materialized-chunks">—</dd></div>
           <div><dt>Occupied voxels</dt><dd data-testid="metric-occupied">—</dd></div>
-          <div><dt>Exposed quads</dt><dd data-testid="metric-quads">—</dd></div>
+          <div><dt data-testid="metric-quads-label">Exposed quads</dt><dd data-testid="metric-quads">—</dd></div>
           <div><dt>Triangles</dt><dd data-testid="metric-triangles">—</dd></div>
+          <div class="wp03-only"><dt>Active mesher</dt><dd data-testid="metric-active-mesher">—</dd></div>
+          <div class="wp03-only"><dt>World hash</dt><dd data-testid="metric-world-hash">—</dd></div>
+          <div class="wp03-only"><dt>Covered unit faces</dt><dd data-testid="metric-covered-unit-faces">—</dd></div>
+          <div class="wp03-only"><dt>Visible quads</dt><dd data-testid="metric-visible-quads">—</dd></div>
+          <div class="wp03-only"><dt>Greedy quads</dt><dd data-testid="metric-greedy-quads">—</dd></div>
+          <div class="wp03-only"><dt>Quad reduction</dt><dd data-testid="metric-quad-reduction">—</dd></div>
+          <div class="wp03-only"><dt>Visible triangles</dt><dd data-testid="metric-visible-triangles">—</dd></div>
+          <div class="wp03-only"><dt>Greedy triangles</dt><dd data-testid="metric-greedy-triangles">—</dd></div>
+          <div class="wp03-only"><dt>Triangle reduction</dt><dd data-testid="metric-triangle-reduction">—</dd></div>
+          <div class="wp03-only"><dt>Visible neutral mesh</dt><dd data-testid="metric-visible-mesh-bytes">—</dd></div>
+          <div class="wp03-only"><dt>Greedy neutral mesh</dt><dd data-testid="metric-greedy-mesh-bytes">—</dd></div>
+          <div class="wp03-only"><dt>Mesh byte reduction</dt><dd data-testid="metric-mesh-byte-reduction">—</dd></div>
+          <div class="wp03-only"><dt>Visible mesh total / p50 / p95</dt><dd data-testid="metric-visible-meshing">—</dd></div>
+          <div class="wp03-only"><dt>Greedy mesh total / p50 / p95</dt><dd data-testid="metric-greedy-meshing">—</dd></div>
+          <div class="wp03-only"><dt>Timing classification</dt><dd>Diagnostic only</dd></div>
+          <div class="wp03-only"><dt>Active filled mesh sets</dt><dd data-testid="metric-active-filled-mesh-sets">—</dd></div>
           <div><dt>Candidate dense voxels (theoretical)</dt><dd data-testid="metric-candidate-dense-voxel-bytes">—</dd></div>
           <div><dt>Materialized voxel payload</dt><dd data-testid="metric-materialized-voxel-payload-bytes">—</dd></div>
           <div><dt>Chunk metadata (estimate)</dt><dd data-testid="metric-chunk-metadata-bytes-estimate">—</dd></div>
@@ -66,6 +93,7 @@
           <div><dt>Mesh material IDs</dt><dd data-testid="metric-mesh-material-id-bytes">—</dd></div>
           <div><dt>Mesh total</dt><dd data-testid="metric-mesh-total-bytes">—</dd></div>
           <div><dt>Debug edges</dt><dd data-testid="metric-debug-edge-bytes">—</dd></div>
+          <div class="wp03-only"><dt>Mesh quad edges</dt><dd data-testid="metric-debug-mesh-quad-edge-bytes">—</dd></div>
           <div><dt>Debug normals</dt><dd data-testid="metric-debug-normal-bytes">—</dd></div>
           <div><dt>Chunk bounds</dt><dd data-testid="metric-debug-chunk-bounds-bytes">—</dd></div>
           <div><dt>Renderer colors</dt><dd data-testid="metric-renderer-color-attribute-bytes">—</dd></div>
@@ -84,6 +112,8 @@
           <div><dt>Frame p95</dt><dd data-testid="metric-frame-p95">—</dd></div>
           <div><dt>Active camera preset</dt><dd data-testid="metric-active-preset">—</dd></div>
         </dl>
+
+        <p class="telemetry-note wp03-only hud-scroll-note">Scroll for the complete A/B diagnostics.</p>
 
         <p class="telemetry-note" data-testid="telemetry-classification">
           120-frame rolling diagnostics · startup values are not a steady-state benchmark.

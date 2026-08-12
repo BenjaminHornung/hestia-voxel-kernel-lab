@@ -1,0 +1,180 @@
+{
+  "basisSha": "c8a41a5275ec0b77cb805d692a4de0f69c0eb3e0",
+  "fixture": {
+    "id": "wp02-large-sparse-fixture",
+    "version": 1,
+    "seed": 1212502868
+  },
+  "wp02GoldenContract": "tests/contracts/wp02FixtureGolden.ts",
+  "worldHash": "fnv1a32:b58829bb",
+  "worldCells": [
+    512,
+    128,
+    512
+  ],
+  "worldMeters": [
+    128,
+    32,
+    128
+  ],
+  "chunkEdge": 32,
+  "materializedChunks": 51,
+  "occupiedVoxels": 97989,
+  "coveredUnitFaces": 59350,
+  "captureContract": {
+    "width": 1920,
+    "height": 1080,
+    "deviceScaleFactor": 1,
+    "browser": "Google Chrome",
+    "productionPreview": true,
+    "warmupMs": 3000,
+    "settleMs": 600
+  },
+  "coverage": {
+    "equal": true,
+    "materialAwareHash": "sha256:3e2c700c99a650413821586a01da0705491101b2d1dc1944730acb0db006b04e",
+    "overviewCanvasImageDifference": 0.0005535326141773582
+  },
+  "visible": {
+    "quads": 59350,
+    "triangles": 118700,
+    "memory": {
+      "positions": 2848800,
+      "normals": 2848800,
+      "indices": 1424400,
+      "materials": 237400,
+      "total": 7359400
+    },
+    "timing": {
+      "total": 37.4,
+      "p50": 0.4,
+      "p95": 2.3
+    },
+    "drawCalls": 52,
+    "debug": {
+      "blockEdges": 2692944,
+      "meshQuadEdges": 2692944,
+      "normals": 1424400,
+      "colors": 2848800,
+      "chunkBounds": 14688
+    }
+  },
+  "greedy": {
+    "quads": 19073,
+    "triangles": 38146,
+    "memory": {
+      "positions": 915504,
+      "normals": 915504,
+      "indices": 457752,
+      "materials": 76292,
+      "total": 2365052
+    },
+    "timing": {
+      "total": 187.1,
+      "p50": 3.1,
+      "p95": 8.3
+    },
+    "drawCalls": 52,
+    "debug": {
+      "blockEdges": 2692944,
+      "meshQuadEdges": 884832,
+      "normals": 457752,
+      "colors": 915504,
+      "chunkBounds": 14688
+    }
+  },
+  "reductions": {
+    "quadReductionAbsolute": 40277,
+    "quadReductionPercent": 67.86352148272957,
+    "triangleReductionAbsolute": 80554,
+    "triangleReductionPercent": 67.86352148272957,
+    "neutralMeshByteReductionAbsolute": 4994348,
+    "neutralMeshByteReductionPercent": 67.86352148272957,
+    "visibleToGreedyMeshingTimeRatio": 0.1998931052912881,
+    "timingClassification": "diagnostic only"
+  },
+  "screenshots": [
+    {
+      "path": "evidence/wp03/overview-visible-blocks.png",
+      "mesher": "visible",
+      "preset": "overview",
+      "zoneId": null,
+      "toggles": {
+        "filled": true,
+        "blockEdges": true,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false
+      },
+      "width": 1920,
+      "height": 1080,
+      "activeQuads": 59350,
+      "coveredUnitFaces": 59350,
+      "meshQuadEdgeBytes": 2692944,
+      "sha256": "757ad254fe27de62a3243a5c9a2b331e4bb60164c8dd46237484a94927c3ddf7"
+    },
+    {
+      "path": "evidence/wp03/overview-greedy-blocks.png",
+      "mesher": "greedy",
+      "preset": "overview",
+      "zoneId": null,
+      "toggles": {
+        "filled": true,
+        "blockEdges": true,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false
+      },
+      "width": 1920,
+      "height": 1080,
+      "activeQuads": 19073,
+      "coveredUnitFaces": 59350,
+      "meshQuadEdgeBytes": 884832,
+      "sha256": "39c257def25c066f4dc0f9c509fa0b442011a14eb582a2eb6eabffb2ed850bde"
+    },
+    {
+      "path": "evidence/wp03/solid-cube-greedy-quads.png",
+      "mesher": "greedy",
+      "preset": "solid-cube",
+      "zoneId": "solid-cube",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": true,
+        "normals": false,
+        "chunkBounds": false
+      },
+      "width": 1920,
+      "height": 1080,
+      "activeQuads": 19073,
+      "coveredUnitFaces": 59350,
+      "meshQuadEdgeBytes": 884832,
+      "sha256": "14df415e1d069e6cf3c51dbcb278fa5dc4f7d1ef9233cb70cc8a5d3973057d8d"
+    },
+    {
+      "path": "evidence/wp03/checkerboard-greedy-quads.png",
+      "mesher": "greedy",
+      "preset": "checkerboard",
+      "zoneId": "checkerboard",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": true,
+        "normals": false,
+        "chunkBounds": false
+      },
+      "width": 1920,
+      "height": 1080,
+      "activeQuads": 19073,
+      "coveredUnitFaces": 59350,
+      "meshQuadEdgeBytes": 884832,
+      "sha256": "466ae716e09f14245517a77989a9ac037256057d0a871e999352325c6a0f86b6"
+    }
+  ],
+  "classification": {
+    "cpuTimes": "diagnostic, not a benchmark gate",
+    "gpuMemory": "Unknown / unavailable; no portable WebGL byte source",
+    "neutralMeshBytes": "exact active mesh TypedArray byteLength sums; debug and renderer buffers excluded",
+    "imageDifference": "overviewCanvasImageDifference compares canvas pixels only, not the full HUD page"
+  }
+}

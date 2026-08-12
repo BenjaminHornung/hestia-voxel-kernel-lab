@@ -13,6 +13,7 @@ export interface MemoryDiagnostics {
   readonly meshMaterialIdBytes: number;
   readonly meshTotalBytes: number;
   readonly debugEdgeBytes: number;
+  readonly debugMeshQuadEdgeBytes: number;
   readonly debugNormalBytes: number;
   readonly debugChunkBoundsBytes: number;
   readonly colorAttributeBytes: number;
@@ -36,10 +37,12 @@ export function candidateDenseVoxelBytes(candidateChunks = CANDIDATE_CHUNK_COUNT
   return candidateChunks * VOLUME_VOXEL_COUNT * Uint8Array.BYTES_PER_ELEMENT;
 }
 
-export function summarizeMeshMemory(chunks: readonly ChunkVisibleFaceMesh[]): Pick<
-  SceneMemoryDiagnostics,
-  'meshPositionBytes' | 'meshNormalBytes' | 'meshIndexBytes' | 'meshMaterialIdBytes' | 'meshTotalBytes'
-> {
+export type NeutralMeshMemory = Pick<
+SceneMemoryDiagnostics,
+'meshPositionBytes' | 'meshNormalBytes' | 'meshIndexBytes' | 'meshMaterialIdBytes' | 'meshTotalBytes'
+>;
+
+export function summarizeMeshMemory(chunks: readonly ChunkVisibleFaceMesh[]): NeutralMeshMemory {
   const memory = chunks.reduce((sum, chunk) => ({
     meshPositionBytes: sum.meshPositionBytes + chunk.positions.byteLength,
     meshNormalBytes: sum.meshNormalBytes + chunk.normals.byteLength,

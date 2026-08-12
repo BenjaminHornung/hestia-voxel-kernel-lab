@@ -14,11 +14,11 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { MemoryDiagnostics, SceneMemoryDiagnostics } from '../diagnostics/memory';
+import type { MemoryDiagnostics, NeutralMeshMemory, SceneMemoryDiagnostics } from '../diagnostics/memory';
 import { FrameIntervalTelemetry, type DurationSummary } from '../diagnostics/telemetry';
 import { VOLUME_SIZE, VoxelMaterial } from '../voxel/constants';
 import { MATERIAL_COLORS } from '../voxel/palette';
-import type { ChunkVisibleFaceMesh, Vec3, VisibleFaceMesh } from '../voxel/types';
+import type { ChunkVisibleFaceMesh, MesherMode, Vec3, VisibleFaceMesh } from '../voxel/types';
 import { createWorldEdgePositions } from './worldEdgeAggregation';
 
 export interface RendererCameraPreset {
@@ -29,8 +29,26 @@ export interface RendererCameraPreset {
   readonly zoneId: string | null;
 }
 
+export interface MesherStatistics {
+  readonly mesherMode: MesherMode;
+  readonly coveredUnitFaces: number;
+  readonly quadCount: number;
+  readonly triangleCount: number;
+  readonly memory: NeutralMeshMemory;
+  readonly timing: DurationSummary;
+}
+
+export interface MesherComparison {
+  readonly visible: MesherStatistics;
+  readonly greedy: MesherStatistics;
+  readonly quadReduction: { readonly absolute: number; readonly percent: number };
+  readonly triangleReduction: { readonly absolute: number; readonly percent: number };
+  readonly neutralMeshByteReduction: { readonly absolute: number; readonly percent: number };
+}
+
 export interface VoxelLabScene {
-  readonly lab: 'wp01' | 'wp02';
+  readonly lab: 'wp01' | 'wp02' | 'wp03';
+  readonly mesherMode: MesherMode;
   readonly sceneLabel: string;
   readonly voxelSizeMeters: number;
   readonly worldCells: Vec3;
@@ -43,6 +61,10 @@ export interface VoxelLabScene {
   readonly haloTiming: DurationSummary;
   readonly meshTiming: DurationSummary;
   readonly chunks: readonly ChunkVisibleFaceMesh[];
+  readonly coveredUnitFaces: number;
+  readonly comparison: MesherComparison | null;
+  readonly blockEdgePositions?: Float32Array;
+  readonly meshQuadEdgePositions?: Float32Array;
   readonly cameraPresets: readonly RendererCameraPreset[];
   readonly zoneCount: number;
   readonly worldHash: string;
@@ -60,7 +82,23 @@ interface HudElements {
   readonly materializedChunks: HTMLElement;
   readonly occupied: HTMLElement;
   readonly quads: HTMLElement;
+  readonly quadsLabel: HTMLElement;
   readonly triangles: HTMLElement;
+  readonly activeMesher: HTMLElement;
+  readonly worldHash: HTMLElement;
+  readonly coveredUnitFaces: HTMLElement;
+  readonly visibleQuads: HTMLElement;
+  readonly greedyQuads: HTMLElement;
+  readonly quadReduction: HTMLElement;
+  readonly visibleTriangles: HTMLElement;
+  readonly greedyTriangles: HTMLElement;
+  readonly triangleReduction: HTMLElement;
+  readonly visibleMeshBytes: HTMLElement;
+  readonly greedyMeshBytes: HTMLElement;
+  readonly meshByteReduction: HTMLElement;
+  readonly visibleMeshing: HTMLElement;
+  readonly greedyMeshing: HTMLElement;
+  readonly activeFilledMeshSets: HTMLElement;
   readonly residentChunkMeshes: HTMLElement;
   readonly drawCalls: HTMLElement;
   readonly fixtureBuild: HTMLElement;
@@ -86,6 +124,7 @@ interface HudElements {
   readonly meshMaterialIdBytes: HTMLElement;
   readonly meshTotalBytes: HTMLElement;
   readonly debugEdgeBytes: HTMLElement;
+  readonly debugMeshQuadEdgeBytes: HTMLElement;
   readonly debugNormalBytes: HTMLElement;
   readonly debugChunkBoundsBytes: HTMLElement;
   readonly colorAttributeBytes: HTMLElement;
@@ -189,6 +228,9 @@ export class ThreeVoxelRenderer {
   readonly #edgeGeometry: BufferGeometry;
   readonly #edgeMaterial: LineBasicMaterial;
   readonly #edgeLines: LineSegments;
+  readonly #meshQuadEdgeGeometry: BufferGeometry;
+  readonly #meshQuadEdgeMaterial: LineBasicMaterial;
+  readonly #meshQuadEdgeLines: LineSegments;
   readonly #normalGeometry: BufferGeometry;
   readonly #normalMaterial: LineBasicMaterial;
   readonly #normalLines: LineSegments;
@@ -199,9 +241,11 @@ export class ThreeVoxelRenderer {
   readonly #telemetry = new FrameIntervalTelemetry();
   readonly #wireframeToggle: HTMLInputElement;
   readonly #blockEdgeToggle: HTMLInputElement;
+  readonly #meshQuadEdgeToggle: HTMLInputElement;
   readonly #normalToggle: HTMLInputElement;
   readonly #chunkBoundsToggle: HTMLInputElement;
   readonly #cameraPresetSelect: HTMLSelectElement;
+  readonly #mesherSelect: HTMLSelectElement;
   readonly #cameraPresets: readonly RendererCameraPreset[];
   readonly #resetButton: HTMLButtonElement;
   readonly #resize = (): void => this.resize();
@@ -210,9 +254,13 @@ export class ThreeVoxelRenderer {
       mesh.visible = !this.#wireframeToggle.checked;
     }
     this.#edgeLines.visible = this.#wireframeToggle.checked || this.#blockEdgeToggle.checked;
+    this.#meshQuadEdgeLines.visible = !this.#wireframeToggle.checked && this.#meshQuadEdgeToggle.checked;
   };
   readonly #toggleBlockEdges = (): void => {
     this.#edgeLines.visible = this.#wireframeToggle.checked || this.#blockEdgeToggle.checked;
+  };
+  readonly #toggleMeshQuadEdges = (): void => {
+    this.#meshQuadEdgeLines.visible = !this.#wireframeToggle.checked && this.#meshQuadEdgeToggle.checked;
   };
   readonly #toggleNormals = (): void => {
     this.#normalLines.visible = this.#normalToggle.checked;
@@ -221,6 +269,11 @@ export class ThreeVoxelRenderer {
     this.#chunkBoundsLines.visible = this.#chunkBoundsToggle.checked;
   };
   readonly #changeCameraPreset = (): void => this.applyCameraPreset(this.#cameraPresetSelect.value);
+  readonly #changeMesher = (): void => {
+    const target = new URL(window.location.href);
+    target.search = new URLSearchParams({ lab: 'wp03', mesher: this.#mesherSelect.value }).toString();
+    window.location.assign(target);
+  };
   readonly #keyboardCameraPreset = (event: KeyboardEvent): void => {
     if (event.key === 'Home') {
       event.preventDefault();
@@ -291,13 +344,21 @@ export class ThreeVoxelRenderer {
       this.#voxelMeshes.push(mesh);
     }
 
-    const edgePositions = createWorldEdgePositions(data.chunks, data.voxelSizeMeters);
+    const edgePositions = data.blockEdgePositions ?? createWorldEdgePositions(data.chunks, data.voxelSizeMeters);
+    const meshQuadEdgePositions = data.meshQuadEdgePositions ?? new Float32Array();
     const normalPositionArray = createWorldNormalPositions(data.chunks, data.voxelSizeMeters);
     this.#edgeGeometry = new BufferGeometry();
     this.#edgeGeometry.setAttribute('position', new BufferAttribute(edgePositions, 3));
     this.#edgeMaterial = new LineBasicMaterial({ color: 0x111820, transparent: true, opacity: 0.88 });
     this.#edgeLines = new LineSegments(this.#edgeGeometry, this.#edgeMaterial);
     scene.add(this.#edgeLines);
+
+    this.#meshQuadEdgeGeometry = new BufferGeometry();
+    this.#meshQuadEdgeGeometry.setAttribute('position', new BufferAttribute(meshQuadEdgePositions, 3));
+    this.#meshQuadEdgeMaterial = new LineBasicMaterial({ color: 0x6d28d9 });
+    this.#meshQuadEdgeLines = new LineSegments(this.#meshQuadEdgeGeometry, this.#meshQuadEdgeMaterial);
+    this.#meshQuadEdgeLines.visible = false;
+    scene.add(this.#meshQuadEdgeLines);
 
     this.#normalGeometry = new BufferGeometry();
     this.#normalGeometry.setAttribute('position', new BufferAttribute(normalPositionArray, 3));
@@ -311,6 +372,7 @@ export class ThreeVoxelRenderer {
     const memory: MemoryDiagnostics = {
       ...data.memory,
       debugEdgeBytes: edgePositions.byteLength,
+      debugMeshQuadEdgeBytes: meshQuadEdgePositions.byteLength,
       debugNormalBytes: normalPositionArray.byteLength,
       debugChunkBoundsBytes: chunkBoundsPositions.byteLength,
       colorAttributeBytes,
@@ -333,9 +395,11 @@ export class ThreeVoxelRenderer {
 
     this.#wireframeToggle = requiredElement<HTMLInputElement>(root, '[data-testid="wireframe-toggle"]');
     this.#blockEdgeToggle = requiredElement<HTMLInputElement>(root, '[data-testid="block-edge-toggle"]');
+    this.#meshQuadEdgeToggle = requiredElement<HTMLInputElement>(root, '[data-testid="mesh-quad-edge-toggle"]');
     this.#normalToggle = requiredElement<HTMLInputElement>(root, '[data-testid="normal-toggle"]');
     this.#chunkBoundsToggle = requiredElement<HTMLInputElement>(root, '[data-testid="chunk-bounds-toggle"]');
     this.#cameraPresetSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="camera-preset"]');
+    this.#mesherSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="mesher-select"]');
     this.#cameraPresets = data.cameraPresets;
     this.#resetButton = requiredElement<HTMLButtonElement>(root, '[data-testid="camera-reset"]');
     this.#hud = {
@@ -349,7 +413,23 @@ export class ThreeVoxelRenderer {
       materializedChunks: requiredElement(root, '[data-testid="metric-materialized-chunks"]'),
       occupied: requiredElement(root, '[data-testid="metric-occupied"]'),
       quads: requiredElement(root, '[data-testid="metric-quads"]'),
+      quadsLabel: requiredElement(root, '[data-testid="metric-quads-label"]'),
       triangles: requiredElement(root, '[data-testid="metric-triangles"]'),
+      activeMesher: requiredElement(root, '[data-testid="metric-active-mesher"]'),
+      worldHash: requiredElement(root, '[data-testid="metric-world-hash"]'),
+      coveredUnitFaces: requiredElement(root, '[data-testid="metric-covered-unit-faces"]'),
+      visibleQuads: requiredElement(root, '[data-testid="metric-visible-quads"]'),
+      greedyQuads: requiredElement(root, '[data-testid="metric-greedy-quads"]'),
+      quadReduction: requiredElement(root, '[data-testid="metric-quad-reduction"]'),
+      visibleTriangles: requiredElement(root, '[data-testid="metric-visible-triangles"]'),
+      greedyTriangles: requiredElement(root, '[data-testid="metric-greedy-triangles"]'),
+      triangleReduction: requiredElement(root, '[data-testid="metric-triangle-reduction"]'),
+      visibleMeshBytes: requiredElement(root, '[data-testid="metric-visible-mesh-bytes"]'),
+      greedyMeshBytes: requiredElement(root, '[data-testid="metric-greedy-mesh-bytes"]'),
+      meshByteReduction: requiredElement(root, '[data-testid="metric-mesh-byte-reduction"]'),
+      visibleMeshing: requiredElement(root, '[data-testid="metric-visible-meshing"]'),
+      greedyMeshing: requiredElement(root, '[data-testid="metric-greedy-meshing"]'),
+      activeFilledMeshSets: requiredElement(root, '[data-testid="metric-active-filled-mesh-sets"]'),
       residentChunkMeshes: requiredElement(root, '[data-testid="metric-resident-chunk-meshes"]'),
       drawCalls: requiredElement(root, '[data-testid="metric-draw-calls"]'),
       fixtureBuild: requiredElement(root, '[data-testid="metric-fixture-build"]'),
@@ -375,6 +455,7 @@ export class ThreeVoxelRenderer {
       meshMaterialIdBytes: requiredElement(root, '[data-testid="metric-mesh-material-id-bytes"]'),
       meshTotalBytes: requiredElement(root, '[data-testid="metric-mesh-total-bytes"]'),
       debugEdgeBytes: requiredElement(root, '[data-testid="metric-debug-edge-bytes"]'),
+      debugMeshQuadEdgeBytes: requiredElement(root, '[data-testid="metric-debug-mesh-quad-edge-bytes"]'),
       debugNormalBytes: requiredElement(root, '[data-testid="metric-debug-normal-bytes"]'),
       debugChunkBoundsBytes: requiredElement(root, '[data-testid="metric-debug-chunk-bounds-bytes"]'),
       colorAttributeBytes: requiredElement(root, '[data-testid="metric-renderer-color-attribute-bytes"]'),
@@ -387,8 +468,14 @@ export class ThreeVoxelRenderer {
     const formatVec = (value: Vec3): string => value.join(' × ');
     const formatDuration = (value: number): string => `${value.toFixed(1)} ms`;
     const formatBytes = (value: number): string => `${value.toLocaleString('en-US')} B`;
+    const formatReduction = ({ absolute, percent }: { readonly absolute: number; readonly percent: number }): string => (
+      `${absolute.toLocaleString('en-US')} (${percent.toFixed(1)}%)`
+    );
+    const formatTiming = ({ total, p50, p95 }: DurationSummary): string => (
+      `${total.toFixed(1)} / ${p50.toFixed(1)} / ${p95.toFixed(1)} ms`
+    );
     this.#hud.lab.textContent = data.sceneLabel;
-    this.#hud.renderer.textContent = 'Three/WebGL2 · Visible Faces';
+    this.#hud.renderer.textContent = `Three/WebGL2 · ${data.mesherMode === 'visible' ? 'Visible Faces' : 'Greedy'}`;
     this.#hud.volume.textContent = formatVec(data.worldCells);
     this.#hud.worldMeters.textContent = `${formatVec(data.worldMeters)} m`;
     this.#hud.voxelSize.textContent = `${data.voxelSizeMeters.toFixed(2)} m`;
@@ -397,7 +484,25 @@ export class ThreeVoxelRenderer {
     this.#hud.materializedChunks.textContent = data.materializedChunks.toLocaleString('en-US');
     this.#hud.occupied.textContent = data.occupiedVoxels.toLocaleString('en-US');
     this.#hud.quads.textContent = quads.toLocaleString('en-US');
+    this.#hud.quadsLabel.textContent = data.lab === 'wp03' ? 'Active mesh quads' : 'Exposed quads';
     this.#hud.triangles.textContent = triangles.toLocaleString('en-US');
+    this.#hud.activeMesher.textContent = data.mesherMode === 'visible' ? 'Visible Faces' : 'Greedy';
+    this.#hud.worldHash.textContent = data.worldHash;
+    this.#hud.coveredUnitFaces.textContent = data.coveredUnitFaces.toLocaleString('en-US');
+    this.#hud.activeFilledMeshSets.textContent = '1';
+    if (data.comparison) {
+      this.#hud.visibleQuads.textContent = data.comparison.visible.quadCount.toLocaleString('en-US');
+      this.#hud.greedyQuads.textContent = data.comparison.greedy.quadCount.toLocaleString('en-US');
+      this.#hud.quadReduction.textContent = formatReduction(data.comparison.quadReduction);
+      this.#hud.visibleTriangles.textContent = data.comparison.visible.triangleCount.toLocaleString('en-US');
+      this.#hud.greedyTriangles.textContent = data.comparison.greedy.triangleCount.toLocaleString('en-US');
+      this.#hud.triangleReduction.textContent = formatReduction(data.comparison.triangleReduction);
+      this.#hud.visibleMeshBytes.textContent = formatBytes(data.comparison.visible.memory.meshTotalBytes);
+      this.#hud.greedyMeshBytes.textContent = formatBytes(data.comparison.greedy.memory.meshTotalBytes);
+      this.#hud.meshByteReduction.textContent = formatReduction(data.comparison.neutralMeshByteReduction);
+      this.#hud.visibleMeshing.textContent = formatTiming(data.comparison.visible.timing);
+      this.#hud.greedyMeshing.textContent = formatTiming(data.comparison.greedy.timing);
+    }
     this.#hud.candidateDenseVoxelBytes.textContent = formatBytes(memory.candidateDenseVoxelBytes);
     this.#hud.materializedVoxelPayloadBytes.textContent = formatBytes(memory.materializedVoxelPayloadBytes);
     this.#hud.chunkMetadataBytesEstimate.textContent = `${formatBytes(memory.chunkMetadataBytesEstimate)} estimate`;
@@ -409,6 +514,7 @@ export class ThreeVoxelRenderer {
     this.#hud.meshMaterialIdBytes.textContent = formatBytes(memory.meshMaterialIdBytes);
     this.#hud.meshTotalBytes.textContent = formatBytes(memory.meshTotalBytes);
     this.#hud.debugEdgeBytes.textContent = formatBytes(memory.debugEdgeBytes);
+    this.#hud.debugMeshQuadEdgeBytes.textContent = formatBytes(memory.debugMeshQuadEdgeBytes);
     this.#hud.debugNormalBytes.textContent = formatBytes(memory.debugNormalBytes);
     this.#hud.debugChunkBoundsBytes.textContent = formatBytes(memory.debugChunkBoundsBytes);
     this.#hud.colorAttributeBytes.textContent = formatBytes(memory.colorAttributeBytes);
@@ -423,8 +529,13 @@ export class ThreeVoxelRenderer {
     this.#hud.meshP95.textContent = formatDuration(data.meshTiming.p95);
     this.#hud.status.textContent = 'Ready';
     this.#root.dataset.lab = data.lab;
+    this.#root.dataset.mesher = data.mesherMode;
     this.#root.dataset.zoneCount = String(data.zoneCount);
     this.#root.dataset.worldHash = data.worldHash;
+    if (data.lab === 'wp03') {
+      document.title = 'Hestia Voxel Kernel Lab — Greedy Meshing A/B';
+    }
+    this.#mesherSelect.value = data.mesherMode;
 
     this.#cameraPresetSelect.replaceChildren(...this.#cameraPresets.map((preset) => {
       const option = document.createElement('option');
@@ -440,9 +551,11 @@ export class ThreeVoxelRenderer {
 
     this.#wireframeToggle.addEventListener('change', this.#toggleWireframe);
     this.#blockEdgeToggle.addEventListener('change', this.#toggleBlockEdges);
+    this.#meshQuadEdgeToggle.addEventListener('change', this.#toggleMeshQuadEdges);
     this.#normalToggle.addEventListener('change', this.#toggleNormals);
     this.#chunkBoundsToggle.addEventListener('change', this.#toggleChunkBounds);
     this.#cameraPresetSelect.addEventListener('change', this.#changeCameraPreset);
+    this.#mesherSelect.addEventListener('change', this.#changeMesher);
     this.#canvas.addEventListener('keydown', this.#keyboardCameraPreset);
     this.#resetButton.addEventListener('click', this.#resetCamera);
     window.addEventListener('resize', this.#resize);
@@ -475,9 +588,11 @@ export class ThreeVoxelRenderer {
     window.removeEventListener('resize', this.#resize);
     this.#wireframeToggle.removeEventListener('change', this.#toggleWireframe);
     this.#blockEdgeToggle.removeEventListener('change', this.#toggleBlockEdges);
+    this.#meshQuadEdgeToggle.removeEventListener('change', this.#toggleMeshQuadEdges);
     this.#normalToggle.removeEventListener('change', this.#toggleNormals);
     this.#chunkBoundsToggle.removeEventListener('change', this.#toggleChunkBounds);
     this.#cameraPresetSelect.removeEventListener('change', this.#changeCameraPreset);
+    this.#mesherSelect.removeEventListener('change', this.#changeMesher);
     this.#canvas.removeEventListener('keydown', this.#keyboardCameraPreset);
     this.#resetButton.removeEventListener('click', this.#resetCamera);
     this.#controls.dispose();
@@ -487,6 +602,8 @@ export class ThreeVoxelRenderer {
     this.#meshMaterial.dispose();
     this.#edgeGeometry.dispose();
     this.#edgeMaterial.dispose();
+    this.#meshQuadEdgeGeometry.dispose();
+    this.#meshQuadEdgeMaterial.dispose();
     this.#normalGeometry.dispose();
     this.#normalMaterial.dispose();
     this.#chunkBoundsGeometry.dispose();

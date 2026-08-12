@@ -7,6 +7,11 @@ export interface PageFailures {
   readonly httpErrors: string[];
 }
 
+export async function metricNumber(page: Page, testId: string): Promise<number> {
+  return Number((await page.getByTestId(testId).innerText())
+    .replaceAll(',', '').replace(' ms', '').replace(' B', '').replace(' estimate', '').trim());
+}
+
 export function trackPageFailures(page: Page): PageFailures {
   const failures = { consoleErrors: [] as string[], pageErrors: [] as string[], requestFailures: [] as string[], httpErrors: [] as string[] };
   page.on('console', (message) => {
