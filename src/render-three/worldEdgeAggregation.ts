@@ -1,5 +1,5 @@
 import { VOLUME_SIZE } from '../voxel/constants';
-import type { ChunkVisibleFaceMesh } from '../voxel/types';
+import type { ChunkAoFaceMesh, ChunkVisibleFaceMesh } from '../voxel/types';
 
 type WorldCellVertex = readonly [number, number, number];
 
@@ -55,6 +55,30 @@ export function createMesherEdgeProducts(
     blockEdgePositions: createWorldEdgePositions(visibleChunks, voxelSizeMeters),
     meshQuadEdgePositions: createWorldQuadEdgePositions(activeChunks, voxelSizeMeters),
   };
+}
+
+export function createWorldDiagonalPositions(
+  chunks: readonly ChunkAoFaceMesh[],
+  voxelSizeMeters: number,
+  mode: 'normal' | 'flipped',
+): Float32Array {
+  const positions: number[] = [];
+  for (const chunk of chunks) {
+    for (let quad = 0; quad < chunk.quadCount; quad += 1) {
+      const baseVertex = quad * 4;
+      const flipped = chunk.indices[quad * 6 + 2] === baseVertex + 3;
+      if ((mode === 'flipped') !== flipped) continue;
+      const [startVertex, endVertex] = flipped ? [baseVertex + 1, baseVertex + 3] : [baseVertex, baseVertex + 2];
+      for (const vertex of [startVertex, endVertex]) {
+        positions.push(
+          (chunk.coord.x * VOLUME_SIZE + chunk.positions[vertex * 3]!) * voxelSizeMeters,
+          (chunk.coord.y * VOLUME_SIZE + chunk.positions[vertex * 3 + 1]!) * voxelSizeMeters,
+          (chunk.coord.z * VOLUME_SIZE + chunk.positions[vertex * 3 + 2]!) * voxelSizeMeters,
+        );
+      }
+    }
+  }
+  return new Float32Array(positions);
 }
 
 function createEdgePositions(

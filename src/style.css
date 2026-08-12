@@ -93,11 +93,16 @@ h1 {
   cursor: pointer;
 }
 
-.wp03-only {
+.wp03-only,
+.wp04-only {
   display: none !important;
 }
 
 #voxel-app[data-lab="wp03"] .wp03-only {
+  display: flex !important;
+}
+
+#voxel-app[data-lab="wp04"] .wp04-only {
   display: flex !important;
 }
 
@@ -108,7 +113,18 @@ h1 {
   border-bottom: 1px solid #ccd2d8;
 }
 
+#voxel-app[data-lab="wp04"] .hud-scroll-note {
+  display: block !important;
+  padding: 6px 0;
+  border-top: 1px solid #ccd2d8;
+  border-bottom: 1px solid #ccd2d8;
+}
+
 #voxel-app[data-lab="wp03"] .hud {
+  scrollbar-gutter: stable;
+}
+
+#voxel-app[data-lab="wp04"] .hud {
   scrollbar-gutter: stable;
 }
 
@@ -172,6 +188,36 @@ dd {
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+#voxel-app[data-lab="wp04"] .ao-level-legend {
+  display: none !important;
+}
+
+#voxel-app[data-lab="wp04"][data-debug="ao-levels"] .ao-level-legend {
+  display: flex !important;
+}
+
+.ao-level-legend dd,
+.ao-level-legend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ao-level-legend dd {
+  gap: 8px;
+}
+
+.ao-level-legend i {
+  width: 10px;
+  height: 10px;
+  border: 1px solid #56616d;
+}
+
+.ao-level-0 { background: #172033; }
+.ao-level-1 { background: #315a91; }
+.ao-level-2 { background: #c88a2d; }
+.ao-level-3 { background: #f2e6c9; }
 
 .telemetry-note {
   margin: 0 0 12px;

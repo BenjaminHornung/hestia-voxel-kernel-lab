@@ -1,0 +1,218 @@
+{
+  "basisSha": "d95992df05952ac4be6221ca1809c1c9e3c0ac9d",
+  "fixture": {
+    "id": "wp02-large-sparse-fixture",
+    "version": 1,
+    "seed": 1212502868,
+    "worldHash": "fnv1a32:b58829bb"
+  },
+  "goldenReferences": [
+    "tests/contracts/wp02FixtureGolden.ts",
+    "tests/contracts/wp03GreedyGolden.ts"
+  ],
+  "priorGreedy": {
+    "quads": 19073,
+    "neutralMeshBytes": 2365052
+  },
+  "palette": {
+    "id": "palette-v1",
+    "version": 1,
+    "hash": "fnv1a32:232ad3ae"
+  },
+  "aoDarkness": 0.6,
+  "ao": {
+    "histogram": [
+      23958,
+      9322,
+      22388,
+      37644
+    ],
+    "normalDiagonalCount": 19585,
+    "flippedDiagonalCount": 3743,
+    "splitDeltaVsWp03": 4255
+  },
+  "coverage": {
+    "coveredUnitFaces": 59350,
+    "materialAwareHash": "sha256:3e2c700c99a650413821586a01da0705491101b2d1dc1944730acb0db006b04e"
+  },
+  "geometry": {
+    "quads": 23328,
+    "triangles": 46656,
+    "bytes": {
+      "positions": 1119744,
+      "normals": 1119744,
+      "indices": 559872,
+      "materials": 93312,
+      "ao": 93312,
+      "neutralTotal": 2985984,
+      "packedRendererColors": 279936
+    }
+  },
+  "imageChecks": {
+    "overviewCanvasDifference": 0.00009603581659001049,
+    "concaveCornerRoiAoDifference": 0.0021504230231163815,
+    "chunkSeamRoiAoDifference": 0,
+    "flatSurfaceRoiAoDifference": 0
+  },
+  "timing": {
+    "classification": "diagnostic only; not a benchmark gate",
+    "meshTotalMs": 354,
+    "meshP50Ms": 5.9,
+    "meshP95Ms": 16.8
+  },
+  "gpuMemory": "Unknown / unavailable",
+  "captureContract": {
+    "browser": "Google Chrome",
+    "productionPreview": true,
+    "width": 1920,
+    "height": 1080,
+    "deviceScaleFactor": 1,
+    "warmupMs": 3000,
+    "settleMs": 600
+  },
+  "screenshots": [
+    {
+      "path": "evidence/wp04/overview-ao-off.png",
+      "mode": "surface",
+      "ao": "off",
+      "preset": "overview",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false,
+        "aoComparison": null,
+        "selectedDiagonals": false
+      },
+      "selectedDiagonalBytes": 0,
+      "activeDebugColors": 4,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "1221bf74cc5c262512f8142cbf18076f82492614a789cf75ae5b7751651f1f82"
+    },
+    {
+      "path": "evidence/wp04/overview-ao-on.png",
+      "mode": "surface",
+      "ao": "on",
+      "preset": "overview",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false,
+        "aoComparison": null,
+        "selectedDiagonals": false
+      },
+      "selectedDiagonalBytes": 0,
+      "activeDebugColors": 16,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "5a4c414ef8c1a79e0b05b9b804edb5ca29fcac6017daddc4da2e4ea9c5140be9"
+    },
+    {
+      "path": "evidence/wp04/concave-corner-ao.png",
+      "mode": "surface",
+      "ao": "on",
+      "preset": "concave-corner",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false,
+        "aoComparison": [
+          "off",
+          "on"
+        ],
+        "selectedDiagonals": false
+      },
+      "selectedDiagonalBytes": 0,
+      "activeDebugColors": 16,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "90910121d2107e54a1a818f6ddff358cf942b16fd6824123fe72177b74d39bed"
+    },
+    {
+      "path": "evidence/wp04/diagonal-normal.png",
+      "mode": "diagonal-normal",
+      "ao": "on",
+      "preset": "concave-corner",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false,
+        "aoComparison": null,
+        "selectedDiagonals": true
+      },
+      "selectedDiagonalBytes": 470040,
+      "activeDebugColors": 16,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "f9c1635b174e32fb1345ea8d6a43ea35013334d9874514e4656f61629774505b"
+    },
+    {
+      "path": "evidence/wp04/diagonal-flipped.png",
+      "mode": "diagonal-flipped",
+      "ao": "on",
+      "preset": "concave-corner",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false,
+        "aoComparison": null,
+        "selectedDiagonals": true
+      },
+      "selectedDiagonalBytes": 89832,
+      "activeDebugColors": 16,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "74900cc6f0d0fc64e9329834435c05d4a334e854e8676321c7281312063d2b97"
+    },
+    {
+      "path": "evidence/wp04/chunk-seam-ao.png",
+      "mode": "surface",
+      "ao": "on",
+      "preset": "chunk-seam-closeup",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": true,
+        "aoComparison": null,
+        "selectedDiagonals": false
+      },
+      "selectedDiagonalBytes": 0,
+      "activeDebugColors": 16,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "da2c81eeb94007428735369cfc7cda84e219514c366243b4be8f333e9ff5a128"
+    },
+    {
+      "path": "evidence/wp04/ao-level-debug.png",
+      "mode": "ao-levels",
+      "ao": "on",
+      "preset": "concave-corner",
+      "toggles": {
+        "filled": true,
+        "blockEdges": false,
+        "meshQuadEdges": false,
+        "normals": false,
+        "chunkBounds": false,
+        "aoComparison": null,
+        "selectedDiagonals": false
+      },
+      "selectedDiagonalBytes": 0,
+      "activeDebugColors": 4,
+      "width": 1920,
+      "height": 1080,
+      "sha256": "12cb1a04832f664c1c57087a54eb43fe4ebc8ee3be8c09046ab7a893631d9775"
+    }
+  ]
+}

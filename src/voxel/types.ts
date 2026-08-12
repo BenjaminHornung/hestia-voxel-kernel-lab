@@ -7,7 +7,9 @@ export interface ChunkCoord {
 }
 
 export type ChunkKey = string;
-export type MesherMode = 'visible' | 'greedy';
+export type MesherMode = 'visible' | 'greedy' | 'ao-greedy';
+export type AoLevel = 0 | 1 | 2 | 3;
+export type Ao4 = readonly [AoLevel, AoLevel, AoLevel, AoLevel];
 
 export interface MeshBounds {
   readonly min: Vec3;
@@ -30,4 +32,11 @@ export interface ChunkVisibleFaceMesh extends VisibleFaceMesh {
   readonly key: ChunkKey;
   readonly coord: ChunkCoord;
   readonly occupiedCount: number;
+}
+
+export interface ChunkAoFaceMesh extends ChunkVisibleFaceMesh {
+  readonly aoLevels: Uint8Array;
+  readonly aoHistogram: readonly [number, number, number, number];
+  readonly normalDiagonalCount: number;
+  readonly flippedDiagonalCount: number;
 }

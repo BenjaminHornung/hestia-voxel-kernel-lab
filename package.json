@@ -11,6 +11,7 @@
     "evidence:wp01": "playwright test --grep @evidence-wp01",
     "evidence:wp02": "playwright test --grep @evidence-wp02",
     "evidence:wp03": "playwright test --grep @evidence-wp03",
+    "evidence:wp04": "playwright test --grep @evidence-wp04",
     "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "engines": {

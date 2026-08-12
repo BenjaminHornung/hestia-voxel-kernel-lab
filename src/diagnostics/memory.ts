@@ -12,8 +12,10 @@ export interface MemoryDiagnostics {
   readonly meshIndexBytes: number;
   readonly meshMaterialIdBytes: number;
   readonly meshTotalBytes: number;
+  readonly aoAttributeBytes?: number;
   readonly debugEdgeBytes: number;
   readonly debugMeshQuadEdgeBytes: number;
+  readonly debugDiagonalBytes?: number;
   readonly debugNormalBytes: number;
   readonly debugChunkBoundsBytes: number;
   readonly colorAttributeBytes: number;
@@ -31,7 +33,9 @@ export type SceneMemoryDiagnostics = Pick<MemoryDiagnostics,
   | 'meshIndexBytes'
   | 'meshMaterialIdBytes'
   | 'meshTotalBytes'
->;
+> & {
+  readonly aoAttributeBytes?: number;
+};
 
 export function candidateDenseVoxelBytes(candidateChunks = CANDIDATE_CHUNK_COUNT): number {
   return candidateChunks * VOLUME_VOXEL_COUNT * Uint8Array.BYTES_PER_ELEMENT;

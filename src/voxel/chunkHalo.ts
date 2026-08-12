@@ -10,7 +10,7 @@ export interface ChunkHaloSnapshot {
   readonly voxels: Uint8Array;
 }
 
-export function assertValidChunkHaloSnapshot(halo: ChunkHaloSnapshot): void {
+export function assertValidChunkHaloStructure(halo: ChunkHaloSnapshot): void {
   const expectedKey = chunkCoordToKey(halo.coord);
   if (halo.key !== expectedKey) {
     throw new RangeError(`Halo key ${halo.key} does not match coordinate ${expectedKey}.`);
@@ -18,6 +18,10 @@ export function assertValidChunkHaloSnapshot(halo: ChunkHaloSnapshot): void {
   if (halo.voxels.length !== HALO_VOXEL_COUNT) {
     throw new RangeError(`Expected a ${HALO_EDGE}³ halo snapshot.`);
   }
+}
+
+export function assertValidChunkHaloSnapshot(halo: ChunkHaloSnapshot): void {
+  assertValidChunkHaloStructure(halo);
   for (const material of halo.voxels) {
     if (material > VoxelMaterial.Roof) {
       throw new RangeError(`Halo contains invalid voxel material ${material}.`);

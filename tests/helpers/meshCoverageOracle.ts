@@ -25,10 +25,12 @@ export function meshCoverage(meshes: readonly ChunkVisibleFaceMesh[]): MeshCover
       const vertexOffset = quad * 12;
       const materialOffset = quad * 4;
       const indexOffset = quad * 6;
-      const expectedIndices = [vertexOffset / 3, vertexOffset / 3 + 1, vertexOffset / 3 + 2, vertexOffset / 3, vertexOffset / 3 + 2, vertexOffset / 3 + 3];
+      const baseVertex = vertexOffset / 3;
+      const normalIndices = [baseVertex, baseVertex + 1, baseVertex + 2, baseVertex, baseVertex + 2, baseVertex + 3];
+      const flippedIndices = [baseVertex, baseVertex + 1, baseVertex + 3, baseVertex + 1, baseVertex + 2, baseVertex + 3];
       const actualIndices = Array.from(mesh.indices.slice(indexOffset, indexOffset + 6));
       if (actualIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= mesh.positions.length / 3)
-        || actualIndices.some((index, indexPosition) => index !== expectedIndices[indexPosition])) {
+        || (![normalIndices, flippedIndices].some((expected) => actualIndices.every((index, indexPosition) => index === expected[indexPosition])))) {
         throw new RangeError(`Quad ${quad} has invalid indexed triangle topology.`);
       }
       const normal = Array.from(mesh.normals.slice(vertexOffset, vertexOffset + 3));

@@ -28,7 +28,7 @@
             <input type="checkbox" data-testid="block-edge-toggle" checked />
             Block edges
           </label>
-          <label class="wp03-only">
+          <label class="wp03-only wp04-only">
             <input type="checkbox" data-testid="mesh-quad-edge-toggle" />
             Mesh quad edges
           </label>
@@ -49,6 +49,24 @@
             <select data-testid="mesher-select" aria-label="Mesher">
               <option value="visible">Visible Faces</option>
               <option value="greedy">Greedy</option>
+            </select>
+          </label>
+          <label class="preset-control wp04-only">
+            Ambient occlusion
+            <select data-testid="ao-select" aria-label="Ambient occlusion">
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <label class="preset-control wp04-only">
+            Debug view
+            <select data-testid="wp04-debug-select" aria-label="WP04 debug view">
+              <option value="surface">Surface</option>
+              <option value="ao-levels">AO levels</option>
+              <option value="diagonal-normal">Normal diagonals</option>
+              <option value="diagonal-flipped">Flipped diagonals</option>
+              <option value="materials">Material IDs</option>
+              <option value="normals">Normal colors</option>
             </select>
           </label>
           <button type="button" data-testid="camera-reset">Reset camera</button>
@@ -82,6 +100,24 @@
           <div class="wp03-only"><dt>Greedy mesh total / p50 / p95</dt><dd data-testid="metric-greedy-meshing">—</dd></div>
           <div class="wp03-only"><dt>Timing classification</dt><dd>Diagnostic only</dd></div>
           <div class="wp03-only"><dt>Active filled mesh sets</dt><dd data-testid="metric-active-filled-mesh-sets">—</dd></div>
+          <div class="wp04-only"><dt>Active AO</dt><dd data-testid="metric-active-ao">—</dd></div>
+          <div class="wp04-only"><dt>Debug mode</dt><dd data-testid="metric-wp04-debug-mode">—</dd></div>
+          <div class="wp04-only"><dt>Palette ID</dt><dd data-testid="metric-palette-id">—</dd></div>
+          <div class="wp04-only"><dt>Palette version</dt><dd data-testid="metric-palette-version">—</dd></div>
+          <div class="wp04-only"><dt>Palette hash</dt><dd data-testid="metric-palette-hash">—</dd></div>
+          <div class="wp04-only"><dt>AO darkness</dt><dd data-testid="metric-ao-darkness">—</dd></div>
+          <div class="wp04-only"><dt>AO histogram 0 / 1 / 2 / 3</dt><dd data-testid="metric-ao-histogram">—</dd></div>
+          <div class="wp04-only ao-level-legend" data-testid="ao-level-legend" aria-label="AO level colors">
+            <dt>AO level colors</dt>
+            <dd><span><i class="ao-level-0"></i>0</span><span><i class="ao-level-1"></i>1</span><span><i class="ao-level-2"></i>2</span><span><i class="ao-level-3"></i>3</span></dd>
+          </div>
+          <div class="wp04-only"><dt>Normal diagonals</dt><dd data-testid="metric-normal-diagonals">—</dd></div>
+          <div class="wp04-only"><dt>Flipped diagonals</dt><dd data-testid="metric-flipped-diagonals">—</dd></div>
+          <div class="wp04-only"><dt>AO split delta vs WP03</dt><dd data-testid="metric-ao-split-delta">—</dd></div>
+          <div class="wp04-only"><dt>AO attribute</dt><dd data-testid="metric-ao-attribute-bytes">—</dd></div>
+          <div class="wp04-only"><dt>Packed renderer colors</dt><dd data-testid="metric-packed-color-bytes">—</dd></div>
+          <div class="wp04-only"><dt>Active debug colors</dt><dd data-testid="metric-debug-color-count">—</dd></div>
+          <div class="wp04-only"><dt>Timing classification</dt><dd>Diagnostic only</dd></div>
           <div><dt>Candidate dense voxels (theoretical)</dt><dd data-testid="metric-candidate-dense-voxel-bytes">—</dd></div>
           <div><dt>Materialized voxel payload</dt><dd data-testid="metric-materialized-voxel-payload-bytes">—</dd></div>
           <div><dt>Chunk metadata (estimate)</dt><dd data-testid="metric-chunk-metadata-bytes-estimate">—</dd></div>
@@ -93,7 +129,8 @@
           <div><dt>Mesh material IDs</dt><dd data-testid="metric-mesh-material-id-bytes">—</dd></div>
           <div><dt>Mesh total</dt><dd data-testid="metric-mesh-total-bytes">—</dd></div>
           <div><dt>Debug edges</dt><dd data-testid="metric-debug-edge-bytes">—</dd></div>
-          <div class="wp03-only"><dt>Mesh quad edges</dt><dd data-testid="metric-debug-mesh-quad-edge-bytes">—</dd></div>
+          <div class="wp03-only wp04-only"><dt>Mesh quad edges</dt><dd data-testid="metric-debug-mesh-quad-edge-bytes">—</dd></div>
+          <div class="wp04-only"><dt>Selected diagonal lines</dt><dd data-testid="metric-debug-diagonal-bytes">—</dd></div>
           <div><dt>Debug normals</dt><dd data-testid="metric-debug-normal-bytes">—</dd></div>
           <div><dt>Chunk bounds</dt><dd data-testid="metric-debug-chunk-bounds-bytes">—</dd></div>
           <div><dt>Renderer colors</dt><dd data-testid="metric-renderer-color-attribute-bytes">—</dd></div>
@@ -114,6 +151,7 @@
         </dl>
 
         <p class="telemetry-note wp03-only hud-scroll-note">Scroll for the complete A/B diagnostics.</p>
+        <p class="telemetry-note wp04-only hud-scroll-note">Scroll for the complete AO diagnostics.</p>
 
         <p class="telemetry-note" data-testid="telemetry-classification">
           120-frame rolling diagnostics · startup values are not a steady-state benchmark.

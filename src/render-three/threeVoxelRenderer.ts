@@ -19,6 +19,7 @@ import { FrameIntervalTelemetry, type DurationSummary } from '../diagnostics/tel
 import { VOLUME_SIZE, VoxelMaterial } from '../voxel/constants';
 import { MATERIAL_COLORS } from '../voxel/palette';
 import type { ChunkVisibleFaceMesh, MesherMode, Vec3, VisibleFaceMesh } from '../voxel/types';
+import type { Wp04DebugMode } from './aoVertexColors';
 import { createWorldEdgePositions } from './worldEdgeAggregation';
 
 export interface RendererCameraPreset {
@@ -46,8 +47,24 @@ export interface MesherComparison {
   readonly neutralMeshByteReduction: { readonly absolute: number; readonly percent: number };
 }
 
+export interface Wp04SceneDiagnostics {
+  readonly aoEnabled: boolean;
+  readonly debugMode: Wp04DebugMode;
+  readonly paletteId: string;
+  readonly paletteVersion: number;
+  readonly paletteHash: string;
+  readonly aoDarkness: number;
+  readonly aoHistogram: readonly [number, number, number, number];
+  readonly normalDiagonalCount: number;
+  readonly flippedDiagonalCount: number;
+  readonly aoSplitDeltaVsWp03: number;
+  readonly aoAttributeBytes: number;
+  readonly packedRendererColorBytes: number;
+  readonly debugColorCount: number;
+}
+
 export interface VoxelLabScene {
-  readonly lab: 'wp01' | 'wp02' | 'wp03';
+  readonly lab: 'wp01' | 'wp02' | 'wp03' | 'wp04';
   readonly mesherMode: MesherMode;
   readonly sceneLabel: string;
   readonly voxelSizeMeters: number;
@@ -63,12 +80,15 @@ export interface VoxelLabScene {
   readonly chunks: readonly ChunkVisibleFaceMesh[];
   readonly coveredUnitFaces: number;
   readonly comparison: MesherComparison | null;
+  readonly rendererColors?: readonly Uint8Array[];
   readonly blockEdgePositions?: Float32Array;
   readonly meshQuadEdgePositions?: Float32Array;
+  readonly diagonalPositions?: Float32Array;
   readonly cameraPresets: readonly RendererCameraPreset[];
   readonly zoneCount: number;
   readonly worldHash: string;
   readonly memory: SceneMemoryDiagnostics;
+  readonly wp04?: Wp04SceneDiagnostics;
 }
 
 interface HudElements {
@@ -99,6 +119,19 @@ interface HudElements {
   readonly visibleMeshing: HTMLElement;
   readonly greedyMeshing: HTMLElement;
   readonly activeFilledMeshSets: HTMLElement;
+  readonly activeAo: HTMLElement;
+  readonly wp04DebugMode: HTMLElement;
+  readonly paletteId: HTMLElement;
+  readonly paletteVersion: HTMLElement;
+  readonly paletteHash: HTMLElement;
+  readonly aoDarkness: HTMLElement;
+  readonly aoHistogram: HTMLElement;
+  readonly normalDiagonals: HTMLElement;
+  readonly flippedDiagonals: HTMLElement;
+  readonly aoSplitDelta: HTMLElement;
+  readonly aoAttributeBytes: HTMLElement;
+  readonly packedColorBytes: HTMLElement;
+  readonly debugColorCount: HTMLElement;
   readonly residentChunkMeshes: HTMLElement;
   readonly drawCalls: HTMLElement;
   readonly fixtureBuild: HTMLElement;
@@ -125,6 +158,7 @@ interface HudElements {
   readonly meshTotalBytes: HTMLElement;
   readonly debugEdgeBytes: HTMLElement;
   readonly debugMeshQuadEdgeBytes: HTMLElement;
+  readonly debugDiagonalBytes: HTMLElement;
   readonly debugNormalBytes: HTMLElement;
   readonly debugChunkBoundsBytes: HTMLElement;
   readonly colorAttributeBytes: HTMLElement;
@@ -216,6 +250,10 @@ function createVertexColors(materialIds: Uint8Array): Float32Array {
   return colors;
 }
 
+export function createRendererColorAttribute(colors: Float32Array | Uint8Array): BufferAttribute {
+  return new BufferAttribute(colors, 3, colors instanceof Uint8Array);
+}
+
 export class ThreeVoxelRenderer {
   readonly #root: HTMLElement;
   readonly #canvas: HTMLCanvasElement;
@@ -231,6 +269,9 @@ export class ThreeVoxelRenderer {
   readonly #meshQuadEdgeGeometry: BufferGeometry;
   readonly #meshQuadEdgeMaterial: LineBasicMaterial;
   readonly #meshQuadEdgeLines: LineSegments;
+  readonly #diagonalGeometry: BufferGeometry;
+  readonly #diagonalMaterial: LineBasicMaterial;
+  readonly #diagonalLines: LineSegments;
   readonly #normalGeometry: BufferGeometry;
   readonly #normalMaterial: LineBasicMaterial;
   readonly #normalLines: LineSegments;
@@ -246,6 +287,8 @@ export class ThreeVoxelRenderer {
   readonly #chunkBoundsToggle: HTMLInputElement;
   readonly #cameraPresetSelect: HTMLSelectElement;
   readonly #mesherSelect: HTMLSelectElement;
+  readonly #aoSelect: HTMLSelectElement;
+  readonly #debugSelect: HTMLSelectElement;
   readonly #cameraPresets: readonly RendererCameraPreset[];
   readonly #resetButton: HTMLButtonElement;
   readonly #resize = (): void => this.resize();
@@ -272,6 +315,13 @@ export class ThreeVoxelRenderer {
   readonly #changeMesher = (): void => {
     const target = new URL(window.location.href);
     target.search = new URLSearchParams({ lab: 'wp03', mesher: this.#mesherSelect.value }).toString();
+    window.location.assign(target);
+  };
+  readonly #changeWp04View = (): void => {
+    const target = new URL(window.location.href);
+    const search = new URLSearchParams({ lab: 'wp04', ao: this.#aoSelect.value });
+    if (this.#debugSelect.value !== 'surface') search.set('debug', this.#debugSelect.value);
+    target.search = search.toString();
     window.location.assign(target);
   };
   readonly #keyboardCameraPreset = (event: KeyboardEvent): void => {
@@ -318,17 +368,21 @@ export class ThreeVoxelRenderer {
       polygonOffsetUnits: 1,
     });
 
+    if (data.rendererColors && data.rendererColors.length !== data.chunks.length) {
+      throw new RangeError('Renderer colors must provide one packed array per chunk mesh.');
+    }
     let colorAttributeBytes = 0;
-    for (const chunk of data.chunks) {
+    for (const [chunkIndex, chunk] of data.chunks.entries()) {
       if (chunk.quadCount === 0) {
         continue;
       }
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new BufferAttribute(chunk.positions, 3));
       geometry.setAttribute('normal', new BufferAttribute(chunk.normals, 3));
-      const colors = createVertexColors(chunk.materialIds);
+      const colors = data.rendererColors?.[chunkIndex] ?? createVertexColors(chunk.materialIds);
+      if (colors.length !== chunk.materialIds.length * 3) throw new RangeError('Renderer colors must contain RGB for every mesh vertex.');
       colorAttributeBytes += colors.byteLength;
-      geometry.setAttribute('color', new BufferAttribute(colors, 3));
+      geometry.setAttribute('color', createRendererColorAttribute(colors));
       geometry.setIndex(new BufferAttribute(chunk.indices, 1));
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
@@ -360,6 +414,14 @@ export class ThreeVoxelRenderer {
     this.#meshQuadEdgeLines.visible = false;
     scene.add(this.#meshQuadEdgeLines);
 
+    const diagonalPositions = data.diagonalPositions ?? new Float32Array();
+    this.#diagonalGeometry = new BufferGeometry();
+    this.#diagonalGeometry.setAttribute('position', new BufferAttribute(diagonalPositions, 3));
+    this.#diagonalMaterial = new LineBasicMaterial({ color: 0xb42318 });
+    this.#diagonalLines = new LineSegments(this.#diagonalGeometry, this.#diagonalMaterial);
+    this.#diagonalLines.visible = diagonalPositions.length > 0;
+    scene.add(this.#diagonalLines);
+
     this.#normalGeometry = new BufferGeometry();
     this.#normalGeometry.setAttribute('position', new BufferAttribute(normalPositionArray, 3));
     this.#normalMaterial = new LineBasicMaterial({ color: 0xa33d0b });
@@ -373,6 +435,7 @@ export class ThreeVoxelRenderer {
       ...data.memory,
       debugEdgeBytes: edgePositions.byteLength,
       debugMeshQuadEdgeBytes: meshQuadEdgePositions.byteLength,
+      debugDiagonalBytes: diagonalPositions.byteLength,
       debugNormalBytes: normalPositionArray.byteLength,
       debugChunkBoundsBytes: chunkBoundsPositions.byteLength,
       colorAttributeBytes,
@@ -400,6 +463,8 @@ export class ThreeVoxelRenderer {
     this.#chunkBoundsToggle = requiredElement<HTMLInputElement>(root, '[data-testid="chunk-bounds-toggle"]');
     this.#cameraPresetSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="camera-preset"]');
     this.#mesherSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="mesher-select"]');
+    this.#aoSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="ao-select"]');
+    this.#debugSelect = requiredElement<HTMLSelectElement>(root, '[data-testid="wp04-debug-select"]');
     this.#cameraPresets = data.cameraPresets;
     this.#resetButton = requiredElement<HTMLButtonElement>(root, '[data-testid="camera-reset"]');
     this.#hud = {
@@ -430,6 +495,19 @@ export class ThreeVoxelRenderer {
       visibleMeshing: requiredElement(root, '[data-testid="metric-visible-meshing"]'),
       greedyMeshing: requiredElement(root, '[data-testid="metric-greedy-meshing"]'),
       activeFilledMeshSets: requiredElement(root, '[data-testid="metric-active-filled-mesh-sets"]'),
+      activeAo: requiredElement(root, '[data-testid="metric-active-ao"]'),
+      wp04DebugMode: requiredElement(root, '[data-testid="metric-wp04-debug-mode"]'),
+      paletteId: requiredElement(root, '[data-testid="metric-palette-id"]'),
+      paletteVersion: requiredElement(root, '[data-testid="metric-palette-version"]'),
+      paletteHash: requiredElement(root, '[data-testid="metric-palette-hash"]'),
+      aoDarkness: requiredElement(root, '[data-testid="metric-ao-darkness"]'),
+      aoHistogram: requiredElement(root, '[data-testid="metric-ao-histogram"]'),
+      normalDiagonals: requiredElement(root, '[data-testid="metric-normal-diagonals"]'),
+      flippedDiagonals: requiredElement(root, '[data-testid="metric-flipped-diagonals"]'),
+      aoSplitDelta: requiredElement(root, '[data-testid="metric-ao-split-delta"]'),
+      aoAttributeBytes: requiredElement(root, '[data-testid="metric-ao-attribute-bytes"]'),
+      packedColorBytes: requiredElement(root, '[data-testid="metric-packed-color-bytes"]'),
+      debugColorCount: requiredElement(root, '[data-testid="metric-debug-color-count"]'),
       residentChunkMeshes: requiredElement(root, '[data-testid="metric-resident-chunk-meshes"]'),
       drawCalls: requiredElement(root, '[data-testid="metric-draw-calls"]'),
       fixtureBuild: requiredElement(root, '[data-testid="metric-fixture-build"]'),
@@ -456,6 +534,7 @@ export class ThreeVoxelRenderer {
       meshTotalBytes: requiredElement(root, '[data-testid="metric-mesh-total-bytes"]'),
       debugEdgeBytes: requiredElement(root, '[data-testid="metric-debug-edge-bytes"]'),
       debugMeshQuadEdgeBytes: requiredElement(root, '[data-testid="metric-debug-mesh-quad-edge-bytes"]'),
+      debugDiagonalBytes: requiredElement(root, '[data-testid="metric-debug-diagonal-bytes"]'),
       debugNormalBytes: requiredElement(root, '[data-testid="metric-debug-normal-bytes"]'),
       debugChunkBoundsBytes: requiredElement(root, '[data-testid="metric-debug-chunk-bounds-bytes"]'),
       colorAttributeBytes: requiredElement(root, '[data-testid="metric-renderer-color-attribute-bytes"]'),
@@ -475,7 +554,7 @@ export class ThreeVoxelRenderer {
       `${total.toFixed(1)} / ${p50.toFixed(1)} / ${p95.toFixed(1)} ms`
     );
     this.#hud.lab.textContent = data.sceneLabel;
-    this.#hud.renderer.textContent = `Three/WebGL2 · ${data.mesherMode === 'visible' ? 'Visible Faces' : 'Greedy'}`;
+    this.#hud.renderer.textContent = `Three/WebGL2 · ${data.mesherMode === 'visible' ? 'Visible Faces' : data.mesherMode === 'greedy' ? 'Greedy' : 'AO Greedy'}`;
     this.#hud.volume.textContent = formatVec(data.worldCells);
     this.#hud.worldMeters.textContent = `${formatVec(data.worldMeters)} m`;
     this.#hud.voxelSize.textContent = `${data.voxelSizeMeters.toFixed(2)} m`;
@@ -484,9 +563,9 @@ export class ThreeVoxelRenderer {
     this.#hud.materializedChunks.textContent = data.materializedChunks.toLocaleString('en-US');
     this.#hud.occupied.textContent = data.occupiedVoxels.toLocaleString('en-US');
     this.#hud.quads.textContent = quads.toLocaleString('en-US');
-    this.#hud.quadsLabel.textContent = data.lab === 'wp03' ? 'Active mesh quads' : 'Exposed quads';
+    this.#hud.quadsLabel.textContent = data.lab === 'wp03' || data.lab === 'wp04' ? 'Active mesh quads' : 'Exposed quads';
     this.#hud.triangles.textContent = triangles.toLocaleString('en-US');
-    this.#hud.activeMesher.textContent = data.mesherMode === 'visible' ? 'Visible Faces' : 'Greedy';
+    this.#hud.activeMesher.textContent = data.mesherMode === 'visible' ? 'Visible Faces' : data.mesherMode === 'greedy' ? 'Greedy' : 'AO Greedy';
     this.#hud.worldHash.textContent = data.worldHash;
     this.#hud.coveredUnitFaces.textContent = data.coveredUnitFaces.toLocaleString('en-US');
     this.#hud.activeFilledMeshSets.textContent = '1';
@@ -503,6 +582,21 @@ export class ThreeVoxelRenderer {
       this.#hud.visibleMeshing.textContent = formatTiming(data.comparison.visible.timing);
       this.#hud.greedyMeshing.textContent = formatTiming(data.comparison.greedy.timing);
     }
+    if (data.wp04) {
+      this.#hud.activeAo.textContent = data.wp04.aoEnabled ? 'On' : 'Off';
+      this.#hud.wp04DebugMode.textContent = data.wp04.debugMode;
+      this.#hud.paletteId.textContent = data.wp04.paletteId;
+      this.#hud.paletteVersion.textContent = String(data.wp04.paletteVersion);
+      this.#hud.paletteHash.textContent = data.wp04.paletteHash;
+      this.#hud.aoDarkness.textContent = data.wp04.aoDarkness.toFixed(2);
+      this.#hud.aoHistogram.textContent = data.wp04.aoHistogram.map((value) => value.toLocaleString('en-US')).join(' / ');
+      this.#hud.normalDiagonals.textContent = data.wp04.normalDiagonalCount.toLocaleString('en-US');
+      this.#hud.flippedDiagonals.textContent = data.wp04.flippedDiagonalCount.toLocaleString('en-US');
+      this.#hud.aoSplitDelta.textContent = data.wp04.aoSplitDeltaVsWp03.toLocaleString('en-US');
+      this.#hud.aoAttributeBytes.textContent = formatBytes(data.wp04.aoAttributeBytes);
+      this.#hud.packedColorBytes.textContent = formatBytes(data.wp04.packedRendererColorBytes);
+      this.#hud.debugColorCount.textContent = data.wp04.debugColorCount.toLocaleString('en-US');
+    }
     this.#hud.candidateDenseVoxelBytes.textContent = formatBytes(memory.candidateDenseVoxelBytes);
     this.#hud.materializedVoxelPayloadBytes.textContent = formatBytes(memory.materializedVoxelPayloadBytes);
     this.#hud.chunkMetadataBytesEstimate.textContent = `${formatBytes(memory.chunkMetadataBytesEstimate)} estimate`;
@@ -515,6 +609,7 @@ export class ThreeVoxelRenderer {
     this.#hud.meshTotalBytes.textContent = formatBytes(memory.meshTotalBytes);
     this.#hud.debugEdgeBytes.textContent = formatBytes(memory.debugEdgeBytes);
     this.#hud.debugMeshQuadEdgeBytes.textContent = formatBytes(memory.debugMeshQuadEdgeBytes);
+    this.#hud.debugDiagonalBytes.textContent = formatBytes(memory.debugDiagonalBytes ?? 0);
     this.#hud.debugNormalBytes.textContent = formatBytes(memory.debugNormalBytes);
     this.#hud.debugChunkBoundsBytes.textContent = formatBytes(memory.debugChunkBoundsBytes);
     this.#hud.colorAttributeBytes.textContent = formatBytes(memory.colorAttributeBytes);
@@ -532,10 +627,19 @@ export class ThreeVoxelRenderer {
     this.#root.dataset.mesher = data.mesherMode;
     this.#root.dataset.zoneCount = String(data.zoneCount);
     this.#root.dataset.worldHash = data.worldHash;
+    if (data.wp04) {
+      this.#root.dataset.ao = data.wp04.aoEnabled ? 'on' : 'off';
+      this.#root.dataset.debug = data.wp04.debugMode;
+      this.#root.dataset.paletteHash = data.wp04.paletteHash;
+    }
     if (data.lab === 'wp03') {
       document.title = 'Hestia Voxel Kernel Lab — Greedy Meshing A/B';
+    } else if (data.lab === 'wp04') {
+      document.title = 'Hestia Voxel Kernel Lab — Block AO and Palette';
     }
     this.#mesherSelect.value = data.mesherMode;
+    this.#aoSelect.value = data.wp04?.aoEnabled === false ? 'off' : 'on';
+    this.#debugSelect.value = data.wp04?.debugMode ?? 'surface';
 
     this.#cameraPresetSelect.replaceChildren(...this.#cameraPresets.map((preset) => {
       const option = document.createElement('option');
@@ -556,6 +660,8 @@ export class ThreeVoxelRenderer {
     this.#chunkBoundsToggle.addEventListener('change', this.#toggleChunkBounds);
     this.#cameraPresetSelect.addEventListener('change', this.#changeCameraPreset);
     this.#mesherSelect.addEventListener('change', this.#changeMesher);
+    this.#aoSelect.addEventListener('change', this.#changeWp04View);
+    this.#debugSelect.addEventListener('change', this.#changeWp04View);
     this.#canvas.addEventListener('keydown', this.#keyboardCameraPreset);
     this.#resetButton.addEventListener('click', this.#resetCamera);
     window.addEventListener('resize', this.#resize);
@@ -593,6 +699,8 @@ export class ThreeVoxelRenderer {
     this.#chunkBoundsToggle.removeEventListener('change', this.#toggleChunkBounds);
     this.#cameraPresetSelect.removeEventListener('change', this.#changeCameraPreset);
     this.#mesherSelect.removeEventListener('change', this.#changeMesher);
+    this.#aoSelect.removeEventListener('change', this.#changeWp04View);
+    this.#debugSelect.removeEventListener('change', this.#changeWp04View);
     this.#canvas.removeEventListener('keydown', this.#keyboardCameraPreset);
     this.#resetButton.removeEventListener('click', this.#resetCamera);
     this.#controls.dispose();
@@ -604,6 +712,8 @@ export class ThreeVoxelRenderer {
     this.#edgeMaterial.dispose();
     this.#meshQuadEdgeGeometry.dispose();
     this.#meshQuadEdgeMaterial.dispose();
+    this.#diagonalGeometry.dispose();
+    this.#diagonalMaterial.dispose();
     this.#normalGeometry.dispose();
     this.#normalMaterial.dispose();
     this.#chunkBoundsGeometry.dispose();
