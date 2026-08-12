@@ -20,6 +20,349 @@
     "hash": "fnv1a32:232ad3ae"
   },
   "aoDarkness": 0.6,
+  "aoHistogramScope": "mesh-vertex-ao-levels",
+  "diagonalCountScope": "emitted-quads",
+  "coverageScope": "material-aware-world-unit-faces",
+  "imageMetricVersion": "mean-absolute-rgb-normalized-v1",
+  "roiContractVersion": "wp04-canvas-roi-v1",
+  "canvasSources": {
+    "wp04-overview-ao-off-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "cb203691ed3cdb81fa1ebf7ad94807d89be5cabd57fa6ac1147ae37514e637dc",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "off",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "overview",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-overview-ao-on-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "5b9571ca8388e01925538279c84dbf3d6bebadcd2ef089b3ebe65cc7c403a2a1",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "overview",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-overview-ao-on-repeat-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "5b9571ca8388e01925538279c84dbf3d6bebadcd2ef089b3ebe65cc7c403a2a1",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "overview",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-concave-corner-ao-on-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "03b95aa4210b405f6e7a58d8c746b4f3e9606ba001ea78e28799642635d2ce47",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "concave-corner",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-concave-corner-ao-off-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "be7672aa34ef1b427cda34adad33b1c7c53023a07756e34efa8bb798ac75db91",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "off",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "concave-corner",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-diagonal-normal-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "6a5d0f73e1852a89d159a13b0ee8c1b44fe53d01dcee752fa9991c8c9ebab670",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "concave-corner",
+        "zoomInWheelSteps": 0,
+        "debugMode": "diagonal-normal",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-diagonal-flipped-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "c3e1ec466412cf27d3a936e57dac2e5acd92ee5d7818238979cac1146cf6bd59",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "concave-corner",
+        "zoomInWheelSteps": 0,
+        "debugMode": "diagonal-flipped",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-chunk-seam-ao-on-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "b8770f68dc11bee7518028ebbf13c419b7155a64f83f6bbe5da7c1aba158b31a",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "chunk-seam-closeup",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-ao-level-debug-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "cc7b4eead9898d84261a2a04922233187267dfe87104c000ed8851e3e1a7ef26",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "concave-corner",
+        "zoomInWheelSteps": 14,
+        "debugMode": "ao-levels",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-chunk-seam-ao-off-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "b8770f68dc11bee7518028ebbf13c419b7155a64f83f6bbe5da7c1aba158b31a",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "off",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "chunk-seam-closeup",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-flat-surface-ao-off-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "b1e84c5edcb9e5e37fe824ab1c943877de6c47c17a1eedd244df3c0d80b56890",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "off",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "solid-cube",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    },
+    "wp04-flat-surface-ao-on-canvas-v1": {
+      "byteSource": "transient-canvas-png",
+      "sha256": "3001bf5a67fb613c900a7316453c28aad4efa0463fab29b052e0dcedaef60b27",
+      "width": 1920,
+      "height": 1080,
+      "includesUi": false,
+      "state": {
+        "ambientOcclusion": "on",
+        "canvas": {
+          "width": 1920,
+          "height": 1080
+        },
+        "cameraPreset": "solid-cube",
+        "zoomInWheelSteps": 0,
+        "debugMode": "surface",
+        "worldHash": "fnv1a32:b58829bb",
+        "coveredUnitFaces": 59350,
+        "quads": 23328,
+        "triangles": 46656,
+        "toggles": {
+          "wireframe": false,
+          "blockEdges": false,
+          "meshQuadEdges": false,
+          "normals": false,
+          "chunkBounds": false
+        }
+      }
+    }
+  },
   "ao": {
     "histogram": [
       23958,
@@ -49,16 +392,252 @@
     }
   },
   "imageChecks": {
-    "overviewCanvasDifference": 0.00009603581659001049,
-    "concaveCornerRoiAoDifference": 0.0021504230231163815,
-    "chunkSeamRoiAoDifference": 0,
-    "flatSurfaceRoiAoDifference": 0
+    "overviewSurfaceDifference": {
+      "referenceCapture": "wp04-overview-ao-off-canvas-v1",
+      "candidateCapture": "wp04-overview-ao-on-canvas-v1",
+      "comparisonSource": "canvas-only",
+      "includesUi": false,
+      "metric": "mean-absolute-rgb-normalized-v1",
+      "operator": "greater-than",
+      "threshold": 0.00001,
+      "measured": 0.00006135835249737755,
+      "thresholdBasis": "Minimum is 10x the accepted same-state repeat-capture noise ceiling.",
+      "noiseControl": {
+        "referenceCapture": "wp04-overview-ao-on-canvas-v1",
+        "candidateCapture": "wp04-overview-ao-on-repeat-canvas-v1",
+        "operator": "less-than-or-equal",
+        "threshold": 0.000001,
+        "measured": 0
+      }
+    },
+    "rois": [
+      {
+        "id": "wp04-concave-corner-roi-v1",
+        "x": 760,
+        "y": 320,
+        "width": 400,
+        "height": 400,
+        "purpose": "Compare AO On and AO Off at the same concave-corner view.",
+        "space": "canvas-pixel",
+        "referenceCapture": "wp04-concave-corner-ao-off-canvas-v1",
+        "candidateCapture": "wp04-concave-corner-ao-on-canvas-v1",
+        "operator": "greater-than",
+        "threshold": 0.0001,
+        "measured": 0.0028520098039215686,
+        "metric": "mean-absolute-rgb-normalized-v1",
+        "includesUi": false
+      },
+      {
+        "id": "wp04-chunk-seam-roi-v1",
+        "x": 900,
+        "y": 190,
+        "width": 120,
+        "height": 240,
+        "purpose": "Check optical uniformity across the unoccluded solid-cube chunk boundary.",
+        "space": "canvas-pixel",
+        "referenceCapture": "wp04-chunk-seam-ao-off-canvas-v1",
+        "candidateCapture": "wp04-chunk-seam-ao-on-canvas-v1",
+        "operator": "less-than",
+        "threshold": 0.001,
+        "measured": 0,
+        "metric": "mean-absolute-rgb-normalized-v1",
+        "includesUi": false,
+        "evidenceScope": "optical-uniformity-of-unoccluded-surface",
+        "limitation": "This ROI does not claim nontrivial AO at the fixture seam.",
+        "nontrivialAoContinuityProof": "tests/unit/ao-greedy-mesher.test.ts covers X/Y/Z chunk seams and a three-neighbor chunk corner independently."
+      },
+      {
+        "id": "wp04-flat-surface-roi-v1",
+        "x": 720,
+        "y": 160,
+        "width": 480,
+        "height": 260,
+        "purpose": "Check that AO does not darken a fully unoccluded flat surface.",
+        "space": "canvas-pixel",
+        "referenceCapture": "wp04-flat-surface-ao-off-canvas-v1",
+        "candidateCapture": "wp04-flat-surface-ao-on-canvas-v1",
+        "operator": "less-than",
+        "threshold": 0.001,
+        "measured": 0,
+        "metric": "mean-absolute-rgb-normalized-v1",
+        "includesUi": false
+      }
+    ]
+  },
+  "aoDebugEvidence": {
+    "sourceAoDebugClassCount": 4,
+    "sourceAoDebugRgb8": [
+      [
+        2,
+        4,
+        8
+      ],
+      [
+        8,
+        26,
+        72
+      ],
+      [
+        147,
+        65,
+        7
+      ],
+      [
+        226,
+        202,
+        149
+      ]
+    ],
+    "sourceScope": "discrete-input-classes-of-normalized-vertex-color-attribute",
+    "framebufferSemantics": "Lambert lighting, interpolation, and antialiasing may produce more than four raster colors.",
+    "selectedEvidenceRoi": {
+      "id": "wp04-ao-level-roi-v1",
+      "x": 760,
+      "y": 320,
+      "width": 400,
+      "height": 400,
+      "purpose": "Confirm visible evidence of all four source AO debug classes.",
+      "space": "canvas-pixel",
+      "sourceCapture": "wp04-ao-level-debug-canvas-v1",
+      "curatedScreenshot": "evidence/wp04/ao-level-debug.png",
+      "includesUi": false,
+      "sampleContractVersion": "wp04-ao-debug-framebuffer-samples-v1",
+      "sampleSemantics": "One calibrated uniform 5x5 interior framebuffer patch per source AO class; no hue classifier or pixel-count inference.",
+      "framebufferToleranceRgb8": 1,
+      "samples": [
+        {
+          "sourceClass": 0,
+          "x": 972,
+          "y": 526,
+          "radius": 2,
+          "expectedFramebufferRgb8": [
+            7,
+            14,
+            26
+          ],
+          "measuredFramebufferRgb8": [
+            7,
+            14,
+            26
+          ],
+          "patchMinRgb8": [
+            7,
+            14,
+            26
+          ],
+          "patchMaxRgb8": [
+            7,
+            14,
+            26
+          ],
+          "sourceVertexAttributeRgb8": [
+            2,
+            4,
+            8
+          ]
+        },
+        {
+          "sourceClass": 1,
+          "x": 972,
+          "y": 570,
+          "radius": 2,
+          "expectedFramebufferRgb8": [
+            22,
+            48,
+            86
+          ],
+          "measuredFramebufferRgb8": [
+            22,
+            48,
+            86
+          ],
+          "patchMinRgb8": [
+            22,
+            48,
+            86
+          ],
+          "patchMaxRgb8": [
+            22,
+            48,
+            86
+          ],
+          "sourceVertexAttributeRgb8": [
+            8,
+            26,
+            72
+          ]
+        },
+        {
+          "sourceClass": 2,
+          "x": 937,
+          "y": 587,
+          "radius": 2,
+          "expectedFramebufferRgb8": [
+            108,
+            77,
+            24
+          ],
+          "measuredFramebufferRgb8": [
+            108,
+            77,
+            24
+          ],
+          "patchMinRgb8": [
+            108,
+            77,
+            24
+          ],
+          "patchMaxRgb8": [
+            108,
+            77,
+            24
+          ],
+          "sourceVertexAttributeRgb8": [
+            147,
+            65,
+            7
+          ]
+        },
+        {
+          "sourceClass": 3,
+          "x": 972,
+          "y": 481,
+          "radius": 2,
+          "expectedFramebufferRgb8": [
+            132,
+            132,
+            121
+          ],
+          "measuredFramebufferRgb8": [
+            132,
+            132,
+            121
+          ],
+          "patchMinRgb8": [
+            132,
+            132,
+            121
+          ],
+          "patchMaxRgb8": [
+            132,
+            132,
+            121
+          ],
+          "sourceVertexAttributeRgb8": [
+            226,
+            202,
+            149
+          ]
+        }
+      ],
+      "operator": "all-patches-within-rgb8-tolerance"
+    }
   },
   "timing": {
     "classification": "diagnostic only; not a benchmark gate",
-    "meshTotalMs": 354,
-    "meshP50Ms": 5.9,
-    "meshP95Ms": 16.8
+    "meshTotalMs": 213.5,
+    "meshP50Ms": 3.6,
+    "meshP95Ms": 8.6
   },
   "gpuMemory": "Unknown / unavailable",
   "captureContract": {
@@ -85,8 +664,12 @@
         "aoComparison": null,
         "selectedDiagonals": false
       },
+      "zoomInWheelSteps": 0,
+      "canvasSourceCaptures": [
+        "wp04-overview-ao-off-canvas-v1"
+      ],
       "selectedDiagonalBytes": 0,
-      "activeDebugColors": 4,
+      "sourceRendererAttributeColorCount": 4,
       "width": 1920,
       "height": 1080,
       "sha256": "1221bf74cc5c262512f8142cbf18076f82492614a789cf75ae5b7751651f1f82"
@@ -105,8 +688,12 @@
         "aoComparison": null,
         "selectedDiagonals": false
       },
+      "zoomInWheelSteps": 0,
+      "canvasSourceCaptures": [
+        "wp04-overview-ao-on-canvas-v1"
+      ],
       "selectedDiagonalBytes": 0,
-      "activeDebugColors": 16,
+      "sourceRendererAttributeColorCount": 16,
       "width": 1920,
       "height": 1080,
       "sha256": "5a4c414ef8c1a79e0b05b9b804edb5ca29fcac6017daddc4da2e4ea9c5140be9"
@@ -128,11 +715,16 @@
         ],
         "selectedDiagonals": false
       },
+      "zoomInWheelSteps": 0,
+      "canvasSourceCaptures": [
+        "wp04-concave-corner-ao-on-canvas-v1",
+        "wp04-concave-corner-ao-off-canvas-v1"
+      ],
       "selectedDiagonalBytes": 0,
-      "activeDebugColors": 16,
+      "sourceRendererAttributeColorCount": 16,
       "width": 1920,
       "height": 1080,
-      "sha256": "90910121d2107e54a1a818f6ddff358cf942b16fd6824123fe72177b74d39bed"
+      "sha256": "a0d87703eecbc909e3c39f7913c1c8e72962b0a8934c393ffeabc15790e68c13"
     },
     {
       "path": "evidence/wp04/diagonal-normal.png",
@@ -148,8 +740,12 @@
         "aoComparison": null,
         "selectedDiagonals": true
       },
+      "zoomInWheelSteps": 0,
+      "canvasSourceCaptures": [
+        "wp04-diagonal-normal-canvas-v1"
+      ],
       "selectedDiagonalBytes": 470040,
-      "activeDebugColors": 16,
+      "sourceRendererAttributeColorCount": 16,
       "width": 1920,
       "height": 1080,
       "sha256": "f9c1635b174e32fb1345ea8d6a43ea35013334d9874514e4656f61629774505b"
@@ -168,8 +764,12 @@
         "aoComparison": null,
         "selectedDiagonals": true
       },
+      "zoomInWheelSteps": 0,
+      "canvasSourceCaptures": [
+        "wp04-diagonal-flipped-canvas-v1"
+      ],
       "selectedDiagonalBytes": 89832,
-      "activeDebugColors": 16,
+      "sourceRendererAttributeColorCount": 16,
       "width": 1920,
       "height": 1080,
       "sha256": "74900cc6f0d0fc64e9329834435c05d4a334e854e8676321c7281312063d2b97"
@@ -184,15 +784,19 @@
         "blockEdges": false,
         "meshQuadEdges": false,
         "normals": false,
-        "chunkBounds": true,
+        "chunkBounds": false,
         "aoComparison": null,
         "selectedDiagonals": false
       },
+      "zoomInWheelSteps": 0,
+      "canvasSourceCaptures": [
+        "wp04-chunk-seam-ao-on-canvas-v1"
+      ],
       "selectedDiagonalBytes": 0,
-      "activeDebugColors": 16,
+      "sourceRendererAttributeColorCount": 16,
       "width": 1920,
       "height": 1080,
-      "sha256": "da2c81eeb94007428735369cfc7cda84e219514c366243b4be8f333e9ff5a128"
+      "sha256": "00e2bc6e2dc4f3d36d88a1aab5a71b5bd16917ca0e6aa3aae60ee332561edfde"
     },
     {
       "path": "evidence/wp04/ao-level-debug.png",
@@ -208,11 +812,15 @@
         "aoComparison": null,
         "selectedDiagonals": false
       },
+      "zoomInWheelSteps": 14,
+      "canvasSourceCaptures": [
+        "wp04-ao-level-debug-canvas-v1"
+      ],
       "selectedDiagonalBytes": 0,
-      "activeDebugColors": 4,
+      "sourceRendererAttributeColorCount": 4,
       "width": 1920,
       "height": 1080,
-      "sha256": "12cb1a04832f664c1c57087a54eb43fe4ebc8ee3be8c09046ab7a893631d9775"
+      "sha256": "b875105301ab7002fda45a9b0de0813585af3a98d8c3606a4dc60ee0d44e7652"
     }
   ]
 }

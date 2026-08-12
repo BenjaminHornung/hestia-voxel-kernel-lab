@@ -17,10 +17,12 @@ describe('WP04 packed renderer products', () => {
     mesh.aoLevels.set([0, 1, 2, 3]);
     const off = createPackedAoVertexColors(mesh, false, 'surface');
     const on = createPackedAoVertexColors(mesh, true, 'surface');
+    const debug = createPackedAoVertexColors(mesh, true, 'ao-levels');
     expect(off).toBeInstanceOf(Uint8Array);
     expect(off.byteLength).toBe(mesh.materialIds.length * 3);
     expect(off.slice(0, 12)).toEqual(new Uint8Array([52, 62, 73, 52, 62, 73, 52, 62, 73, 52, 62, 73]));
     expect(on.slice(0, 12)).toEqual(new Uint8Array([21, 25, 29, 31, 37, 44, 42, 49, 59, 52, 62, 73]));
+    expect(debug.slice(0, 12)).toEqual(new Uint8Array([2, 4, 8, 8, 26, 72, 147, 65, 7, 226, 202, 149]));
     const attribute = createRendererColorAttribute(on);
     expect(attribute.array).toBe(on);
     expect(attribute.itemSize).toBe(3);
