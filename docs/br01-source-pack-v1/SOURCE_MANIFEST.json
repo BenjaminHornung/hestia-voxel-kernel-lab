@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "1.0.0",
+  "repository": "BenjaminHornung/hestia-voxel-kernel-lab",
+  "branch": "docs/br01-source-pack-v1",
+  "baseCommit": "377979a27f5ca8482a3bf534b9307653417b43bd",
+  "c08Commit": "377979a27f5ca8482a3bf534b9307653417b43bd",
+  "createdAtUtc": "2026-08-13T10:35:57Z",
+  "manifestScope": "Byte-preserved source and governance inputs only; README.md, SOURCE_PRECEDENCE.md and this manifest are excluded from files[].",
+  "files": [
+    {
+      "path": "sources/BR01_benchmark_contracts_provenance_specification.md",
+      "originalTitle": "BR-01 Benchmark-Contracts und Provenienz - implementierungsreife Spezifikation",
+      "bytes": 105668,
+      "sha256": "b72290be9cb258158a31e6e032acb8eec0f984c30bd55ae882c3d2723529405d",
+      "gitBlobSha": "6afb4e9b9de8e292b21fe462f523915c89e2d345",
+      "sourceClass": "primary-supporting",
+      "status": "SUPPORTING_SOURCE_C08_PRECEDENCE",
+      "supersededClaims": [
+        "The research basis d95992df05952ac4be6221ca1809c1c9e3c0ac9d is historical; current integration truth is c64aeef1f51dd0ed2d8431411cf3ba1e84195b9d.",
+        "Any BR01 contract detail that conflicts with C08 is superseded by the C08 BR_SERIES_CONTRACT and BR01 prompts."
+      ]
+    },
+    {
+      "path": "sources/BR02_In_Browser_Telemetrie_Abschlussbericht_2026-08-12.md",
+      "originalTitle": "BR-02 In-Browser-Telemetrie",
+      "bytes": 87605,
+      "sha256": "2499e5b047da5748e847892131a778a44a32bb41f412b73e0c09c5584ea6b9fd",
+      "gitBlobSha": "6e4377e97d7d9655dc1ccd4942537d3549ac930d",
+      "sourceClass": "consumer-crosswalk",
+      "status": "CONTEXT_ONLY",
+      "supersededClaims": [
+        "The research basis d95992df05952ac4be6221ca1809c1c9e3c0ac9d is historical.",
+        "Contract details conflicting with the C08 hierarchy, receipts, metric registry, populations or effect bands are superseded."
+      ]
+    },
+    {
+      "path": "sources/BR03_Playwright_CDP_Runner_Abschlussbericht.md",
+      "originalTitle": "BR-03 Abschlussbericht: Playwright/CDP Benchmark Runner Contract",
+      "bytes": 96985,
+      "sha256": "9f8c7af1b14dad02f92523b222f11cd095c5fcb7befab2289ad801bd50799590",
+      "gitBlobSha": "def0fcd382ef38220e44de48a63788d0e1a2f95f",
+      "sourceClass": "consumer-crosswalk",
+      "status": "CONTEXT_ONLY",
+      "supersededClaims": [
+        "Claims that BR01 or BR02 sources are unavailable are historical for this pack.",
+        "Pre-C08 field shapes conflicting with the harmonized C08 contract are superseded."
+      ]
+    },
+    {
+      "path": "sources/BR04_Benchmark_Aggregator_Abschlussbericht_2026-08-12.md",
+      "originalTitle": "BR-04 Benchmark-Aggregator: implementierungsreife Spezifikation",
+      "bytes": 80800,
+      "sha256": "289903f6a47beed477bdb10d60d1d67d93b7e73164f29ae90271e0cc18c0aacc",
+      "gitBlobSha": "aa11e5925ba0330be09e7efe3158a655f27b5654",
+      "sourceClass": "consumer-crosswalk",
+      "status": "CONTEXT_ONLY",
+      "supersededClaims": [
+        "Claims that required governance or BR source reports are unavailable are historical for this pack.",
+        "REQUIRES_ADDITIONAL_RESEARCH and pre-C08 contract shapes do not override C08."
+      ]
+    },
+    {
+      "path": "sources/C07_H1_H3_Hardware_Profiles_Calibration_Plan.md",
+      "originalTitle": "Abschlussbericht C07: H1-H3-Hardwareprofile und Kalibrierungsplan",
+      "bytes": 50046,
+      "sha256": "c531baba76d74c72e8d3e0a88b8fc124a23d552963162bdee16a0bf23ef6a20f",
+      "gitBlobSha": "b9cc2a27a87f5aad1fa1ae7ba272d253e1a8dccb",
+      "sourceClass": "consumer-crosswalk",
+      "status": "CONTEXT_ONLY",
+      "supersededClaims": [
+        "The research basis d95992df05952ac4be6221ca1809c1c9e3c0ac9d is historical.",
+        "Unavailable real H2/H3 bindings do not block synthetic BR01 contracts, but still block real performance gates."
+      ]
+    },
+    {
+      "path": "sources/R07_Benchmark_Test_Methodology_Audit.md",
+      "originalTitle": "Abschlussbericht: Benchmark-, Profiling- und Testmethodik-Audit",
+      "bytes": 58262,
+      "sha256": "905e3bdf8b35b1191b72082618673ac9b941a9c39d336911ec9cecb8f79f27ec",
+      "gitBlobSha": "38e35db04eacf0fbf5cb48afb5c3bde67cf63330",
+      "sourceClass": "consumer-crosswalk",
+      "status": "CONTEXT_ONLY",
+      "supersededClaims": [
+        "The research basis d95992df05952ac4be6221ca1809c1c9e3c0ac9d is historical.",
+        "Global ten-percent thresholds are not normative where C08 defines metric-specific populations and effect bands."
+      ]
+    },
+    {
+      "path": "sources/WELTRAUM_CLOUD_AGENT_RESULTS_SYNTHESIS_2026-08-12.md",
+      "originalTitle": "Weltraum-Spiel – Intake und Vor-Synthese der Cloud-Agent-Ergebnisse",
+      "bytes": 13639,
+      "sha256": "c1de5feb94f9318414f34d39c2c34ec5ade29ef816a472e7a6d5b8516536411b",
+      "gitBlobSha": "dd687e260c4a327722bb2e12b8b8f9da229f41d5",
+      "sourceClass": "consumer-provenance-crosswalk",
+      "status": "CONTEXT_ONLY",
+      "supersededClaims": [
+        "Claims that WP04 is running, integration equals d95992df05952ac4be6221ca1809c1c9e3c0ac9d or C08 has not started are superseded."
+      ]
+    },
+    {
+      "path": "governance/WELTRAUM_PROJECT_INSTRUCTIONS_ADDENDUM.md",
+      "originalTitle": "Projektanweisungen – Ergänzung für alle Weltraum-/Voxel-Agenten",
+      "bytes": 2947,
+      "sha256": "923f7c89fa0e891c2a6efca8f056293fdf449a4e944083127a5449c6f9a50390",
+      "gitBlobSha": "3041dae34fb41a43a4d55597c7639c5933dd3902",
+      "sourceClass": "historical-governance",
+      "status": "HISTORICAL_EVIDENCE",
+      "supersededClaims": [
+        "The accepted integration SHA d95992df05952ac4be6221ca1809c1c9e3c0ac9d is superseded by c64aeef1f51dd0ed2d8431411cf3ba1e84195b9d."
+      ]
+    },
+    {
+      "path": "governance/WELTRAUM_PROJECT_MEMORY.md",
+      "originalTitle": "Weltraum-Spiel – kanonischer Projektstand",
+      "bytes": 13497,
+      "sha256": "009e1f413dba67c34a85959b29e0fd190691ea3b808ee5e2b07ad18657539c4c",
+      "gitBlobSha": "a181ed87912400af929a7bb32b21389ae7a2e416",
+      "sourceClass": "historical-governance",
+      "status": "HISTORICAL_EVIDENCE",
+      "supersededClaims": [
+        "Integration d95992df05952ac4be6221ca1809c1c9e3c0ac9d and WP04-pending or pre-C08 roadmap state are historical."
+      ]
+    },
+    {
+      "path": "governance/WELTRAUM_RESEARCH_DECISION_LOG_2026-08-12.md",
+      "originalTitle": "Weltraum-Spiel – Research Decision Log",
+      "bytes": 5021,
+      "sha256": "b73921f145f66b26cccb70eab973d79c705648ee9d934606b1d08288f9ac753e",
+      "gitBlobSha": "85eec53d63c53bcc6d15ea019ad1b0e4454a0f80",
+      "sourceClass": "historical-governance",
+      "status": "HISTORICAL_EVIDENCE",
+      "supersededClaims": [
+        "The d95992df05952ac4be6221ca1809c1c9e3c0ac9d basis is historical.",
+        "Older contract wording resolved by C08 cannot override the harmonized C08 contract."
+      ]
+    },
+    {
+      "path": "governance/WELTRAUM_RESEARCH_REGISTER.md",
+      "originalTitle": "Weltraum-Spiel – Research Register",
+      "bytes": 3388,
+      "sha256": "cf419b538caf24fa4a8d29711c0fbf13f260cd074725c5800f065d2c0477732d",
+      "gitBlobSha": "29d60ec0c755398c7ffafae5e749e53c528f5d5f",
+      "sourceClass": "historical-governance",
+      "status": "HISTORICAL_EVIDENCE",
+      "supersededClaims": [
+        "Canonical d95992df05952ac4be6221ca1809c1c9e3c0ac9d and RUNNING work-package statuses are historical."
+      ]
+    },
+    {
+      "path": "governance/WELTRAUM_RESEARCH_SYNTHESIS_2026-08-12.md",
+      "originalTitle": "Weltraum-Spiel – Synthese der abgeschlossenen Voxel-Forschung R01–R10",
+      "bytes": 18931,
+      "sha256": "44c96c37187f7a821ca50161bf22ed336d043b38146b89ab9b99ecd55add39f1",
+      "gitBlobSha": "59b42e52112e829f9af2973fd71fb0040f3b8b76",
+      "sourceClass": "historical-governance",
+      "status": "HISTORICAL_EVIDENCE",
+      "supersededClaims": [
+        "Integration d95992df05952ac4be6221ca1809c1c9e3c0ac9d, WP04-next and pre-C08 sequencing claims are historical."
+      ]
+    }
+  ],
+  "secretScan": {
+    "status": "PASS",
+    "scanner": "secretlint@13.0.4 with @secretlint/secretlint-rule-preset-recommend@13.0.4",
+    "scope": "docs/br01-source-pack-v1"
+  }
+}
