@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hestia.invalid/schemas/benchmark-bundle-manifest-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "protocolVersion", "bundleId", "createdUtc", "claimClass", "canonicalJson", "pathPolicy", "digestAlgorithmVersion", "artifactManifest", "runs", "excludedFromBundleDigest"],
+  "properties": {
+    "schemaVersion": { "const": "benchmark-bundle-manifest-v1" },
+    "protocolVersion": { "const": "benchmark-protocol-v1" },
+    "bundleId": { "$ref": "#/$defs/id" },
+    "createdUtc": { "$ref": "#/$defs/utc" },
+    "claimClass": { "enum": ["correctness", "diagnostic", "performance-gate", "informational"] },
+    "canonicalJson": { "const": "rfc8785-jcs" },
+    "pathPolicy": { "const": "hestia-relative-posix-lower-v1" },
+    "digestAlgorithmVersion": { "const": "hestia-benchmark-bundle-sha256-v1" },
+    "artifactManifest": { "type": "object", "additionalProperties": false, "required": ["path", "byteLength", "sha256"], "properties": { "path": { "const": "artifact-manifest.json" }, "byteLength": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }, "sha256": { "$ref": "#/$defs/sha256" } } },
+    "runs": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["runId", "path", "sha256"], "properties": { "runId": { "$ref": "#/$defs/id" }, "path": { "$ref": "#/$defs/path" }, "sha256": { "$ref": "#/$defs/sha256" } } } },
+    "excludedFromBundleDigest": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "const": "bundle.sha256" }], "items": false }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "path": { "type": "string", "maxLength": 512, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)[a-z0-9](?:[a-z0-9._/-]*[a-z0-9._-])?$" },
+    "utc": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$" }
+  }
+}

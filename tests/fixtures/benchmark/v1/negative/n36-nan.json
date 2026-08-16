@@ -1,0 +1,12 @@
+{
+  "caseId": "N36",
+  "fixtureId": "n36-nan-v1",
+  "metricRef": "chunk.mesh.cpu.ms@1",
+  "mutation": {
+    "kind": "token",
+    "value": "NaN"
+  },
+  "sampleOrdinal": 0,
+  "variant": "NaN",
+  "version": 1
+}

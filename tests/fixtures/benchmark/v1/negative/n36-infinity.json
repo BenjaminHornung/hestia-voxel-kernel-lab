@@ -1,0 +1,12 @@
+{
+  "caseId": "N36",
+  "fixtureId": "n36-infinity-v1",
+  "metricRef": "chunk.mesh.cpu.ms@1",
+  "mutation": {
+    "kind": "token",
+    "value": "Infinity"
+  },
+  "sampleOrdinal": 0,
+  "variant": "Infinity",
+  "version": 1
+}

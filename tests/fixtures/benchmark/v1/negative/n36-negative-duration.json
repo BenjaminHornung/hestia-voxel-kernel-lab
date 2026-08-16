@@ -1,0 +1,12 @@
+{
+  "caseId": "N36",
+  "fixtureId": "n36-negative-duration-v1",
+  "metricRef": "chunk.mesh.cpu.ms@1",
+  "mutation": {
+    "kind": "number",
+    "value": -1
+  },
+  "sampleOrdinal": 0,
+  "variant": "negative",
+  "version": 1
+}

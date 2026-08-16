@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hestia.invalid/schemas/benchmark-run-v1.schema.json",
+  "title": "Hestia Benchmark Hardware Cell and Run Hierarchy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "hardwareCellId", "source", "scenarioId", "scenarioVersion", "hardwareProfileId", "environment", "measurementEligible", "measurementEligibilityReasons", "browserProcesses"],
+  "properties": {
+    "schemaVersion": { "const": "benchmark-hardware-cell-v1" },
+    "hardwareCellId": { "$ref": "#/$defs/id" },
+    "source": { "$ref": "#/$defs/source" },
+    "scenarioId": { "enum": ["mesh-golden-world-v1", "mesh-density-sweep-v1", "scheduler-steady-v1", "scheduler-burst-v1", "brush-stress-v1", "navigation-leak-v1", "backend-fixture-v1"] },
+    "scenarioVersion": { "const": 1 },
+    "hardwareProfileId": { "$ref": "#/$defs/id" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "measurementEligible": { "type": "boolean" },
+    "measurementEligibilityReasons": { "type": "array", "items": { "$ref": "#/$defs/invalidReason" } },
+    "browserProcesses": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/browserProcess" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+    "metricRef": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*@[1-9][0-9]*$" },
+    "nonEmpty": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "hardwareString": { "type": "string", "minLength": 1, "maxLength": 2048, "not": { "const": "unknown" } },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "path": { "type": "string", "maxLength": 512, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)[a-z0-9](?:[a-z0-9._/-]*[a-z0-9._-])?$" },
+    "pathList": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/path" } },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "uint32": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value"],
+      "properties": {
+        "key": { "$ref": "#/$defs/id" },
+        "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] }
+      }
+    },
+    "availabilityUnavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "sourceRef", "reasonCode"],
+      "properties": {
+        "status": { "enum": ["unknown", "unsupported", "not-requested", "not-active", "permission-denied", "blocked", "error"] },
+        "value": { "type": "null" },
+        "sourceRef": { "$ref": "#/$defs/id" },
+        "reasonCode": { "$ref": "#/$defs/id" }
+      }
+    },
+    "availabilityString": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/nonEmpty" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/nonEmpty" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityHardwareString": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/hardwareString" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/hardwareString" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityId": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/id" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/id" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityDigest": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/sha256" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/sha256" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityPathList": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/pathList" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/pathList" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityBoolean": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "type": "boolean" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "type": "boolean" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityPositiveInteger": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/positiveInteger" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/positiveInteger" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityNonNegativeInteger": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/nonNegativeInteger" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/nonNegativeInteger" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityPositiveNumber": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/positiveNumber" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/positiveNumber" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityStringArray": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityTier": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["H1", "H2", "H3"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["H1", "H2", "H3"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityGateRole": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["correctness-only", "performance-primary", "guardrail", "informational"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["correctness-only", "performance-primary", "guardrail", "informational"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityVsync": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["enabled", "disabled", "platform-default"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["enabled", "disabled", "platform-default"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityPowerSource": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["ac", "battery"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["ac", "battery"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityVisibility": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["visible", "hidden"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["visible", "hidden"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityFocus": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["focused", "unfocused"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["focused", "unfocused"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "availabilityThermal": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "enum": ["nominal", "throttled", "not-observable"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "enum": ["nominal", "throttled", "not-observable"] }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "batteryState": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "not-applicable" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "percent"], "properties": { "status": { "const": "reported" }, "percent": { "type": "number", "minimum": 0, "maximum": 100 } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "reason"], "properties": { "status": { "const": "unavailable" }, "reason": { "$ref": "#/$defs/nonEmpty" } } }
+      ]
+    },
+    "availabilityBattery": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/batteryState" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/batteryState" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "competingLoad": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "none" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "detail"], "properties": { "status": { "const": "documented" }, "detail": { "$ref": "#/$defs/nonEmpty" } } }
+      ]
+    },
+    "availabilityCompetingLoad": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/competingLoad" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/competingLoad" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "capabilityAvailability": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "const": true }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "const": true }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "semanticSha256", "sourceFileSetSha256", "sourcePaths"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "$ref": "#/$defs/positiveInteger" },
+        "semanticSha256": { "$ref": "#/$defs/availabilityDigest" },
+        "sourceFileSetSha256": { "$ref": "#/$defs/availabilityDigest" },
+        "sourcePaths": { "$ref": "#/$defs/availabilityPathList" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sourceFileSetSha256", "sourcePaths"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "$ref": "#/$defs/positiveInteger" },
+        "sourceFileSetSha256": { "$ref": "#/$defs/availabilityDigest" },
+        "sourcePaths": { "$ref": "#/$defs/availabilityPathList" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithmVersion", "rootPath", "sha256", "fileCount", "totalBytes"],
+      "properties": {
+        "algorithmVersion": { "const": "hestia-benchmark-build-sha256-v1" },
+        "rootPath": { "const": "dist" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "fileCount": { "$ref": "#/$defs/positiveInteger" },
+        "totalBytes": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "repositoryUrl", "commitSha", "commitTreeSha", "worktree", "build", "fixture", "candidate"],
+      "properties": {
+        "schemaVersion": { "const": "benchmark-source-provenance-v1" },
+        "repositoryUrl": { "const": "https://github.com/BenjaminHornung/hestia-voxel-kernel-lab" },
+        "commitSha": { "$ref": "#/$defs/gitSha" },
+        "commitTreeSha": { "$ref": "#/$defs/gitSha" },
+        "worktree": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "statusCommand", "statusOutputSha256", "submodules"],
+          "properties": {
+            "state": { "const": "clean" },
+            "statusCommand": { "const": "git status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none" },
+            "statusOutputSha256": { "const": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+            "submodules": { "type": "array", "maxItems": 0 }
+          }
+        },
+        "build": { "$ref": "#/$defs/build" },
+        "fixture": { "$ref": "#/$defs/fixture" },
+        "candidate": { "$ref": "#/$defs/candidate" }
+      }
+    },
+    "invalidReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail", "phase"],
+      "properties": {
+        "code": { "enum": ["source-dirty", "source-sha-mismatch", "source-tree-mismatch", "build-digest-mismatch", "fixture-contract-mismatch", "candidate-contract-mismatch", "scenario-contract-mismatch", "run-plan-mismatch", "environment-incomplete", "browser-version-mismatch", "required-capability-missing", "document-hidden", "document-unfocused", "background-tabs-present", "power-state-mismatch", "thermal-throttling", "clock-invalid", "sample-invalid", "gpu-disjoint", "context-lost", "console-error", "page-error", "request-failure", "http-error", "process-crash", "operator-abort", "infrastructure-failure"] },
+        "detail": { "$ref": "#/$defs/nonEmpty" },
+        "phase": { "enum": ["cold", "warmup", "measurement", "stress", "trace", "leak"] }
+      }
+    },
+    "parameter": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "seed" }, "value": { "$ref": "#/$defs/nonNegativeInteger" } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "backend" }, "value": { "enum": ["raw-webgpu", "three-webgl2"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "mesher" }, "value": { "enum": ["greedy", "greedy-ao", "not-applicable", "visible"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "chunk-edge" }, "value": { "enum": [32, 64] } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "worker-count" }, "value": { "$ref": "#/$defs/nonNegativeInteger" } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "enum": ["duration-ms", "edit-interval-ms", "burst-size", "burst-interval-ms"] }, "value": { "$ref": "#/$defs/nonNegativeInteger" } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "edit-count" }, "value": { "enum": [100, 1000] } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "density-case" }, "value": { "enum": ["empty", "one-percent", "ten-percent", "fifty-percent", "ninety-percent", "full", "checkerboard"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "stabilization-cycles" }, "value": { "const": 20 } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "const": "measurement-cycles" }, "value": { "const": 100 } } },
+        { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "enum": ["camera-contract-sha256", "feature-contract-sha256", "command-stream-sha256"] }, "value": { "$ref": "#/$defs/sha256" } } }
+      ]
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "definitionSha256", "fixture", "parameters"],
+      "properties": {
+        "id": { "enum": ["mesh-golden-world-v1", "mesh-density-sweep-v1", "scheduler-steady-v1", "scheduler-burst-v1", "brush-stress-v1", "navigation-leak-v1", "backend-fixture-v1"] },
+        "version": { "const": 1 },
+        "definitionSha256": { "$ref": "#/$defs/sha256" },
+        "fixture": { "$ref": "#/$defs/fixture" },
+        "parameters": { "type": "array", "items": { "$ref": "#/$defs/parameter" } }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "hardwareProfileId", "hardwareProfileTier", "gateRole", "os", "cpu", "gpu", "browser", "display", "power", "runtimeState", "capabilities"],
+      "properties": {
+        "schemaVersion": { "const": "benchmark-environment-manifest-v1" },
+        "hardwareProfileId": { "$ref": "#/$defs/availabilityId" },
+        "hardwareProfileTier": { "$ref": "#/$defs/availabilityTier" },
+        "gateRole": { "$ref": "#/$defs/availabilityGateRole" },
+        "os": { "type": "object", "additionalProperties": false, "required": ["name", "version", "architecture"], "properties": { "name": { "$ref": "#/$defs/availabilityHardwareString" }, "version": { "$ref": "#/$defs/availabilityHardwareString" }, "architecture": { "$ref": "#/$defs/availabilityHardwareString" } } },
+        "cpu": { "type": "object", "additionalProperties": false, "required": ["vendor", "model", "physicalCores", "logicalCores", "ramBytes"], "properties": { "vendor": { "$ref": "#/$defs/availabilityHardwareString" }, "model": { "$ref": "#/$defs/availabilityHardwareString" }, "physicalCores": { "$ref": "#/$defs/availabilityPositiveInteger" }, "logicalCores": { "$ref": "#/$defs/availabilityPositiveInteger" }, "ramBytes": { "$ref": "#/$defs/availabilityPositiveInteger" } } },
+        "gpu": { "type": "object", "additionalProperties": false, "required": ["vendor", "device", "driver", "graphicsBackend"], "properties": { "vendor": { "$ref": "#/$defs/availabilityHardwareString" }, "device": { "$ref": "#/$defs/availabilityHardwareString" }, "driver": { "$ref": "#/$defs/availabilityHardwareString" }, "graphicsBackend": { "$ref": "#/$defs/availabilityHardwareString" } } },
+        "browser": { "type": "object", "additionalProperties": false, "required": ["product", "version", "channel", "userAgent", "executableSha256", "headless", "flags"], "properties": { "product": { "$ref": "#/$defs/availabilityHardwareString" }, "version": { "$ref": "#/$defs/availabilityHardwareString" }, "channel": { "$ref": "#/$defs/availabilityHardwareString" }, "userAgent": { "$ref": "#/$defs/availabilityHardwareString" }, "executableSha256": { "$ref": "#/$defs/availabilityDigest" }, "headless": { "$ref": "#/$defs/availabilityBoolean" }, "flags": { "$ref": "#/$defs/availabilityStringArray" } } },
+        "display": { "type": "object", "additionalProperties": false, "required": ["cssWidth", "cssHeight", "devicePixelRatio", "refreshHz", "vsync"], "properties": { "cssWidth": { "$ref": "#/$defs/availabilityPositiveInteger" }, "cssHeight": { "$ref": "#/$defs/availabilityPositiveInteger" }, "devicePixelRatio": { "$ref": "#/$defs/availabilityPositiveNumber" }, "refreshHz": { "$ref": "#/$defs/availabilityPositiveNumber" }, "vsync": { "$ref": "#/$defs/availabilityVsync" } } },
+         "power": { "type": "object", "additionalProperties": false, "required": ["source", "profile", "battery"], "properties": { "source": { "$ref": "#/$defs/availabilityPowerSource" }, "profile": { "$ref": "#/$defs/availabilityHardwareString" }, "battery": { "$ref": "#/$defs/availabilityBattery" } } },
+        "runtimeState": { "type": "object", "additionalProperties": false, "required": ["visibility", "focus", "backgroundTabs", "competingLoad", "thermalState"], "properties": { "visibility": { "$ref": "#/$defs/availabilityVisibility" }, "focus": { "$ref": "#/$defs/availabilityFocus" }, "backgroundTabs": { "$ref": "#/$defs/availabilityNonNegativeInteger" }, "competingLoad": { "$ref": "#/$defs/availabilityCompetingLoad" }, "thermalState": { "$ref": "#/$defs/availabilityThermal" } } },
+        "capabilities": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "value"], "properties": { "id": { "$ref": "#/$defs/id" }, "value": { "$ref": "#/$defs/capabilityAvailability" } } } }
+      }
+    },
+    "validity": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "valid" } } }, { "type": "object", "additionalProperties": false, "required": ["status", "reasons"], "properties": { "status": { "const": "invalid" }, "reasons": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/invalidReason" } } } }] },
+    "execution": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "processContainer", "phase", "processOrdinal", "iteration", "runPlanId", "runPlanSha256", "order", "pageState", "measurementEligibility", "origin", "validity"], "properties": { "schemaVersion": { "const": "benchmark-execution-descriptor-v1" }, "processContainer": { "enum": ["cold", "warm-measurement", "stress", "trace", "leak"] }, "phase": { "enum": ["cold", "warmup", "measurement", "stress", "trace", "leak"] }, "processOrdinal": { "$ref": "#/$defs/nonNegativeInteger" }, "iteration": { "$ref": "#/$defs/nonNegativeInteger" }, "runPlanId": { "$ref": "#/$defs/id" }, "runPlanSha256": { "$ref": "#/$defs/sha256" }, "order": { "type": "object", "additionalProperties": false, "required": ["scheme", "orderSeed", "blockId", "sequencePosition", "candidateId"], "properties": { "scheme": { "enum": ["single-candidate", "abba", "baab", "latin-square"] }, "orderSeed": { "$ref": "#/$defs/uint32" }, "blockId": { "$ref": "#/$defs/id" }, "sequencePosition": { "$ref": "#/$defs/nonNegativeInteger" }, "candidateId": { "$ref": "#/$defs/id" } } }, "pageState": { "type": "object", "additionalProperties": false, "required": ["visibility", "focus", "backgroundTabs"], "properties": { "visibility": { "enum": ["visible", "hidden"] }, "focus": { "enum": ["focused", "unfocused"] }, "backgroundTabs": { "$ref": "#/$defs/nonNegativeInteger" } } }, "measurementEligibility": { "enum": ["eligible", "ineligible"] }, "origin": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "planned" } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "replacesRunId", "approvalId", "reason"], "properties": { "kind": { "const": "infrastructure-rerun" }, "replacesRunId": { "$ref": "#/$defs/id" }, "approvalId": { "$ref": "#/$defs/id" }, "reason": { "const": "infrastructure-failure" } } }] }, "validity": { "$ref": "#/$defs/validity" } } },
+    "observation": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["clock", "realmId", "timeOriginEpochMs", "startMs"], "properties": { "clock": { "const": "performance-time-origin" }, "realmId": { "$ref": "#/$defs/id" }, "timeOriginEpochMs": { "type": "number", "minimum": 0 }, "startMs": { "type": "number", "minimum": 0 } } }, { "type": "object", "additionalProperties": false, "required": ["clock", "realmId", "startTickDecimal", "timestampPeriodNs"], "properties": { "clock": { "const": "gpu-query" }, "realmId": { "$ref": "#/$defs/id" }, "startTickDecimal": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" }, "timestampPeriodNs": { "type": "number", "exclusiveMinimum": 0 } } }] },
+    "sample": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "sampleId", "ordinal", "iterationId", "phase", "metricRef", "kind", "realm", "observedAt", "unit", "result", "dimensions", "runBindingSha256"], "properties": { "schemaVersion": { "const": "benchmark-raw-sample-v1" }, "sampleId": { "$ref": "#/$defs/id" }, "ordinal": { "$ref": "#/$defs/nonNegativeInteger" }, "iterationId": { "$ref": "#/$defs/id" }, "phase": { "enum": ["cold", "warmup", "measurement", "stress", "trace", "leak"] }, "metricRef": { "$ref": "#/$defs/metricRef" }, "kind": { "enum": ["duration", "counter", "memory", "frame", "long-task", "gpu", "liveness"] }, "realm": { "enum": ["main", "worker", "gpu", "browser"] }, "observedAt": { "$ref": "#/$defs/observation" }, "unit": { "enum": ["ms", "bytes", "count", "ratio", "revision", "hertz", "percent"] }, "result": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "valid" }, "value": { "type": "number" } } }, { "type": "object", "additionalProperties": false, "required": ["status", "reason"], "properties": { "status": { "const": "invalid" }, "reason": { "$ref": "#/$defs/invalidReason" } } }] }, "dimensions": { "type": "array", "items": { "$ref": "#/$defs/dimension" } }, "runBindingSha256": { "$ref": "#/$defs/sha256" } } },
+    "iteration": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "iterationId", "iterationOrdinal", "runId", "phase", "samples"], "properties": { "schemaVersion": { "const": "benchmark-iteration-v1" }, "iterationId": { "$ref": "#/$defs/id" }, "iterationOrdinal": { "$ref": "#/$defs/nonNegativeInteger" }, "runId": { "$ref": "#/$defs/id" }, "phase": { "enum": ["cold", "warmup", "measurement", "stress", "trace", "leak"] }, "samples": { "type": "array", "items": { "$ref": "#/$defs/sample" } } } },
+    "ids": { "type": "object", "additionalProperties": false, "required": ["slotId", "browserProcessId", "bootstrapClusterId", "pairCellId", "pairOrdinal", "ownership"], "properties": { "slotId": { "$ref": "#/$defs/id" }, "browserProcessId": { "$ref": "#/$defs/id" }, "bootstrapClusterId": { "$ref": "#/$defs/id" }, "pairCellId": { "$ref": "#/$defs/id" }, "pairOrdinal": { "$ref": "#/$defs/positiveInteger" }, "ownership": { "type": "object", "additionalProperties": false, "required": ["slotId", "browserProcessId", "bootstrapClusterId", "pairCellId", "pairOrdinal"], "properties": { "slotId": { "const": "BR03" }, "browserProcessId": { "const": "BR03" }, "bootstrapClusterId": { "const": "BR03" }, "pairCellId": { "const": "BR03" }, "pairOrdinal": { "const": "BR03" } } } } },
+    "run": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "protocolVersion", "runId", "createdUtc", "hardwareCellId", "browserProcessId", "ids", "source", "scenario", "environment", "execution", "runBindingSha256", "measurementEligible", "measurementEligibilityReasons", "iterations"], "properties": { "schemaVersion": { "const": "benchmark-run-v1" }, "protocolVersion": { "const": "benchmark-protocol-v1" }, "runId": { "$ref": "#/$defs/id" }, "createdUtc": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$" }, "hardwareCellId": { "$ref": "#/$defs/id" }, "browserProcessId": { "$ref": "#/$defs/id" }, "ids": { "$ref": "#/$defs/ids" }, "source": { "$ref": "#/$defs/source" }, "scenario": { "$ref": "#/$defs/scenario" }, "environment": { "$ref": "#/$defs/environment" }, "execution": { "$ref": "#/$defs/execution" }, "runBindingSha256": { "$ref": "#/$defs/sha256" }, "measurementEligible": { "type": "boolean" }, "measurementEligibilityReasons": { "type": "array", "items": { "$ref": "#/$defs/invalidReason" } }, "iterations": { "type": "array", "items": { "$ref": "#/$defs/iteration" } } }, "allOf": [{ "if": { "type": "object", "required": ["execution"], "properties": { "execution": { "type": "object", "required": ["measurementEligibility", "validity"], "properties": { "measurementEligibility": { "const": "eligible" }, "validity": { "type": "object", "required": ["status"], "properties": { "status": { "const": "valid" } } } } } } }, "then": { "type": "object", "required": ["iterations"], "properties": { "iterations": { "type": "array", "contains": { "type": "object", "required": ["samples"], "properties": { "samples": { "type": "array", "minItems": 1 } } } } } } }] },
+    "browserProcess": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "browserProcessId", "hardwareCellId", "source", "environment", "ids", "runs"], "properties": { "schemaVersion": { "const": "benchmark-browser-process-v1" }, "browserProcessId": { "$ref": "#/$defs/id" }, "hardwareCellId": { "$ref": "#/$defs/id" }, "source": { "$ref": "#/$defs/source" }, "environment": { "$ref": "#/$defs/environment" }, "ids": { "$ref": "#/$defs/ids" }, "runs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/run" } } } }
+  }
+}

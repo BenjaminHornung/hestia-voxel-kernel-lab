@@ -1,0 +1,12 @@
+{
+  "caseId": "N36",
+  "fixtureId": "n36-negative-zero-v1",
+  "metricRef": "chunk.mesh.cpu.ms@1",
+  "mutation": {
+    "kind": "token",
+    "value": "-0"
+  },
+  "sampleOrdinal": 0,
+  "variant": "negative-zero",
+  "version": 1
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hestia.invalid/schemas/benchmark-validation-receipt-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "protocolVersion", "status", "receiptId", "planId", "slotId", "runId", "planDigest", "telemetryExportRawByteSha256", "benchmarkRunRawByteSha256", "benchmarkRunCanonicalSha256", "runBindingSha256", "schemaSetSha256", "metricRegistrySha256", "validator"],
+  "properties": {
+    "schemaVersion": { "const": "benchmark-validation-receipt-v1" },
+    "protocolVersion": { "const": "benchmark-protocol-v1" },
+    "status": { "const": "schema-and-integrity-valid" },
+    "receiptId": { "$ref": "#/$defs/sha256" },
+    "planId": { "$ref": "#/$defs/id" },
+    "slotId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "planDigest": { "$ref": "#/$defs/sha256" },
+    "telemetryExportRawByteSha256": { "$ref": "#/$defs/sha256" },
+    "benchmarkRunRawByteSha256": { "$ref": "#/$defs/sha256" },
+    "benchmarkRunCanonicalSha256": { "$ref": "#/$defs/sha256" },
+    "runBindingSha256": { "$ref": "#/$defs/sha256" },
+    "schemaSetSha256": { "$ref": "#/$defs/sha256" },
+    "metricRegistrySha256": { "$ref": "#/$defs/sha256" },
+    "validator": { "type": "object", "additionalProperties": false, "required": ["id", "sourceCommitSha", "sourceFileSetSha256"], "properties": { "id": { "const": "br01-validator-v1" }, "sourceCommitSha": { "$ref": "#/$defs/gitSha" }, "sourceFileSetSha256": { "$ref": "#/$defs/sha256" } } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

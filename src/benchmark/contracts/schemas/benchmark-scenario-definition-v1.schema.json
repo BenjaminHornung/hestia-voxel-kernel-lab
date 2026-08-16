@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hestia.invalid/schemas/benchmark-scenario-definition-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "protocolVersion", "id", "version", "fixtureContractId", "fixtureContractVersion", "allowedPhases", "parameterContracts", "metricContracts", "metricCapabilitySelections", "capabilityContracts", "comparisonAxes", "fairnessKeys"],
+  "properties": {
+    "schemaVersion": { "const": "benchmark-scenario-definition-v1" },
+    "protocolVersion": { "const": "benchmark-protocol-v1" },
+    "id": { "enum": ["mesh-golden-world-v1", "mesh-density-sweep-v1", "scheduler-steady-v1", "scheduler-burst-v1", "brush-stress-v1", "navigation-leak-v1", "backend-fixture-v1"] },
+    "version": { "const": 1 },
+    "fixtureContractId": { "$ref": "#/$defs/id" },
+    "fixtureContractVersion": { "$ref": "#/$defs/positiveInteger" },
+    "allowedPhases": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["cold", "warmup", "measurement", "stress", "trace", "leak"] } },
+    "parameterContracts": { "type": "array", "items": { "$ref": "#/$defs/parameterContract" } },
+    "metricContracts": { "type": "array", "items": { "$ref": "#/$defs/metricContract" } },
+    "metricCapabilitySelections": { "type": "array", "items": { "$ref": "#/$defs/metricCapabilitySelection" } },
+    "capabilityContracts": { "type": "array", "items": { "$ref": "#/$defs/capabilityContract" } },
+    "comparisonAxes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["candidate", "backend", "mesher", "chunk-edge", "worker-count"] } },
+    "fairnessKeys": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "parameterContract": { "type": "object", "additionalProperties": false, "required": ["key", "required", "domain"], "properties": { "key": { "enum": ["seed", "backend", "mesher", "chunk-edge", "worker-count", "duration-ms", "edit-interval-ms", "burst-size", "burst-interval-ms", "edit-count", "density-case", "stabilization-cycles", "measurement-cycles", "camera-contract-sha256", "feature-contract-sha256", "command-stream-sha256"] }, "required": { "const": true }, "domain": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "uint32" } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "minimum", "maximum"], "properties": { "kind": { "const": "safe-integer-range" }, "minimum": { "type": "integer" }, "maximum": { "type": "integer" } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "values"], "properties": { "kind": { "const": "enum" }, "values": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } } } }, { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "sha256" } } }] } } },
+      "metricContract": { "type": "object", "additionalProperties": false, "required": ["metricRef", "kind", "unit", "requirement"], "properties": { "metricRef": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*@[1-9][0-9]*$" }, "kind": { "enum": ["duration", "counter", "memory", "frame", "long-task", "gpu", "liveness"] }, "unit": { "enum": ["ms", "bytes", "count", "ratio", "revision", "hertz", "percent"] }, "dimensions": { "type": "array", "items": { "$ref": "#/$defs/dimension" } }, "requirement": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "required" } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "capabilityId"], "properties": { "kind": { "const": "when-capability-supported" }, "capabilityId": { "$ref": "#/$defs/id" } } }] } } },
+      "metricCapabilitySelection": { "type": "object", "additionalProperties": false, "required": ["scenarioId", "metricRef", "parameterKey", "selections"], "properties": { "scenarioId": { "enum": ["mesh-golden-world-v1", "mesh-density-sweep-v1", "scheduler-steady-v1", "scheduler-burst-v1", "brush-stress-v1", "navigation-leak-v1", "backend-fixture-v1"] }, "metricRef": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*@[1-9][0-9]*$" }, "parameterKey": { "const": "backend" }, "selections": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/metricCapabilitySelectionEntry" } } } },
+      "metricCapabilitySelectionEntry": { "type": "object", "additionalProperties": false, "required": ["parameterValue", "capabilityId"], "properties": { "parameterValue": { "enum": ["raw-webgpu", "three-webgl2"] }, "capabilityId": { "$ref": "#/$defs/id" } } },
+      "capabilityContract": { "type": "object", "additionalProperties": false, "required": ["id", "requirement"], "properties": { "id": { "$ref": "#/$defs/id" }, "requirement": { "enum": ["must-support", "must-declare"] } } },
+     "dimension": { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "$ref": "#/$defs/id" }, "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } } }
+  }
+}
