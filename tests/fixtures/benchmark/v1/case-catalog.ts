@@ -117,6 +117,7 @@ export type BenchmarkPositiveFixtureCaseIdV1 = (typeof positiveCaseIds)[number];
 export type BenchmarkNegativeFixtureCaseIdV1 = (typeof negativeCaseIds)[number];
 
 const textEncoder = new TextEncoder();
+const CANDIDATE_HEAD_BLOB_OID = 'c'.repeat(40);
 const textDecoder = new TextDecoder();
 
 function clone<T>(value: T): T {
@@ -280,9 +281,11 @@ function setupSourcePreflight(kind: SourcePreflightKindV1): {
   const runCommand = (_command: string, args: readonly string[], cwd: string): SourcePreflightCommandResultV1 => {
     if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return commandResult(realpathSync(cwd));
     if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return commandResult(BR01_ACCEPTED_WP04_SHA);
-    if (args[0] === 'rev-parse' && args[2] === 'HEAD^{tree}') return commandResult(trees[Math.min(treeRead++, trees.length - 1)]!);
+    if (args[0] === 'rev-parse' && args[2]?.endsWith('^{tree}')) return commandResult(trees[Math.min(treeRead++, trees.length - 1)]!);
     if (args[0] === 'status') return kind === 'dirty' ? commandResult('1 .M fixture.txt') : commandResult(empty);
     if (args[0] === 'ls-files' && kind === 'gitlink') return commandResult(`160000 ${'a'.repeat(40)} 0\tvendor/submodule`);
+    if (args[0] === 'ls-tree') return { status: 0, stdout: textEncoder.encode(`100644 blob ${CANDIDATE_HEAD_BLOB_OID}\t${args[args.length - 1]}\0`), stderr: empty };
+    if (args[0] === 'hash-object') return commandResult(CANDIDATE_HEAD_BLOB_OID);
     return commandResult(empty);
   };
   const input = {

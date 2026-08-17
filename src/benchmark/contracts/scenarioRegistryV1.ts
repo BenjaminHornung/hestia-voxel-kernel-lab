@@ -573,7 +573,11 @@ function buildMetricReachabilityMatrixV1(): readonly BenchmarkMetricReachability
           const producer = futureMetricProducerContract(contract.metricRef);
           const requirement = reachabilityRequirement(definitionValue, contract, metric, backendValue);
           const allowed = metric.allowedPhases.includes(phase) && metric.allowedContainers.includes(phaseContainer(phase));
-          const eligibility = allowed ? undefined : 'not-required-in-phase' as const;
+          const eligibility = !allowed
+            ? 'not-required-in-phase' as const
+            : phase === 'warmup' || phase === 'trace' || phase === 'leak'
+              ? 'ineligible-phase-by-contract' as const
+              : undefined;
           entries.push({
             scenarioId: definitionValue.id,
             phase,
@@ -644,7 +648,7 @@ export const BENCHMARK_METRIC_REGISTRY_V1: MetricRegistryV1 = freezeGraph({
   telemetryMappings: telemetryMappingList as unknown as NonEmptyReadonlyArray<TelemetrySourceMappingV1>,
   producibilityCrosswalk: BENCHMARK_METRIC_PRODUCIBILITY_CROSSWALK_V1 as unknown as NonEmptyReadonlyArray<BenchmarkMetricProducibilityEntryV1>,
   reachabilityMatrix: BENCHMARK_METRIC_REACHABILITY_MATRIX_V1 as unknown as NonEmptyReadonlyArray<BenchmarkMetricReachabilityEntryV1>,
-  metricRegistrySha256: 'sha256:4fc183081eadf9588c242044e6d420751c8a573f2a5e16e248e5e42ccbf7e4f6' as Sha256DigestV1,
+  metricRegistrySha256: 'sha256:4deeb759d0823ae842e453bd00276a98b9418866528210c70a30569c1f14b3f5' as Sha256DigestV1,
 });
 
 export const BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1 = freezeGraph(telemetryMappingList.map((mapping) => mapping.recordName)) as readonly CanonicalIdV1[];

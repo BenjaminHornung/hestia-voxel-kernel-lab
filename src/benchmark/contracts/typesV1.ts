@@ -331,6 +331,7 @@ export type BenchmarkMetricReachabilityRequirementV1 = 'required' | 'capability-
 export type BenchmarkMetricReachabilityDispositionV1 = 'emit-sample' | 'not-required-in-phase';
 export type BenchmarkMetricReachabilityEligibilityV1 =
   | 'ineligible-until-valid-sample-and-all-other-contracts'
+  | 'ineligible-phase-by-contract'
   | 'eligible-after-valid-sample-and-all-other-contracts'
   | 'not-required-in-phase';
 

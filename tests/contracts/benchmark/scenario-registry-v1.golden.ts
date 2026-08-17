@@ -149,9 +149,9 @@ export const BENCHMARK_METRIC_REGISTRY_GOLDENS_V1 = {
     'image.contract.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [emit('image.contract-sha256-match', 'image.contract.sha256.match@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
 } as const;
 
-export const BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 = 'sha256:4fc183081eadf9588c242044e6d420751c8a573f2a5e16e248e5e42ccbf7e4f6' as const;
+export const BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 = 'sha256:4deeb759d0823ae842e453bd00276a98b9418866528210c70a30569c1f14b3f5' as const;
 export const BENCHMARK_METRIC_REACHABILITY_MATRIX_COUNT_GOLDEN_V1 = 268 as const;
-export const BENCHMARK_METRIC_REACHABILITY_MATRIX_SHA256_GOLDEN_V1 = 'sha256:58011e9335ab4ddde858782520e801be8703a9e85f79d45cadcac2c7313cf188' as const;
+export const BENCHMARK_METRIC_REACHABILITY_MATRIX_SHA256_GOLDEN_V1 = 'sha256:22e4becfee1a277ac4c68278a4e12be3787ddda5ea1a30c00c88a2ad864a9c40' as const;
 
 export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'adoption.cpu.ms@1': {

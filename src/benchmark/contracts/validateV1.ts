@@ -1395,8 +1395,17 @@ function validateMetricReachabilityMatrix(
     const allowedInContainer = (metric.allowedContainers as unknown[]).includes(container);
     const allowed = allowedInPhase && allowedInContainer;
     const expectedDisposition = allowed ? 'emit-sample' : 'not-required-in-phase';
-    const expectedBefore = allowed ? 'ineligible-until-valid-sample-and-all-other-contracts' : 'not-required-in-phase';
-    const expectedAfter = allowed ? 'eligible-after-valid-sample-and-all-other-contracts' : 'not-required-in-phase';
+    const phaseIneligible = phase === 'warmup' || phase === 'trace' || phase === 'leak';
+    const expectedBefore = !allowed
+      ? 'not-required-in-phase'
+      : phaseIneligible
+        ? 'ineligible-phase-by-contract'
+        : 'ineligible-until-valid-sample-and-all-other-contracts';
+    const expectedAfter = !allowed
+      ? 'not-required-in-phase'
+      : phaseIneligible
+        ? 'ineligible-phase-by-contract'
+        : 'eligible-after-valid-sample-and-all-other-contracts';
     const keys = ['scenarioId', 'phase', 'backend', 'metricRef', 'scenarioMetricContractOrdinal', 'requirement', ...(expectedCapabilityId === undefined ? [] : ['capabilityId']), 'futureProducerOwner', 'recordName', 'disposition', 'firstWorkPackageAbleToEmit', 'eligibilityBeforeProducer', 'eligibilityAfterProducer'];
     const entry = closed(raw, keys, entryPath);
     semantic(entry.requirement === expectedRequirement, `${entryPath}.requirement`, 'Reachability requirement does not match the scenario contract.', 'reachability-matrix-invalid');

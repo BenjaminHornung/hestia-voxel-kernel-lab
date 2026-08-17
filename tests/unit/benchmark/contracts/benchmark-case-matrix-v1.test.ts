@@ -93,6 +93,18 @@ describe('BR01 executable fixture matrix', () => {
     expect(after.measurementEligible).toBe(true);
   });
   it.each([
+    ['warmup', 'mesh-golden-world-v1', 'warm-measurement', ['worker.mesh-cpu']],
+    ['trace', 'navigation-leak-v1', 'trace', ['browser.dom-document-count']],
+    ['leak', 'navigation-leak-v1', 'leak', ['memory.bytes']],
+  ] as const)('keeps %s samples structurally producible but measurement-ineligible by contract', (phase, scenarioId, container, records) => {
+    const document = createBenchmarkCaseDocumentV1({ scenarioId, phase, container, samples: true }) as any;
+    applySyntheticFutureProducerRecordsV1(document, records);
+    const run = document.browserProcesses[0].runs.at(-1);
+    expect(run.execution.measurementEligibility).toBe('eligible');
+    expect(run.iterations.some((iteration: any) => iteration.samples.length > 0)).toBe(true);
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId }))).toMatchObject({ valid: false, code: 'measurement-ineligible' });
+  });
+  it.each([
     ['three-webgl2', 'webgl-disjoint-timer-query'],
     ['raw-webgpu', 'webgpu-timestamp-query'],
   ] as const)('rejects an eligible backend cell when its selected GPU capability is unavailable: %s', (backend, selected) => {

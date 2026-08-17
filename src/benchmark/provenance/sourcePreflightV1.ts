@@ -402,6 +402,67 @@ function readAcceptedHeadBlob(
   return new Uint8Array(result.stdout);
 }
 
+function readCurrentHeadBlobOid(
+  path: RepositoryRelativePathV1,
+  rootPath: string,
+  treeSha: string,
+  runner: SourcePreflightCommandRunnerV1,
+): string {
+  const result = commandResult(runner, 'git', ['ls-tree', '-z', '--full-tree', treeSha, '--', path], rootPath);
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(result.stdout);
+  } catch {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Current HEAD metadata is not UTF-8: ${path}.`);
+  }
+  const firstNul = text.indexOf('\0');
+  if (firstNul < 1 || firstNul !== text.length - 1 || text.indexOf('\0', firstNul + 1) !== -1) {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Current HEAD metadata must contain exactly one NUL record: ${path}.`);
+  }
+  const record = text.slice(0, firstNul);
+  const tab = record.indexOf('\t');
+  if (tab < 1 || record.indexOf('\t', tab + 1) !== -1) {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Current HEAD metadata is malformed: ${path}.`);
+  }
+  const fields = record.slice(0, tab).split(' ');
+  const returnedPath = record.slice(tab + 1);
+  if (fields.length !== 3 || !/^100[0-7]{3}$/.test(fields[0]!) || fields[1] !== 'blob' || !/^[0-9a-f]{40}$/.test(fields[2]!) || returnedPath !== path) {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Current HEAD candidate binding is not an exact regular blob: ${path}.`);
+  }
+  return fields[2]!;
+}
+
+function verifyCurrentHeadCandidatePath(
+  path: RepositoryRelativePathV1,
+  rootPath: string,
+  treeSha: string,
+  runner: SourcePreflightCommandRunnerV1,
+  expectedBlobOid?: string,
+): string {
+  const headBlobOid = readCurrentHeadBlobOid(path, rootPath, treeSha, runner);
+  if (expectedBlobOid !== undefined && headBlobOid !== expectedBlobOid) {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Candidate tree binding changed during preflight: ${path}.`);
+  }
+  const filteredWorkingTreeOid = exactCommandText(commandResult(runner, 'git', ['hash-object', `--path=${path}`, '--', path], rootPath));
+  if (filteredWorkingTreeOid === undefined) {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Clean-filter candidate hash is malformed: ${path}.`);
+  }
+  if (filteredWorkingTreeOid !== headBlobOid) {
+    throw new SourcePreflightContractError('candidate-contract-mismatch', `Candidate bytes do not match the current HEAD blob: ${path}.`);
+  }
+  return headBlobOid;
+}
+
+function verifyCurrentHeadCandidatePaths(
+  paths: readonly RepositoryRelativePathV1[],
+  rootPath: string,
+  treeSha: string,
+  runner: SourcePreflightCommandRunnerV1,
+  expectedBlobOids?: readonly string[],
+): readonly string[] {
+  return paths.map((path, index) => verifyCurrentHeadCandidatePath(path, rootPath, treeSha, runner, expectedBlobOids?.[index]));
+}
+
 function verifyWp04OwnerBinding(
   rootPath: string,
   fixtureMetadata: ReturnType<typeof validateFixtureMetadata>,
@@ -504,12 +565,16 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     }
     if (relative(verifiedRootPath, verifiedReportedRoot) !== '') return reject('infrastructure-failure', 'Git repository root differs from supplied root.');
     const commit = exactCommandText(commandResult(runner, 'git', ['rev-parse', '--verify', 'HEAD^{commit}'], verifiedRootPath));
-    const tree = exactCommandText(commandResult(runner, 'git', ['rev-parse', '--verify', 'HEAD^{tree}'], verifiedRootPath));
+    const tree = commit === undefined
+      ? undefined
+      : exactCommandText(commandResult(runner, 'git', ['rev-parse', '--verify', `${commit}^{tree}`], verifiedRootPath));
     if (commit === undefined) return reject('infrastructure-failure', 'Invalid HEAD commit output.');
     if (tree === undefined) return reject('infrastructure-failure', 'Invalid HEAD tree output.');
+    if (commit !== input.expectedSourceCommitSha) return reject('source-sha-mismatch', 'HEAD does not match the expected current source commit SHA.');
+    const candidateMetadata = validateCandidateMetadata(input.candidate);
+    const firstCandidateBlobOids = verifyCurrentHeadCandidatePaths(candidateMetadata.sourcePaths, verifiedRootPath, tree, runner);
     const status = commandResult(runner, 'git', ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'], verifiedRootPath);
     if (status.stdout.byteLength !== 0) return reject('source-dirty', 'Git worktree status is not empty.');
-    if (commit !== input.expectedSourceCommitSha) return reject('source-sha-mismatch', 'HEAD does not match the expected current source commit SHA.');
     if (!timingSafeEqualSha256V1(sha256BytesV1(status.stdout), EMPTY_STATUS_SHA256) || !timingSafeEqualSha256V1(emptyStatusDigest, EMPTY_STATUS_SHA256)) {
       return reject('infrastructure-failure', 'Empty status digest does not match the v1 constant.');
     }
@@ -526,7 +591,6 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     const isWp04Semantic = isBenchmarkWp04SemanticBytesV1(input.fixtureSemanticBytes) && timingSafeEqualSha256V1(fixtureSemanticDigest, BENCHMARK_WP04_SEMANTIC_SHA256_V1);
     if (isWp04Semantic && fixtureMetadata.id !== 'wp04-golden-world-v1') return reject('fixture-contract-mismatch', 'WP04 semantic bytes require the WP04 fixture ID.');
     if (fixtureMetadata.id === 'wp04-golden-world-v1' && !isWp04Semantic) return reject('fixture-contract-mismatch', 'WP04 fixture semantic bytes do not match the authoritative contract.');
-    const candidateMetadata = validateCandidateMetadata(input.candidate);
     const expectedBuild = validateBuildMetadata(input.build);
     verifyWp04OwnerBinding(verifiedRootPath, fixtureMetadata, runner);
     if (fixtureMetadata.id !== 'wp04-golden-world-v1') {
@@ -545,6 +609,18 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
       actualCandidate = digestFileSetPathsV1(candidateEntries, 'fileset');
     } catch (error) {
       throw new SourcePreflightContractError('candidate-contract-mismatch', error instanceof Error ? error.message : 'Candidate fileset could not be read.');
+    }
+    const secondCandidateBlobOids = verifyCurrentHeadCandidatePaths(candidateMetadata.sourcePaths, verifiedRootPath, tree, runner, firstCandidateBlobOids);
+    if (!samePaths(firstCandidateBlobOids, secondCandidateBlobOids)) throw new SourcePreflightContractError('candidate-contract-mismatch', 'Candidate HEAD bindings changed during preflight.');
+    const secondCandidateEntries: FileSetPathInputV1[] = candidateMetadata.sourcePaths.map((path) => ({ path, absolutePath: verifiedSourceFilePath(verifiedRootPath, path, 'candidate-contract-mismatch') }));
+    let secondCandidate;
+    try {
+      secondCandidate = digestFileSetPathsV1(secondCandidateEntries, 'fileset');
+    } catch (error) {
+      throw new SourcePreflightContractError('candidate-contract-mismatch', error instanceof Error ? error.message : 'Candidate fileset could not be read.');
+    }
+    if (!timingSafeEqualSha256V1(actualCandidate.digest, secondCandidate.digest) || actualCandidate.fileCount !== secondCandidate.fileCount || actualCandidate.totalBytes !== secondCandidate.totalBytes) {
+      throw new SourcePreflightContractError('candidate-contract-mismatch', 'Candidate fileset changed during preflight.');
     }
     if (!timingSafeEqualSha256V1(actualCandidate.digest, candidateMetadata.sourceFileSetSha256)) return reject('candidate-contract-mismatch', 'Candidate fileset digest mismatch.');
     const distPath = join(verifiedRootPath, 'dist');
@@ -575,7 +651,9 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     }
     const buildHandoff = createBuildHandoff(verifiedRootPath, build);
     const afterCommit = exactCommandText(commandResult(runner, 'git', ['rev-parse', '--verify', 'HEAD^{commit}'], verifiedRootPath));
-    const afterTree = exactCommandText(commandResult(runner, 'git', ['rev-parse', '--verify', 'HEAD^{tree}'], verifiedRootPath));
+    const afterTree = afterCommit === undefined
+      ? undefined
+      : exactCommandText(commandResult(runner, 'git', ['rev-parse', '--verify', `${afterCommit}^{tree}`], verifiedRootPath));
     const afterStatus = commandResult(runner, 'git', ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'], verifiedRootPath);
     if (afterCommit === undefined || afterTree === undefined) return reject('infrastructure-failure', 'Source changed during preflight.');
     if (afterStatus.stdout.byteLength !== 0) return reject('source-dirty', 'Git worktree became dirty during preflight.');

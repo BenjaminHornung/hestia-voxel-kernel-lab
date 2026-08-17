@@ -37,6 +37,9 @@ describe('BR02 browser contract entry', () => {
       expect(browserContract.BENCHMARK_PROTOCOL_VERSION).toBe('benchmark-protocol-v1');
       expect(browserContract.validateBrowserMetricRegistryV1(browserContract.BENCHMARK_METRIC_REGISTRY_V1)).toBe(true);
       expect(browserContract.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1).toHaveLength(268);
+      expect(browserContract.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1
+        .filter((entry: any) => (entry.phase === 'warmup' || entry.phase === 'trace' || entry.phase === 'leak') && entry.disposition === 'emit-sample')
+        .every((entry: any) => entry.eligibilityAfterProducer === 'ineligible-phase-by-contract')).toBe(true);
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

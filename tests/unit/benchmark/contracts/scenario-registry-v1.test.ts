@@ -78,6 +78,34 @@ describe('BR01 registries', () => {
     expect(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) => entry.requirement === 'capability-selected').length).toBeGreaterThan(0);
     expect(Object.isFrozen(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1)).toBe(true);
   });
+  it('separates sample reachability from phase measurement eligibility', () => {
+    const phaseRestricted = BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) =>
+      (entry.phase === 'warmup' || entry.phase === 'trace' || entry.phase === 'leak') && entry.disposition === 'emit-sample');
+    expect(phaseRestricted.length).toBeGreaterThan(0);
+    expect(phaseRestricted.every((entry) => entry.eligibilityBeforeProducer === 'ineligible-phase-by-contract'
+      && entry.eligibilityAfterProducer === 'ineligible-phase-by-contract')).toBe(true);
+    const meshMeasurement = BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) =>
+      entry.scenarioId === 'mesh-golden-world-v1' && (entry.phase === 'cold' || entry.phase === 'measurement') && entry.disposition === 'emit-sample');
+    expect(meshMeasurement.length).toBeGreaterThan(0);
+    expect(meshMeasurement.every((entry) => entry.eligibilityAfterProducer === 'eligible-after-valid-sample-and-all-other-contracts')).toBe(true);
+  });
+  it('independently rejects a registry that claims phase-restricted eligibility after a producer', () => {
+    for (const phase of ['warmup', 'trace', 'leak'] as const) {
+      const registry = JSON.parse(JSON.stringify(BENCHMARK_METRIC_REGISTRY_V1)) as any;
+      const entry = registry.reachabilityMatrix.find((candidate: any) => candidate.phase === phase && candidate.disposition === 'emit-sample');
+      expect(entry).toBeDefined();
+      entry.eligibilityAfterProducer = 'eligible-after-valid-sample-and-all-other-contracts';
+      registry.metricRegistrySha256 = sha256BytesV1(canonicalizeJsonV1({
+        schemaVersion: registry.schemaVersion,
+        protocolVersion: registry.protocolVersion,
+        metrics: registry.metrics,
+        telemetryMappings: registry.telemetryMappings,
+        producibilityCrosswalk: registry.producibilityCrosswalk,
+        reachabilityMatrix: registry.reachabilityMatrix,
+      }));
+      expect(validateMetricRegistryV1(registry)).toMatchObject({ valid: false, code: 'reachability-matrix-invalid' });
+    }
+  });
   it('binds serialized capability selections into the scenario definition digest', () => {
     const definition = BENCHMARK_SCENARIO_REGISTRY_V1['backend-fixture-v1'].definition;
     const mutated = JSON.parse(JSON.stringify(definition)) as any;
