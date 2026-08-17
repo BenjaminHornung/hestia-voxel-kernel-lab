@@ -5,6 +5,7 @@ const BUNDLE_PATH_PATTERN = /^[a-z0-9](?:[a-z0-9._/-]*[a-z0-9._-])?$/;
 const REPOSITORY_PATH_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9._-])?$/;
 const BUILD_PATH_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9._-])?$/;
 const PATH_MAX_CODE_UNITS = 512;
+const WINDOWS_RESERVED_BASENAMES = new Set(['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']);
 
 export class CanonicalPathError extends RangeError {
   public constructor(message: string) {
@@ -28,6 +29,11 @@ function assertPath(path: string, pattern: RegExp, owner: string): void {
 
 export function assertBundleRelativePathV1(path: string): asserts path is BundleRelativePathV1 {
   assertPath(path, BUNDLE_PATH_PATTERN, 'bundle');
+  for (const segment of path.split('/')) {
+    const basename = segment.slice(0, segment.indexOf('.') < 0 ? segment.length : segment.indexOf('.'));
+    if (WINDOWS_RESERVED_BASENAMES.has(basename)) throw new CanonicalPathError(`Bundle path uses a Windows reserved basename: ${path}`);
+    if (segment.endsWith('.') || segment.endsWith(' ')) throw new CanonicalPathError(`Bundle path uses a Windows-trailing alias: ${path}`);
+  }
 }
 
 export function bundleRelativePathV1(path: string): BundleRelativePathV1 {

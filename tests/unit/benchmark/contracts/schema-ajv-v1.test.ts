@@ -93,6 +93,14 @@ describe('BR01 Draft 2020-12 schemas', () => {
     expect(validate(document), JSON.stringify(validate.errors)).toBe(true);
     expect(validateBenchmarkRunStructureV1(document)).toMatchObject({ valid: true });
   });
+  it('keeps fixture source-commit binding required in AJV and the hand validator', () => {
+    const document = JSON.parse(JSON.stringify(createBenchmarkCaseDocumentV1({ samples: true }))) as Record<string, any>;
+    delete document.source.fixture.sourceCommitSha;
+    const validate = new Ajv2020({ strict: true, allErrors: true, coerceTypes: false, useDefaults: false, removeAdditional: false })
+      .compile(JSON.parse(readFileSync('src/benchmark/contracts/schemas/benchmark-run-v1.schema.json', 'utf8')));
+    expect(validate(document)).toBe(false);
+    expect(validateBenchmarkRunStructureV1(document)).toMatchObject({ valid: false, stage: 'schema' });
+  });
   it('keeps typed Availability parity for environment fields', () => {
     const document = JSON.parse(JSON.stringify(createBenchmarkCaseDocumentV1({ samples: true }))) as Record<string, any>;
     document.environment.os.name.value = 123;

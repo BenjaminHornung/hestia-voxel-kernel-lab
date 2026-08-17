@@ -5,6 +5,7 @@ import { BENCHMARK_SCHEMA_SET_SHA256_V1 } from './schemaSetV1';
 import { BENCHMARK_WARMUP_RULE_V1, recomputeWarmupStabilityV1 } from './browserValidationV1';
 import {
   BENCHMARK_METRIC_REGISTRY_V1,
+  BENCHMARK_FUTURE_METRIC_PRODUCER_CONTRACTS_V1,
   BENCHMARK_SCENARIO_REGISTRY_V1,
   BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1,
   benchmarkScenarioDefinitionsV1,
@@ -264,10 +265,11 @@ function validateBuild(value: unknown, path: string): void {
 }
 
 function validateFixture(value: unknown, path: string): void {
-  const fixture = closed(value, ['id', 'version', 'semanticSha256', 'sourceFileSetSha256', 'sourcePaths'], path);
+  const fixture = closed(value, ['id', 'version', 'semanticSha256', 'sourceCommitSha', 'sourceFileSetSha256', 'sourcePaths'], path);
   validId(fixture.id, `${path}.id`);
   safeInteger(fixture.version, `${path}.version`, 1);
   environmentAvailability(fixture.semanticSha256, `${path}.semanticSha256`, validSha);
+  environmentAvailability(fixture.sourceCommitSha, `${path}.sourceCommitSha`, validGitSha);
   environmentAvailability(fixture.sourceFileSetSha256, `${path}.sourceFileSetSha256`, validSha);
   environmentAvailability(fixture.sourcePaths, `${path}.sourcePaths`, (entry, entryPath) => validateSortedUniquePaths(entry, entryPath));
 }
@@ -701,6 +703,11 @@ function metricUnavailableForEligibleRun(
     if (!scenarioMetricRequiredByRun(runValue, metricContract, capabilities, definition)) continue;
     const entry = metricProducibilityEntryForRun(runValue, definition, metricContract, scenarioMetricContractOrdinal, registry);
     if (entry !== undefined && entry.classification !== 'emit-sample') return true;
+    const hasValidSample = runValue.iterations.some((iteration) => iteration.samples.some((sample) => sample.metricRef === metricContract.metricRef
+      && sample.result.status === 'valid'
+      && metric !== undefined
+      && dimensionsMatchContract(sample, metric, metricContract)));
+    if (!hasValidSample) return true;
   }
   return false;
 }
@@ -1037,7 +1044,11 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
               semantic(metric.unit === sample.unit && metric.kind === sample.kind, '$.iterations.samples', 'Metric kind or unit mismatch.', 'metric-unit-mismatch'); semantic(metric.allowedPhases.includes(phase), '$.iterations.samples.phase', `Metric ${canonicalRef} is not allowed in phase ${phase}.`, 'metric-phase-invalid'); semantic(metric.allowedContainers.includes(container), '$.iterations.samples.phase', `Metric ${canonicalRef} is not allowed in container ${container}.`, 'metric-container-invalid'); validateMetricSampleDimensions(sample, metric, '$.iterations.samples');
               const dimensionContracts = registryEntry.definition.metricContracts.filter((contract) => contract.metricRef === canonicalRef && contract.dimensions !== undefined);
               if (dimensionContracts.length > 0) semantic(dimensionContracts.some((contract) => dimensionsMatchContract(sample, metric, contract)), '$.iterations.samples.dimensions', `Sample dimensions for ${canonicalRef} do not match a scenario contract.`, 'metric-dimension-missing');
-             if (runValue.execution.validity.status === 'valid' && runValue.execution.measurementEligibility === 'eligible') validateMetricCapabilities(metric, runValue, allCapabilities, '$.iterations.samples', registryEntry.definition);
+              if (runValue.execution.validity.status === 'valid'
+                && (runValue.execution.measurementEligibility === 'eligible'
+                  || resolveScenarioMetricCapabilitySelectionV1(runValue.scenario.id, metric.metricRef, runValue.scenario.parameters, registryEntry.definition) === undefined)) {
+                validateMetricCapabilities(metric, runValue, allCapabilities, '$.iterations.samples', registryEntry.definition);
+              }
           if (sample.result.status === 'valid') {
              const value = sample.result.value; validateMetricValue(value, metric, '$.iterations.samples.result.value');
               if (DIGEST_MATCH_METRIC_REFS.has(sample.metricRef)) { semantic(value === 1 && sample.unit === 'count', '$.iterations.samples', 'Digest match samples must be value 1/count.', 'sample-invalid'); validateDigestMatchDimensions(sample, '$.iterations.samples', true); }
@@ -1075,17 +1086,19 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
              const canonicalRef = metricContract.metricRef;
              const metric = metricFor(canonicalRef, registry);
              const producibility = metricProducibilityEntryForRun(runValue, registryEntry.definition, metricContract, scenarioMetricContractOrdinal, registry);
+             const metricUnavailable = runValue.execution.validity.status === 'valid' && runValue.execution.measurementEligibility === 'eligible'
+               && metricUnavailableForEligibleRun(runValue, registryEntry.definition, allCapabilities, registry);
              const metricAllowedForRun = metric !== undefined
                && metric.allowedPhases.includes(runValue.execution.phase)
                && metric.allowedContainers.includes(runValue.execution.processContainer);
-             const requiredByRun = runValue.execution.validity.status === 'valid' && runValue.execution.phase !== 'warmup' && runValue.execution.phase !== 'trace'
+              const requiredByRun = runValue.execution.validity.status === 'valid' && runValue.execution.measurementEligibility === 'eligible' && runValue.execution.phase !== 'warmup' && runValue.execution.phase !== 'trace'
                   && metricAllowedForRun
                   && scenarioMetricRequiredByRun(runValue, metricContract, allCapabilities, registryEntry.definition)
                   && producibility?.classification === 'emit-sample';
               if (!requiredByRun) continue;
              const matchingSamples = runValue.iterations.flatMap((iteration) => iteration.samples)
                .filter((sample) => metric !== undefined && sample.metricRef === canonicalRef && dimensionsMatchContract(sample, metric, metricContract));
-            if (matchingSamples.length === 0) {
+             if (matchingSamples.length === 0 && !metricUnavailable) {
               semantic(false, metricContract.dimensions === undefined ? '$.iterations.samples' : '$.iterations.samples.dimensions',
                metricContract.dimensions === undefined ? `Required metric ${canonicalRef} is missing.` : `Required dimensions for ${canonicalRef} are missing.`,
                metricContract.dimensions === undefined ? 'metric-missing' : 'metric-dimension-missing');
@@ -1182,7 +1195,7 @@ function failure<T>(error: unknown): BenchmarkValidationResultV1<T> {
 
 export function validateMetricRegistryV1(registry: unknown = BENCHMARK_METRIC_REGISTRY_V1): BenchmarkValidationResultV1<MetricRegistryV1> {
   try {
-    const value = closed(registry, ['schemaVersion', 'protocolVersion', 'metrics', 'telemetryMappings', 'producibilityCrosswalk', 'metricRegistrySha256'], '$');
+    const value = closed(registry, ['schemaVersion', 'protocolVersion', 'metrics', 'telemetryMappings', 'producibilityCrosswalk', 'reachabilityMatrix', 'metricRegistrySha256'], '$');
     schema(value.schemaVersion === 'benchmark-metric-registry-v1' && value.protocolVersion === BENCHMARK_PROTOCOL_VERSION, '$', 'Wrong metric registry version.');
     const metrics = array(value.metrics, '$.metrics');
     schema(metrics.length > 0, '$.metrics', 'Metric registry cannot be empty.');
@@ -1246,8 +1259,9 @@ export function validateMetricRegistryV1(registry: unknown = BENCHMARK_METRIC_RE
       semantic(localMatches === 1, `$.telemetryMappings[${globalIndex}]`, 'Each global emit mapping must have exactly one matching local metric mapping.', 'metric-mapping-mismatch');
     }
     validateMetricProducibilityCrosswalk(value.producibilityCrosswalk, metricsByRef, '$.producibilityCrosswalk');
+    validateMetricReachabilityMatrix(value.reachabilityMatrix, metricsByRef, '$.reachabilityMatrix');
     validSha(value.metricRegistrySha256, '$.metricRegistrySha256');
-    const withoutDigest = { schemaVersion: value.schemaVersion, protocolVersion: value.protocolVersion, metrics: value.metrics, telemetryMappings: value.telemetryMappings, producibilityCrosswalk: value.producibilityCrosswalk };
+    const withoutDigest = { schemaVersion: value.schemaVersion, protocolVersion: value.protocolVersion, metrics: value.metrics, telemetryMappings: value.telemetryMappings, producibilityCrosswalk: value.producibilityCrosswalk, reachabilityMatrix: value.reachabilityMatrix };
     semantic(value.metricRegistrySha256 === sha256BytesV1(canonicalizeJsonV1(withoutDigest)), '$.metricRegistrySha256', 'Metric registry digest mismatch.', 'registry-digest-mismatch');
     return { valid: true, value: registry as MetricRegistryV1, issues: [] };
   } catch (error) { return failure(error); }
@@ -1326,6 +1340,81 @@ function validateMetricProducibilityCrosswalk(
     }
   }
   semantic(seen.size === expectedCount, path, 'Metric producibility crosswalk does not cover every scenario phase/backend/metric contract cell.', 'producibility-crosswalk-incomplete');
+}
+
+function validateMetricReachabilityMatrix(
+  value: unknown,
+  metricsByRef: ReadonlyMap<string, JsonObject>,
+  path: string,
+): void {
+  const entries = array(value, path);
+  const expectedCount = benchmarkScenarioDefinitionsV1.reduce((total, definition) => {
+    const backendCount = definition.parameterContracts.some((contract) => contract.key === 'backend') ? 2 : 1;
+    return total + definition.allowedPhases.length * backendCount * definition.metricContracts.length;
+  }, 0);
+  schema(entries.length === expectedCount, path, 'Metric reachability matrix is incomplete.', 'reachability-matrix-incomplete');
+  const seen = new Set<string>();
+  let previous = '';
+  for (let index = 0; index < entries.length; index += 1) {
+    const entryPath = `${path}[${index}]`;
+    const raw = object(entries[index], entryPath);
+    const scenarioId = string(raw.scenarioId, `${entryPath}.scenarioId`, true);
+    const scenario = BENCHMARK_SCENARIO_REGISTRY_V1[scenarioId as keyof typeof BENCHMARK_SCENARIO_REGISTRY_V1]?.definition;
+    semantic(scenario !== undefined, `${entryPath}.scenarioId`, 'Reachability entry references an unknown scenario.', 'reachability-matrix-invalid');
+    if (scenario === undefined) continue;
+    const phase = string(raw.phase, `${entryPath}.phase`, true) as BenchmarkSamplePhaseV1;
+    semantic(scenario.allowedPhases.includes(phase), `${entryPath}.phase`, 'Reachability phase is not allowed by its scenario.', 'reachability-matrix-invalid');
+    const backend = string(raw.backend, `${entryPath}.backend`, true);
+    const hasBackend = scenario.parameterContracts.some((contract) => contract.key === 'backend');
+    semantic((hasBackend && (backend === 'raw-webgpu' || backend === 'three-webgl2')) || (!hasBackend && backend === 'not-applicable'), `${entryPath}.backend`, 'Reachability backend cell is invalid for its scenario.', 'reachability-matrix-invalid');
+    const metricRef = validMetricRef(raw.metricRef, `${entryPath}.metricRef`);
+    const ordinal = safeInteger(raw.scenarioMetricContractOrdinal, `${entryPath}.scenarioMetricContractOrdinal`, 0);
+    const contract = scenario.metricContracts[ordinal];
+    semantic(contract !== undefined && contract.metricRef === metricRef, `${entryPath}.scenarioMetricContractOrdinal`, 'Reachability metric ordinal is not canonical.', 'reachability-matrix-invalid');
+    if (contract === undefined) continue;
+    const metric = metricsByRef.get(metricRef);
+    semantic(metric !== undefined, `${entryPath}.metricRef`, 'Reachability references an unknown metric.', 'metric-unknown');
+    if (metric === undefined) continue;
+    const key = `${scenarioId}|${phase}|${backend}|${metricRef}|${ordinal}`;
+    semantic(!seen.has(key), entryPath, 'Reachability cells must be unique.', 'reachability-matrix-duplicate');
+    semantic(previous === '' || compareUtf16(previous, key) < 0, entryPath, 'Reachability cells must be canonically ordered.', 'order-invalid');
+    seen.add(key);
+    previous = key;
+
+    const selection = scenario.metricCapabilitySelections.find((entry) => entry.metricRef === metricRef);
+    const selectedCapability = selection?.selections.find((entry) => entry.parameterValue === backend)?.capabilityId;
+    const expectedCapabilityId = selectedCapability
+      ?? (contract.requirement.kind === 'when-capability-supported' ? contract.requirement.capabilityId : undefined)
+      ?? (metric.capabilityRequirements as unknown[])[0];
+    const expectedRequirement = selection !== undefined || contract.requirement.kind === 'when-capability-supported' ? 'capability-selected' : 'required';
+    const expectedProducer = BENCHMARK_FUTURE_METRIC_PRODUCER_CONTRACTS_V1[metricRef];
+    semantic(expectedProducer !== undefined, `${entryPath}.metricRef`, 'Scenario metric has no future producer contract.', 'reachability-matrix-invalid');
+    if (expectedProducer === undefined) continue;
+    const allowedInPhase = (metric.allowedPhases as unknown[]).includes(phase);
+    const container = phase === 'warmup' || phase === 'measurement' ? 'warm-measurement' : phase;
+    const allowedInContainer = (metric.allowedContainers as unknown[]).includes(container);
+    const allowed = allowedInPhase && allowedInContainer;
+    const expectedDisposition = allowed ? 'emit-sample' : 'not-required-in-phase';
+    const expectedBefore = allowed ? 'ineligible-until-valid-sample-and-all-other-contracts' : 'not-required-in-phase';
+    const expectedAfter = allowed ? 'eligible-after-valid-sample-and-all-other-contracts' : 'not-required-in-phase';
+    const keys = ['scenarioId', 'phase', 'backend', 'metricRef', 'scenarioMetricContractOrdinal', 'requirement', ...(expectedCapabilityId === undefined ? [] : ['capabilityId']), 'futureProducerOwner', 'recordName', 'disposition', 'firstWorkPackageAbleToEmit', 'eligibilityBeforeProducer', 'eligibilityAfterProducer'];
+    const entry = closed(raw, keys, entryPath);
+    semantic(entry.requirement === expectedRequirement, `${entryPath}.requirement`, 'Reachability requirement does not match the scenario contract.', 'reachability-matrix-invalid');
+    if (expectedCapabilityId === undefined) {
+      semantic(entry.capabilityId === undefined, `${entryPath}.capabilityId`, 'Reachability entry contains an unexpected capability condition.', 'reachability-matrix-invalid');
+    } else {
+      validId(entry.capabilityId, `${entryPath}.capabilityId`);
+      semantic(entry.capabilityId === expectedCapabilityId, `${entryPath}.capabilityId`, 'Reachability capability condition is not canonical.', 'reachability-matrix-invalid');
+    }
+    oneOf(string(entry.futureProducerOwner, `${entryPath}.futureProducerOwner`), ['BR02', 'WP05', 'BR05'], `${entryPath}.futureProducerOwner`);
+    oneOf(string(entry.firstWorkPackageAbleToEmit, `${entryPath}.firstWorkPackageAbleToEmit`), ['BR02', 'WP05', 'BR05'], `${entryPath}.firstWorkPackageAbleToEmit`);
+    validId(entry.recordName, `${entryPath}.recordName`);
+    semantic(entry.futureProducerOwner === expectedProducer.owner && entry.firstWorkPackageAbleToEmit === expectedProducer.owner, `${entryPath}.futureProducerOwner`, 'Reachability producer owner does not match the frozen producer contract.', 'reachability-matrix-invalid');
+    semantic(entry.recordName === expectedProducer.recordName, `${entryPath}.recordName`, 'Reachability record does not match the frozen producer contract.', 'reachability-matrix-invalid');
+    semantic(entry.disposition === expectedDisposition, `${entryPath}.disposition`, 'Reachability disposition does not match phase/container applicability.', 'reachability-matrix-invalid');
+    semantic(entry.eligibilityBeforeProducer === expectedBefore && entry.eligibilityAfterProducer === expectedAfter, `${entryPath}.eligibilityBeforeProducer`, 'Reachability eligibility states are not fail-closed.', 'reachability-matrix-invalid');
+  }
+  semantic(seen.size === expectedCount, path, 'Metric reachability matrix does not cover every scenario phase/backend/metric contract cell.', 'reachability-matrix-incomplete');
 }
 
 function validateGlobalTelemetryMapping(value: unknown, path: string): JsonObject {

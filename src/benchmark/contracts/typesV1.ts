@@ -159,6 +159,7 @@ export interface BenchmarkFixtureContractBindingV1 {
   readonly id: CanonicalIdV1;
   readonly version: SafePositiveIntegerV1;
   readonly semanticSha256: AvailabilityV1<Sha256DigestV1>;
+  readonly sourceCommitSha: AvailabilityV1<GitShaV1>;
   readonly sourceFileSetSha256: AvailabilityV1<Sha256DigestV1>;
   readonly sourcePaths: AvailabilityV1<NonEmptyReadonlyArray<RepositoryRelativePathV1>>;
 }
@@ -323,6 +324,30 @@ export interface BenchmarkMetricProducibilityCellV1 {
   readonly backend: BenchmarkBackendCellV1;
   readonly metricRef: CanonicalMetricRefV1;
   readonly scenarioMetricContractOrdinal: number;
+}
+
+export type BenchmarkMetricReachabilityOwnerV1 = 'BR02' | 'WP05' | 'BR05';
+export type BenchmarkMetricReachabilityRequirementV1 = 'required' | 'capability-selected';
+export type BenchmarkMetricReachabilityDispositionV1 = 'emit-sample' | 'not-required-in-phase';
+export type BenchmarkMetricReachabilityEligibilityV1 =
+  | 'ineligible-until-valid-sample-and-all-other-contracts'
+  | 'eligible-after-valid-sample-and-all-other-contracts'
+  | 'not-required-in-phase';
+
+export interface BenchmarkMetricReachabilityEntryV1 {
+  readonly scenarioId: BenchmarkScenarioIdV1;
+  readonly phase: BenchmarkSamplePhaseV1;
+  readonly backend: BenchmarkBackendCellV1;
+  readonly metricRef: CanonicalMetricRefV1;
+  readonly scenarioMetricContractOrdinal: number;
+  readonly requirement: BenchmarkMetricReachabilityRequirementV1;
+  readonly capabilityId?: CanonicalIdV1;
+  readonly futureProducerOwner: BenchmarkMetricReachabilityOwnerV1;
+  readonly recordName: CanonicalIdV1;
+  readonly disposition: BenchmarkMetricReachabilityDispositionV1;
+  readonly firstWorkPackageAbleToEmit: BenchmarkMetricReachabilityOwnerV1;
+  readonly eligibilityBeforeProducer: BenchmarkMetricReachabilityEligibilityV1;
+  readonly eligibilityAfterProducer: BenchmarkMetricReachabilityEligibilityV1;
 }
 
 export type BenchmarkMetricProducibilityEntryV1 = BenchmarkMetricProducibilityCellV1 & (
@@ -867,6 +892,7 @@ export interface MetricRegistryV1 {
   readonly metrics: NonEmptyReadonlyArray<MetricDefinitionV1>;
   readonly telemetryMappings: NonEmptyReadonlyArray<TelemetrySourceMappingV1>;
   readonly producibilityCrosswalk: NonEmptyReadonlyArray<BenchmarkMetricProducibilityEntryV1>;
+  readonly reachabilityMatrix: NonEmptyReadonlyArray<BenchmarkMetricReachabilityEntryV1>;
   readonly metricRegistrySha256: Sha256DigestV1;
 }
 

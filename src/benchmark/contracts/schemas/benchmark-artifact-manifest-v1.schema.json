@@ -10,7 +10,7 @@
     "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
   },
   "$defs": {
-    "path": { "type": "string", "maxLength": 512, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)[a-z0-9](?:[a-z0-9._/-]*[a-z0-9._-])?$" },
+    "path": { "type": "string", "maxLength": 512, "pattern": "^(?!.*(?:^|/)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.[^/]*)?(?:/|$))(?!.*(?:^|/)[^/]*[. ](?:/|$))(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)[a-z0-9](?:[a-z0-9._/-]*[a-z0-9._-])?$" },
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
     "nonEmpty": { "type": "string", "minLength": 1, "maxLength": 2048 },
     "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },

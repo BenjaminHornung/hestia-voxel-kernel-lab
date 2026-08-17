@@ -44,7 +44,7 @@ const diagnostic = (recordName: string): string => `${recordName}|diagnostic-onl
 
 export const BENCHMARK_METRIC_REGISTRY_GOLDENS_V1 = {
   'world.mesh.total.ms@1': {
-    kind: 'duration', unit: 'ms', sourceMapping: [diagnostic('run.total')],
+    kind: 'duration', unit: 'ms', sourceMapping: [emit('run.total', 'world.mesh.total.ms@1', 'ms')],
     groupingKeys: ['hardware-profile', 'phase', 'candidate', 'iteration-ordinal'],
     population: 'one non-overlapping end-to-end world mesh critical path per iteration',
     pairingKeys: ['bootstrap-cluster-id', 'iteration-ordinal'], pairingLevel: 'iteration', direction: 'lower', practicalEffectDelta: 0.10,
@@ -103,20 +103,20 @@ export const BENCHMARK_METRIC_REGISTRY_GOLDENS_V1 = {
     population: 'number of browser long-task entries in a predefined measurement window',
     pairingKeys: ['bootstrap-cluster-id', 'observation-window-id'], pairingLevel: 'window', direction: 'lower', practicalEffectDelta: null,
   },
-  'memory.bytes@1': {
-    kind: 'memory', unit: 'bytes', sourceMapping: [diagnostic('telemetry.charged-bytes')],
+   'memory.bytes@1': {
+     kind: 'memory', unit: 'bytes', sourceMapping: [emit('memory.bytes', 'memory.bytes@1', 'bytes')],
     groupingKeys: ['hardware-profile', 'phase', 'candidate', 'memory-kind', 'checkpoint-id'],
     population: 'memory bytes for one explicitly named memory kind at one checkpoint',
     pairingKeys: ['bootstrap-cluster-id', 'memory-kind', 'checkpoint-id'], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: 0.10,
   },
-  'gpu.time.ms@1': {
-    kind: 'gpu', unit: 'ms', sourceMapping: [diagnostic('telemetry.invalidation')],
+   'gpu.time.ms@1': {
+     kind: 'gpu', unit: 'ms', sourceMapping: [emit('gpu.time', 'gpu.time.ms@1', 'ms')],
     groupingKeys: ['hardware-profile', 'phase', 'candidate', 'render-pass-id', 'frame-block-ordinal'],
     population: 'asynchronously measured GPU duration for one declared render pass and frame block',
     pairingKeys: ['bootstrap-cluster-id', 'render-pass-id', 'frame-block-ordinal'], pairingLevel: 'time-block', direction: 'lower', practicalEffectDelta: 0.10,
   },
-  'scheduler.drain.ms@1': {
-    kind: 'duration', unit: 'ms', sourceMapping: [diagnostic('telemetry.invalidation')],
+   'scheduler.drain.ms@1': {
+     kind: 'duration', unit: 'ms', sourceMapping: [emit('scheduler.drain', 'scheduler.drain.ms@1', 'ms')],
     groupingKeys: ['hardware-profile', 'phase', 'candidate', 'burst-ordinal'],
     population: 'time from deterministic burst admission until the queue is empty',
     pairingKeys: ['bootstrap-cluster-id', 'burst-ordinal'], pairingLevel: 'burst', direction: 'lower', practicalEffectDelta: 0.10,
@@ -135,21 +135,23 @@ export const BENCHMARK_METRIC_REGISTRY_GOLDENS_V1 = {
   },
   'mesh.quads.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('mesh.quads', 'mesh.quads.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
   'geometry.bytes@1': { kind: 'memory', unit: 'bytes', sourceMapping: [emit('mesh.output-bytes', 'geometry.bytes@1', 'bytes')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
-   'coverage.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
+    'coverage.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [emit('coverage.sha256-match', 'coverage.sha256.match@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
   'scheduler.queue.depth.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('scheduler.queue-depth', 'scheduler.queue.depth.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'context-dependent', practicalEffectDelta: null },
   'worker.active.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('scheduler.in-flight', 'worker.active.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'context-dependent', practicalEffectDelta: null },
-  'revision.latest.visible@1': { kind: 'liveness', unit: 'revision', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
-  'heartbeat.gap.ms@1': { kind: 'duration', unit: 'ms', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
-   'world.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
-  'dom.document.count@1': { kind: 'counter', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
-  'dom.node.count@1': { kind: 'counter', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
-  'event.listener.count@1': { kind: 'counter', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
-  'gpu.resource.count@1': { kind: 'counter', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
+   'revision.latest.visible@1': { kind: 'liveness', unit: 'revision', sourceMapping: [emit('revision.latest-visible', 'revision.latest.visible@1', 'revision')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
+   'heartbeat.gap.ms@1': { kind: 'duration', unit: 'ms', sourceMapping: [emit('worker.heartbeat-gap', 'heartbeat.gap.ms@1', 'ms')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
+    'world.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [emit('world.sha256-match', 'world.sha256.match@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
+   'dom.document.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('browser.dom-document-count', 'dom.document.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
+   'dom.node.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('browser.dom-node-count', 'dom.node.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
+   'event.listener.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('browser.event-listener-count', 'event.listener.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
+   'gpu.resource.count@1': { kind: 'counter', unit: 'count', sourceMapping: [emit('browser.gpu-resource-count', 'gpu.resource.count@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
   'draw.submit.cpu.ms@1': { kind: 'duration', unit: 'ms', sourceMapping: [emit('draw-submit.cpu', 'draw.submit.cpu.ms@1', 'ms')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'lower', practicalEffectDelta: null },
-   'image.contract.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
+    'image.contract.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [emit('image.contract-sha256-match', 'image.contract.sha256.match@1', 'count')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
 } as const;
 
-export const BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 = 'sha256:6057af054a9987f5b89b52762220ca48bb5e96cef400395cbec4f9b46b1fafb2' as const;
+export const BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 = 'sha256:4fc183081eadf9588c242044e6d420751c8a573f2a5e16e248e5e42ccbf7e4f6' as const;
+export const BENCHMARK_METRIC_REACHABILITY_MATRIX_COUNT_GOLDEN_V1 = 268 as const;
+export const BENCHMARK_METRIC_REACHABILITY_MATRIX_SHA256_GOLDEN_V1 = 'sha256:58011e9335ab4ddde858782520e801be8703a9e85f79d45cadcac2c7313cf188' as const;
 
 export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'adoption.cpu.ms@1': {
@@ -333,9 +335,14 @@ export const BENCHMARK_METRIC_DIMENSION_CONTRACT_GOLDENS_V1 = {
 
 export const BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1 = [
   { recordName: 'benchmark-download', disposition: 'diagnostic-only' },
+  { recordName: 'browser.dom-document-count', disposition: 'emit-sample', metricRef: 'dom.document.count@1', unit: 'count' },
+  { recordName: 'browser.dom-node-count', disposition: 'emit-sample', metricRef: 'dom.node.count@1', unit: 'count' },
+  { recordName: 'browser.event-listener-count', disposition: 'emit-sample', metricRef: 'event.listener.count@1', unit: 'count' },
   { recordName: 'browser.event-timing', disposition: 'diagnostic-only' },
+  { recordName: 'browser.gpu-resource-count', disposition: 'emit-sample', metricRef: 'gpu.resource.count@1', unit: 'count' },
   { recordName: 'browser.long-task', disposition: 'emit-sample', metricRef: 'longtask.duration.ms@1', unit: 'ms' },
   { recordName: 'browser.raf-interval', disposition: 'emit-sample', metricRef: 'raf.interval.ms@1', unit: 'ms' },
+  { recordName: 'coverage.sha256-match', disposition: 'emit-sample', metricRef: 'coverage.sha256.match@1', unit: 'count' },
   { recordName: 'dedicated-worker', disposition: 'context-only' },
   { recordName: 'document-focus', disposition: 'context-only' },
   { recordName: 'document.focus', disposition: 'context-only' },
@@ -344,12 +351,15 @@ export const BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1 = [
   { recordName: 'edge-products.build', disposition: 'diagnostic-only' },
   { recordName: 'event-timing', disposition: 'context-only' },
   { recordName: 'fixture.build', disposition: 'diagnostic-only' },
+  { recordName: 'gpu.time', disposition: 'emit-sample', metricRef: 'gpu.time.ms@1', unit: 'ms' },
   { recordName: 'halo.build', disposition: 'diagnostic-only' },
   { recordName: 'high-resolution-time', disposition: 'context-only' },
+  { recordName: 'image.contract-sha256-match', disposition: 'emit-sample', metricRef: 'image.contract.sha256.match@1', unit: 'count' },
   { recordName: 'input-to-revision-submit', disposition: 'emit-sample', metricRef: 'input.revision.submit.ms@1', unit: 'ms' },
   { recordName: 'long-task', disposition: 'context-only' },
   { recordName: 'main-to-worker.transit-wait', disposition: 'diagnostic-only' },
   { recordName: 'main.frame-work', disposition: 'diagnostic-only' },
+  { recordName: 'memory.bytes', disposition: 'emit-sample', metricRef: 'memory.bytes@1', unit: 'bytes' },
   { recordName: 'mesh.cpu', disposition: 'diagnostic-only' },
   { recordName: 'mesh.input-bytes', disposition: 'context-only' },
   { recordName: 'mesh.output-bytes', disposition: 'emit-sample', metricRef: 'geometry.bytes@1', unit: 'bytes' },
@@ -361,9 +371,11 @@ export const BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1 = [
   { recordName: 'result.adoption', disposition: 'emit-sample', metricRef: 'adoption.cpu.ms@1', unit: 'ms' },
   { recordName: 'result.stale-dropped', disposition: 'emit-sample', metricRef: 'scheduler.stale.count@1', unit: 'count' },
   { recordName: 'result.validation', disposition: 'diagnostic-only' },
-  { recordName: 'run.total', disposition: 'diagnostic-only' },
+  { recordName: 'revision.latest-visible', disposition: 'emit-sample', metricRef: 'revision.latest.visible@1', unit: 'revision' },
+  { recordName: 'run.total', disposition: 'emit-sample', metricRef: 'world.mesh.total.ms@1', unit: 'ms' },
   { recordName: 'scheduler.admitted', disposition: 'diagnostic-only' },
   { recordName: 'scheduler.coalesced', disposition: 'diagnostic-only' },
+  { recordName: 'scheduler.drain', disposition: 'emit-sample', metricRef: 'scheduler.drain.ms@1', unit: 'ms' },
   { recordName: 'scheduler.evicted', disposition: 'emit-sample', metricRef: 'scheduler.drop.count@1', unit: 'count' },
   { recordName: 'scheduler.in-flight', disposition: 'emit-sample', metricRef: 'worker.active.count@1', unit: 'count' },
   { recordName: 'scheduler.queue-depth', disposition: 'emit-sample', metricRef: 'scheduler.queue.depth.count@1', unit: 'count' },
@@ -378,7 +390,9 @@ export const BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1 = [
   { recordName: 'telemetry.records-written', disposition: 'diagnostic-only' },
   { recordName: 'user-timing', disposition: 'context-only' },
   { recordName: 'worker-to-main.transit-wait', disposition: 'diagnostic-only' },
+  { recordName: 'worker.heartbeat-gap', disposition: 'emit-sample', metricRef: 'heartbeat.gap.ms@1', unit: 'ms' },
   { recordName: 'worker.mesh-cpu', disposition: 'emit-sample', metricRef: 'chunk.mesh.cpu.ms@1', unit: 'ms' },
   { recordName: 'worker.transfer-products-build', disposition: 'diagnostic-only' },
   { recordName: 'worker.validation', disposition: 'diagnostic-only' },
+  { recordName: 'world.sha256-match', disposition: 'emit-sample', metricRef: 'world.sha256.match@1', unit: 'count' },
 ] as const;

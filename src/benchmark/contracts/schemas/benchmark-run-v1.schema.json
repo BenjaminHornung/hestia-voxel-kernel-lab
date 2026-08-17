@@ -78,6 +78,13 @@
         { "$ref": "#/$defs/availabilityUnavailable" }
       ]
     },
+    "availabilityGitSha": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/gitSha" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "declared" }, "value": { "$ref": "#/$defs/gitSha" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["owner-binding", "run-config", "browser-default"] } } },
+        { "$ref": "#/$defs/availabilityUnavailable" }
+      ]
+    },
     "availabilityPathList": {
       "oneOf": [
         { "type": "object", "additionalProperties": false, "required": ["status", "value", "sourceRef", "stability"], "properties": { "status": { "const": "observed" }, "value": { "$ref": "#/$defs/pathList" }, "sourceRef": { "$ref": "#/$defs/id" }, "stability": { "enum": ["stable", "experimental", "platform-specific"] } } },
@@ -206,11 +213,12 @@
     "fixture": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "version", "semanticSha256", "sourceFileSetSha256", "sourcePaths"],
+      "required": ["id", "version", "semanticSha256", "sourceCommitSha", "sourceFileSetSha256", "sourcePaths"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
         "version": { "$ref": "#/$defs/positiveInteger" },
         "semanticSha256": { "$ref": "#/$defs/availabilityDigest" },
+        "sourceCommitSha": { "$ref": "#/$defs/availabilityGitSha" },
         "sourceFileSetSha256": { "$ref": "#/$defs/availabilityDigest" },
         "sourcePaths": { "$ref": "#/$defs/availabilityPathList" }
       }

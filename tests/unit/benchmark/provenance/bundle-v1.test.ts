@@ -1,10 +1,10 @@
 import Ajv2020 from 'ajv/dist/2020.js';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { canonicalizeJsonV1 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
-import { buildBundleFilesV1, bundleDigestFilesV1, formatBundleDigestV1, parseBundleDigestV1, verifyBundleDirectoryV1 } from '../../../../src/benchmark/provenance/bundleV1';
+import { buildBundleFilesV1, bundleDigestFilesV1, formatBundleDigestV1, parseBundleDigestV1, verifyBundleDirectoryV1, writeBundleFilesV1 } from '../../../../src/benchmark/provenance/bundleV1';
 import { digestFileBytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { BENCHMARK_METRIC_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { BENCHMARK_SCHEMA_SET_BYTES_V1 } from '../../../../src/benchmark/contracts/schemaSetV1';
@@ -149,6 +149,64 @@ describe('BR01 bundle framing', () => {
   it('round-trips the only digest-cover exception', () => {
     const digest = bundleDigestFilesV1([{ path: 'artifact-manifest.json', bytes: new TextEncoder().encode('{}') }]);
     expect(parseBundleDigestV1(formatBundleDigestV1(digest))).toBe(digest);
+  });
+  it.each(['con', 'con.json', 'raw/nul.bin', 'raw/com1.txt', 'raw/lpt9', 'raw/a.', 'raw/a '] as const)('rejects Windows extraction aliases before bundle construction: %s', (path) => {
+    const fixture = completeBundle();
+    expect(() => buildBundleFilesV1(fixture.artifact as never, fixture.bundle as never, [{ path, bytes: new Uint8Array([1]) }, { path: 'raw/a', bytes: new Uint8Array([2]) }])).toThrow();
+  });
+  it('rejects ancestor and descendant file paths before bundle construction', () => {
+    const fixture = completeBundle();
+    expect(() => buildBundleFilesV1(fixture.artifact as never, fixture.bundle as never, [
+      { path: 'raw', bytes: new Uint8Array([1]) },
+      { path: 'raw/a.json', bytes: new Uint8Array([2]) },
+    ])).toThrow();
+  });
+  it('prevalidates every path before writing any bundle file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-bundle-write-preflight-'));
+    try {
+      expect(() => writeBundleFilesV1(root, [{ path: 'raw/a', bytes: new Uint8Array([1]) }, { path: 'raw/a.', bytes: new Uint8Array([2]) }] as never)).toThrow();
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it.each(['raw/a.', 'raw/a '] as const)('rejects Windows-trailing aliases before writing any bundle file: %s', (path) => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-bundle-write-trailing-'));
+    try {
+      expect(() => writeBundleFilesV1(root, [{ path, bytes: new Uint8Array([1]) }] as never)).toThrow();
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('rejects ancestor and descendant paths before writing any bundle file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-bundle-write-ancestor-'));
+    try {
+      expect(() => writeBundleFilesV1(root, [
+        { path: 'raw', bytes: new Uint8Array([1]) },
+        { path: 'raw/a.json', bytes: new Uint8Array([2]) },
+      ] as never)).toThrow();
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('keeps artifact and bundle AJV path rejection aligned with extraction safety', () => {
+    const ajv = new Ajv2020({ strict: true, allErrors: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
+    const artifactValidate = ajv.compile(JSON.parse(readFileSync('src/benchmark/contracts/schemas/benchmark-artifact-manifest-v1.schema.json', 'utf8')));
+    const bundleValidate = ajv.compile(JSON.parse(readFileSync('src/benchmark/contracts/schemas/benchmark-bundle-manifest-v1.schema.json', 'utf8')));
+    for (const path of ['con', 'con.json', 'raw/nul.bin', 'raw/com1.txt', 'raw/lpt9', 'raw/a.', 'raw/a ']) {
+      expect(artifactValidate({
+        schemaVersion: 'benchmark-artifact-manifest-v1', protocolVersion: 'benchmark-protocol-v1',
+        artifacts: [{ path, role: 'summary-markdown', mediaType: 'text/markdown', serialization: 'utf8-lf-final-newline', byteLength: 1, sha256: 'sha256:' + 'a'.repeat(64), runIds: ['run'] }],
+      }), path).toBe(false);
+      expect(bundleValidate({
+        schemaVersion: 'benchmark-bundle-manifest-v1', protocolVersion: 'benchmark-protocol-v1', bundleId: 'bundle', createdUtc: '2026-08-13T12:00:00.000Z', claimClass: 'correctness', canonicalJson: 'rfc8785-jcs', pathPolicy: 'hestia-relative-posix-lower-v1', digestAlgorithmVersion: 'hestia-benchmark-bundle-sha256-v1',
+        artifactManifest: { path: 'artifact-manifest.json', byteLength: 1, sha256: 'sha256:' + 'a'.repeat(64) },
+        runs: [{ runId: 'run', rawRun: { path, sha256: 'sha256:' + 'a'.repeat(64) }, telemetryExport: { path: 'telemetry/run.json', sha256: 'sha256:' + 'a'.repeat(64) }, validationReceipt: { path: 'receipts/run.json', sha256: 'sha256:' + 'a'.repeat(64) } }],
+        excludedFromBundleDigest: ['bundle.sha256'],
+      }), path).toBe(false);
+    }
   });
   it('does not cover bundle.sha256', () => {
     const files = [{ path: 'artifact-manifest.json', bytes: new TextEncoder().encode('{}') }];

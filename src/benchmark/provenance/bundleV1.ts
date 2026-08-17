@@ -86,16 +86,35 @@ function sameStringSet(left: ReadonlySet<string>, right: ReadonlySet<string>): b
 
 const TRACE_ARTIFACT_PATH = /^traces\/(?:[a-z0-9][a-z0-9._-]*\/)*trace\.json\.gz$/;
 
-export function bundleDigestFilesV1(files: readonly BundleFileInputV1[]): Sha256DigestV1 {
+function validateBundleFilePathsV1(files: readonly BundleFileInputV1[]): void {
   const digestMarkerCount = files.filter((file) => file.path === 'bundle.sha256').length;
   if (digestMarkerCount > 1) throw new Error('Bundle contains more than one bundle.sha256 exception.');
-  const digestFiles = files.filter((file) => file.path !== 'bundle.sha256');
   const paths = new Set<string>();
-  for (const file of digestFiles) {
+  for (const file of files) {
     bundleRelativePathV1(file.path);
     if (paths.has(file.path)) throw new Error(`Bundle contains duplicate path ${file.path}.`);
     paths.add(file.path);
   }
+  for (const path of paths) {
+    if ([...paths].some((other) => other.startsWith(`${path}/`))) throw new Error(`Bundle contains an ancestor/descendant path pair for ${path}.`);
+  }
+}
+
+function validateBundleManifestPathsV1(
+  artifactManifest: BenchmarkArtifactManifestV1,
+  bundleManifest: BenchmarkBundleManifestV1,
+): void {
+  for (const artifact of artifactManifest.artifacts) bundleRelativePathV1(artifact.path);
+  for (const run of bundleManifest.runs) {
+    bundleRelativePathV1(run.rawRun.path);
+    bundleRelativePathV1(run.telemetryExport.path);
+    bundleRelativePathV1(run.validationReceipt.path);
+  }
+}
+
+export function bundleDigestFilesV1(files: readonly BundleFileInputV1[]): Sha256DigestV1 {
+  validateBundleFilePathsV1(files);
+  const digestFiles = files.filter((file) => file.path !== 'bundle.sha256');
   return digestBundleV1(digestFiles);
 }
 
@@ -367,6 +386,7 @@ export function buildBundleFilesV1(
   bundleManifest: BenchmarkBundleManifestV1,
   artifacts: readonly BundleFileInputV1[],
 ): BundleFileV1[] {
+  validateBundleManifestPathsV1(artifactManifest, bundleManifest);
   const artifactManifestBytes = canonicalizeJsonV1(artifactManifest);
   const bundleManifestBytes = canonicalizeJsonV1(bundleManifest);
   const files: BundleFileV1[] = [
@@ -374,15 +394,16 @@ export function buildBundleFilesV1(
     { path: bundleRelativePathV1('bundle-manifest.json'), bytes: bundleManifestBytes },
     ...artifacts.map((file) => ({ path: bundleRelativePathV1(file.path), bytes: file.bytes })),
   ];
+  validateBundleFilePathsV1(files);
   const digest = bundleDigestFilesV1(files);
   return [...files, { path: bundleRelativePathV1('bundle.sha256'), bytes: formatBundleDigestV1(digest) }];
 }
 
 export function writeBundleFilesV1(rootPath: string, files: readonly BundleFileV1[]): void {
+  validateBundleFilePathsV1(files);
   if (!lstatSync(rootPath).isDirectory()) throw new Error('Bundle root must be an existing directory.');
   if (readdirSync(rootPath).length > 0) throw new Error('Bundle root must be empty before writing.');
   for (const file of files) {
-    bundleRelativePathV1(file.path);
     const path = join(rootPath, ...file.path.split('/'));
     if (lstatSync(rootPath).isSymbolicLink()) throw new Error('Bundle root must not be a symlink.');
     mkdirSync(join(path, '..'), { recursive: true });

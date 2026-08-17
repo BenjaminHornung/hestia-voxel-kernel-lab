@@ -21,6 +21,7 @@ import {
   BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1,
   BENCHMARK_REPOSITORY_URL,
   BENCHMARK_STATUS_COMMAND,
+  BR01_ACCEPTED_WP04_SHA,
   EMPTY_STATUS_SHA256,
 } from '../contracts/versions';
 import {
@@ -55,7 +56,7 @@ export type SourcePreflightCommandRunnerV1 = (
 
 export interface SourcePreflightInputV1 {
   readonly rootPath: string;
-  readonly expectedAcceptedWp04Sha: string;
+  readonly expectedSourceCommitSha: string;
   readonly fixtureSemanticBytes: Uint8Array;
   readonly fixture: BenchmarkFixtureContractBindingV1;
   readonly candidate: BenchmarkCandidateBindingV1;
@@ -214,24 +215,42 @@ function metadataDigest(value: unknown, label: string, code: BenchmarkSourcePref
   return value as Sha256DigestV1;
 }
 
-function metadataAvailability(value: unknown, label: string, code: BenchmarkSourcePreflightFailureCodeV1): { readonly available: boolean; readonly value?: unknown } {
+function metadataGitSha(value: unknown, label: string, code: BenchmarkSourcePreflightFailureCodeV1): GitShaV1 {
+  if (typeof value !== 'string' || !/^[0-9a-f]{40}$/.test(value)) throw new SourcePreflightContractError(code, `${label} is not a canonical Git SHA.`);
+  return value as GitShaV1;
+}
+
+function metadataAvailabilityShape<T>(
+  value: unknown,
+  label: string,
+  code: BenchmarkSourcePreflightFailureCodeV1,
+  validateValue: (value: unknown) => T,
+): AvailabilityV1<T> {
   const binding = metadataObject(value, label, code);
   if (binding.status === 'observed' || binding.status === 'declared') {
     const branch = metadataClosed(binding, ['status', 'value', 'sourceRef', 'stability'], label, code);
-    metadataId(branch.sourceRef, `${label} sourceRef`, code);
+    const sourceRef = metadataId(branch.sourceRef, `${label} sourceRef`, code);
     if (typeof branch.stability !== 'string') throw new SourcePreflightContractError(code, `${label} stability is invalid.`);
     const allowedStability = branch.status === 'observed'
       ? ['stable', 'experimental', 'platform-specific']
       : ['owner-binding', 'run-config', 'browser-default'];
     if (!allowedStability.includes(branch.stability)) throw new SourcePreflightContractError(code, `${label} stability is invalid for its status.`);
-    return { available: true, value: branch.value };
+    return {
+      status: branch.status,
+      value: validateValue(branch.value),
+      sourceRef,
+      stability: branch.stability,
+    } as AvailabilityV1<T>;
   }
   if (typeof binding.status === 'string' && (UNAVAILABLE_STATUSES as readonly string[]).includes(binding.status)) {
     const branch = metadataClosed(binding, ['status', 'value', 'sourceRef', 'reasonCode'], label, code);
     if (branch.value !== null) throw new SourcePreflightContractError(code, `${label} unavailable branch must carry value:null.`);
-    metadataId(branch.sourceRef, `${label} sourceRef`, code);
-    metadataId(branch.reasonCode, `${label} reasonCode`, code);
-    return { available: false };
+    return {
+      status: binding.status as Exclude<AvailabilityV1<T>['status'], 'observed' | 'declared'>,
+      value: null,
+      sourceRef: metadataId(branch.sourceRef, `${label} sourceRef`, code),
+      reasonCode: metadataId(branch.reasonCode, `${label} reasonCode`, code),
+    } as AvailabilityV1<T>;
   }
   throw new SourcePreflightContractError(code, `${label} has an invalid availability status.`);
 }
@@ -242,9 +261,9 @@ function metadataBinding<T>(
   code: BenchmarkSourcePreflightFailureCodeV1,
   validateValue: (value: unknown) => T,
 ): T {
-  const binding = metadataAvailability(value, label, code);
-  if (!binding.available) throw new SourcePreflightContractError(code, `${label} must contain an observed or declared value.`);
-  return validateValue(binding.value);
+  const binding = metadataAvailabilityShape(value, label, code, validateValue);
+  if (binding.status !== 'observed' && binding.status !== 'declared') throw new SourcePreflightContractError(code, `${label} must contain an observed or declared value.`);
+  return binding.value;
 }
 
 function sourcePathsAreCanonical(paths: readonly RepositoryRelativePathV1[]): boolean {
@@ -279,14 +298,16 @@ function validateFixtureMetadata(value: unknown): {
   readonly id: CanonicalIdV1;
   readonly version: SafePositiveIntegerV1;
   readonly semanticSha256: Sha256DigestV1;
+  readonly sourceCommitSha: AvailabilityV1<GitShaV1>;
   readonly sourceFileSetSha256: Sha256DigestV1;
   readonly sourcePaths: NonEmptyReadonlyArray<RepositoryRelativePathV1>;
 } {
-  const fixture = metadataClosed(value, ['id', 'version', 'semanticSha256', 'sourceFileSetSha256', 'sourcePaths'], 'Fixture metadata', 'fixture-contract-mismatch');
+  const fixture = metadataClosed(value, ['id', 'version', 'semanticSha256', 'sourceCommitSha', 'sourceFileSetSha256', 'sourcePaths'], 'Fixture metadata', 'fixture-contract-mismatch');
   return {
     id: metadataId(fixture.id, 'Fixture ID', 'fixture-contract-mismatch'),
     version: metadataVersion(fixture.version, 'Fixture version', 'fixture-contract-mismatch'),
     semanticSha256: metadataBinding(fixture.semanticSha256, 'Fixture semantic digest', 'fixture-contract-mismatch', (entry) => metadataDigest(entry, 'Fixture semantic digest', 'fixture-contract-mismatch')),
+    sourceCommitSha: metadataAvailabilityShape(fixture.sourceCommitSha, 'Fixture source commit', 'fixture-contract-mismatch', (entry) => metadataGitSha(entry, 'Fixture source commit', 'fixture-contract-mismatch')),
     sourceFileSetSha256: metadataBinding(fixture.sourceFileSetSha256, 'Fixture source fileset digest', 'fixture-contract-mismatch', (entry) => metadataDigest(entry, 'Fixture source fileset digest', 'fixture-contract-mismatch')),
     sourcePaths: metadataPaths(fixture.sourcePaths, 'Fixture source paths', 'fixture-contract-mismatch'),
   };
@@ -377,31 +398,39 @@ function readAcceptedHeadBlob(
   rootPath: string,
   runner: SourcePreflightCommandRunnerV1,
 ): Uint8Array {
-  const result = commandResult(runner, 'git', ['cat-file', 'blob', `HEAD:${path}`], rootPath);
+  const result = commandResult(runner, 'git', ['cat-file', 'blob', `${BR01_ACCEPTED_WP04_SHA}:${path}`], rootPath);
   return new Uint8Array(result.stdout);
 }
 
 function verifyWp04OwnerBinding(
   rootPath: string,
-  commit: string,
-  expectedAcceptedWp04Sha: string,
   fixtureMetadata: ReturnType<typeof validateFixtureMetadata>,
   runner: SourcePreflightCommandRunnerV1,
 ): void {
-  if (fixtureMetadata.id !== 'wp04-golden-world-v1') return;
-  const binding = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1['wp04-golden-world-v1'];
+  const binding = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[fixtureMetadata.id as keyof typeof BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1];
+  if (binding === undefined) {
+    if (fixtureMetadata.sourceCommitSha.status === 'observed') throw new SourcePreflightContractError('fixture-contract-mismatch', 'Synthetic fixture source commit is not Git-verified.');
+    return;
+  }
+  if (fixtureMetadata.id !== 'wp04-golden-world-v1') {
+    if (binding.sourceCommitSha.status !== 'observed' || binding.sourcePaths.status !== 'observed' || binding.sourceFileSetSha256.status !== 'observed') {
+      throw new SourcePreflightContractError('fixture-contract-mismatch', 'Known fixture owner binding is unavailable.');
+    }
+    if (fixtureMetadata.sourceCommitSha.status === 'observed') throw new SourcePreflightContractError('fixture-contract-mismatch', 'Fixture source commit is not Git-verified by this preflight.');
+    return;
+  }
   const bindingId = binding.id;
   const bindingVersion = binding.version;
   const bindingCommit = observedRegistryValue(binding.sourceCommitSha, 'WP04 source commit') as string;
   const bindingPaths = observedRegistryValue(binding.sourcePaths, 'WP04 source paths') as readonly string[];
   const bindingDigest = observedRegistryValue(binding.sourceFileSetSha256, 'WP04 source fileset digest') as string;
   if (fixtureMetadata.id !== bindingId || fixtureMetadata.version !== bindingVersion) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 fixture ID or version is not owner-bound.');
-  if (expectedAcceptedWp04Sha !== bindingCommit || commit !== bindingCommit) throw new SourcePreflightContractError('source-sha-mismatch', 'WP04 source commit is not the accepted owner commit.');
+  if ((fixtureMetadata.sourceCommitSha.status !== 'observed' && fixtureMetadata.sourceCommitSha.status !== 'declared') || fixtureMetadata.sourceCommitSha.value !== bindingCommit) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 fixture source commit does not match the historical owner binding.');
   if (!samePaths(fixtureMetadata.sourcePaths, bindingPaths)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 source paths do not exactly match the owner binding.');
   if (!timingSafeEqualSha256V1(fixtureMetadata.sourceFileSetSha256, bindingDigest)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 source fileset digest does not match the owner binding.');
-  const actualDigest = digestFileSetReadersV1(fixtureMetadata.sourcePaths.map((path) => {
-    verifiedSourceFilePath(rootPath, path, 'fixture-contract-mismatch');
-    return { path, read: () => readAcceptedHeadBlob(path, rootPath, runner) };
+  const actualDigest = digestFileSetReadersV1(bindingPaths.map((path) => {
+    const repositoryPath = repositoryRelativePathV1(path);
+    return { path: repositoryPath, read: () => readAcceptedHeadBlob(repositoryPath, rootPath, runner) };
   })).digest;
   if (!timingSafeEqualSha256V1(actualDigest, bindingDigest)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 Git blob fileset digest does not match the owner binding.');
 }
@@ -480,7 +509,7 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     if (tree === undefined) return reject('infrastructure-failure', 'Invalid HEAD tree output.');
     const status = commandResult(runner, 'git', ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'], verifiedRootPath);
     if (status.stdout.byteLength !== 0) return reject('source-dirty', 'Git worktree status is not empty.');
-    if (commit !== input.expectedAcceptedWp04Sha) return reject('source-sha-mismatch', 'HEAD does not match accepted WP04 SHA.');
+    if (commit !== input.expectedSourceCommitSha) return reject('source-sha-mismatch', 'HEAD does not match the expected current source commit SHA.');
     if (!timingSafeEqualSha256V1(sha256BytesV1(status.stdout), EMPTY_STATUS_SHA256) || !timingSafeEqualSha256V1(emptyStatusDigest, EMPTY_STATUS_SHA256)) {
       return reject('infrastructure-failure', 'Empty status digest does not match the v1 constant.');
     }
@@ -499,7 +528,7 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     if (fixtureMetadata.id === 'wp04-golden-world-v1' && !isWp04Semantic) return reject('fixture-contract-mismatch', 'WP04 fixture semantic bytes do not match the authoritative contract.');
     const candidateMetadata = validateCandidateMetadata(input.candidate);
     const expectedBuild = validateBuildMetadata(input.build);
-    verifyWp04OwnerBinding(verifiedRootPath, commit, input.expectedAcceptedWp04Sha, fixtureMetadata, runner);
+    verifyWp04OwnerBinding(verifiedRootPath, fixtureMetadata, runner);
     if (fixtureMetadata.id !== 'wp04-golden-world-v1') {
       const fixtureEntries: FileSetPathInputV1[] = fixtureMetadata.sourcePaths.map((path) => ({ path, absolutePath: verifiedSourceFilePath(verifiedRootPath, path, 'fixture-contract-mismatch') }));
       let actualFixture;
@@ -554,10 +583,16 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     if (afterTree !== tree) return reject('source-tree-mismatch', 'Commit tree changed during preflight.');
     const buildVerification = verifyBuildHandoffV1(buildHandoff);
     if (buildVerification.status === 'rejected') return reject(buildVerification.code, buildVerification.detail);
+    const sourceCommitSha = fixtureMetadata.sourceCommitSha.status === 'observed' || fixtureMetadata.sourceCommitSha.status === 'declared'
+      ? fixtureMetadata.id === 'wp04-golden-world-v1'
+        ? observedBinding(fixtureMetadata.sourceCommitSha.value)
+        : fixtureMetadata.sourceCommitSha
+      : fixtureMetadata.sourceCommitSha;
     const verifiedFixture: BenchmarkFixtureContractBindingV1 = {
       id: fixtureMetadata.id,
       version: fixtureMetadata.version,
       semanticSha256: observedBinding(fixtureSemanticDigest),
+      sourceCommitSha,
       sourceFileSetSha256: observedBinding(fixtureMetadata.sourceFileSetSha256),
       sourcePaths: observedBinding(fixtureMetadata.sourcePaths),
     };

@@ -12,8 +12,8 @@ import {
   validateBenchmarkValidationReceiptV1,
 } from '../../../../src/benchmark/contracts/validateV1';
 
-const TWO_ITERATION_ADAPTER_RESULTS_SHA256 = 'sha256:9b1111060f8bfa00918c1495586c26cc8f6588b161c8d8432edf70ded7b22146';
-const TWO_ITERATION_SAMPLES_SHA256 = 'sha256:31dd729e7f261a064e57e02778423b15c095da9af8e111f8d688be7435a66137';
+const TWO_ITERATION_ADAPTER_RESULTS_SHA256 = 'sha256:d6b64c64ec781b40b1082306971556437e58c0fe8a62f4d6fbaec425f8d0158a';
+const TWO_ITERATION_SAMPLES_SHA256 = 'sha256:be0e20594520152e2259da131246b01f9efe4d29ccbe226bec0681538324ba04';
 
 function independentCanonicalSha256(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalizeJsonV1(value)).digest('hex')}`;

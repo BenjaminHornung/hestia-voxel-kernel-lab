@@ -11,6 +11,12 @@ describe('BR01 paths and digests', () => {
   it('rejects non-canonical paths', () => {
     for (const path of ['/a', '../a', 'a//b', 'A/a', 'a/', 'C:/a', '\\\\server\\share', 'a\\b', 'a/\0b']) expect(() => assertBundleRelativePathV1(path)).toThrow();
   });
+  it('rejects Windows reserved and trailing aliases only at the bundle boundary', () => {
+    for (const path of ['con', 'con.json', 'raw/nul.bin', 'raw/com1.txt', 'raw/lpt9', 'raw/a.', 'raw/a ']) expect(() => assertBundleRelativePathV1(path)).toThrow();
+    for (const path of ['raw/console.json', 'raw/compute1.json', 'raw/lpt10.json']) expect(() => assertBundleRelativePathV1(path)).not.toThrow();
+    expect(() => assertRepositoryRelativePathV1('raw/con.json')).not.toThrow();
+    expect(() => assertBuildRelativePathV1('raw/a.')).not.toThrow();
+  });
   it('keeps repository and build ownership case-preserving while bundles remain lowercase', () => {
     expect(repositoryRelativePathV1('tests/contracts/wp04AoGolden.ts')).toBe('tests/contracts/wp04AoGolden.ts');
     expect(buildRelativePathV1('assets/index-DwXV5Hbk.js')).toBe('assets/index-DwXV5Hbk.js');

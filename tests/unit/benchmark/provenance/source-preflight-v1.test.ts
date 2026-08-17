@@ -19,9 +19,76 @@ const emptyResult = (): SourcePreflightCommandResultV1 => ({ status: 0, stdout: 
 const observed = <T>(value: T) => ({ status: 'observed' as const, value, sourceRef: 'capture-v1', stability: 'stable' as const });
 const declared = <T>(value: T) => ({ status: 'declared' as const, value, sourceRef: 'plan-v1', stability: 'run-config' as const });
 const WP04_SOURCE_PATHS = ['evidence/wp04/manifest.json', 'tests/contracts/wp02FixtureGolden.ts', 'tests/contracts/wp03GreedyGolden.ts', 'tests/contracts/wp04AoGolden.ts'] as const;
+// Controlled failure is intentional: tests must never fall back to current-checkout bytes for historical c64 data.
+function loadWp04SourceBlobs(): ReadonlyMap<string, Uint8Array> {
+  try {
+    return new Map(WP04_SOURCE_PATHS.map((path) => [
+      path,
+      new Uint8Array(execFileSync('git', ['cat-file', 'blob', `${BR01_ACCEPTED_WP04_SHA}:${path}`], { cwd: realpathSync('.') })),
+    ] as const));
+  } catch (error) {
+    throw new Error(`Historical WP04 c64 Git blob object is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+const WP04_SOURCE_BLOBS = loadWp04SourceBlobs();
 
 function acceptedWp04Blob(path: string): Uint8Array {
-  return new Uint8Array(execFileSync('git', ['cat-file', 'blob', `${BR01_ACCEPTED_WP04_SHA}:${path}`], { cwd: realpathSync('.') }));
+  const bytes = WP04_SOURCE_BLOBS.get(path as typeof WP04_SOURCE_PATHS[number]);
+  if (bytes === undefined) throw new Error(`Unknown WP04 source path: ${path}`);
+  return new Uint8Array(bytes);
+}
+
+function runWp04Preflight(options: {
+  readonly currentSourceCommitSha?: string;
+  readonly mutateFixture?: (fixture: any) => void;
+  readonly mutateCurrentFile?: (path: string, bytes: Uint8Array) => Uint8Array;
+  readonly omitCurrentHistoricalFiles?: boolean;
+} = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'br01-wp04-preflight-'));
+  try {
+    const blobs = WP04_SOURCE_PATHS.map((path) => ({ path, bytes: acceptedWp04Blob(path) }));
+    if (!options.omitCurrentHistoricalFiles) {
+      for (const entry of blobs) {
+        const target = join(root, ...entry.path.split('/'));
+        mkdirSync(join(target, '..'), { recursive: true });
+        writeFileSync(target, options.mutateCurrentFile?.(entry.path, entry.bytes) ?? entry.bytes);
+      }
+    }
+    mkdirSync(join(root, 'dist'));
+    writeFileSync(join(root, 'candidate.txt'), new TextEncoder().encode('candidate'));
+    writeFileSync(join(root, 'dist', 'index.js'), new TextEncoder().encode('build'));
+    const sourceDigest = digestFileSetV1(blobs);
+    const fixture = {
+      id: 'wp04-golden-world-v1',
+      version: 1,
+      semanticSha256: observed(BENCHMARK_WP04_SEMANTIC_SHA256_V1),
+      sourceCommitSha: observed(BR01_ACCEPTED_WP04_SHA),
+      sourceFileSetSha256: observed(sourceDigest),
+      sourcePaths: observed([...WP04_SOURCE_PATHS]),
+    };
+    options.mutateFixture?.(fixture);
+    const candidateEntries = [{ path: 'candidate.txt', bytes: new TextEncoder().encode('candidate') }];
+    const currentSourceCommitSha = options.currentSourceCommitSha ?? 'a'.repeat(40);
+    const response = (_command: string, args: readonly string[]): SourcePreflightCommandResultV1 => {
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return result(root);
+      if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(currentSourceCommitSha);
+      if (args[0] === 'rev-parse' && args[2] === 'HEAD^{tree}') return result('a'.repeat(40));
+      if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
+      if (args[0] === 'cat-file' && args[1] === 'blob') return { status: 0, stdout: acceptedWp04Blob(args[2]!.slice(`${BR01_ACCEPTED_WP04_SHA}:`.length)), stderr: empty };
+      return emptyResult();
+    };
+    return sourcePreflightV1({
+      rootPath: root,
+      expectedSourceCommitSha: currentSourceCommitSha,
+      fixtureSemanticBytes: getBenchmarkWp04SemanticBytesV1(),
+      fixture: fixture as never,
+      candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)), sourcePaths: observed(['candidate.txt']) } as never,
+      runCommand: response,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function pathPreflightOutcome(owner: 'fixture' | 'candidate', invalidPaths: readonly string[]) {
@@ -37,7 +104,7 @@ function pathPreflightOutcome(owner: 'fixture' | 'candidate', invalidPaths: read
     const candidatePaths = owner === 'candidate' ? invalidPaths : ['candidate-a.txt'];
     const fixtureDigestEntries = owner === 'fixture' ? fixtureEntries : [fixtureEntries[0]!];
     const candidateDigestEntries = owner === 'candidate' ? candidateEntries : [candidateEntries[0]!];
-     const fixture = { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceFileSetSha256: observed(digestFileSetV1(fixtureDigestEntries)), sourcePaths: observed(fixturePaths) };
+      const fixture = { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceCommitSha: declared(BR01_ACCEPTED_WP04_SHA), sourceFileSetSha256: observed(digestFileSetV1(fixtureDigestEntries)), sourcePaths: observed(fixturePaths) };
     const candidate = { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateDigestEntries)), sourcePaths: observed(candidatePaths) };
     const response = (_command: string, args: readonly string[]): SourcePreflightCommandResultV1 => {
       if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return result(root);
@@ -46,7 +113,7 @@ function pathPreflightOutcome(owner: 'fixture' | 'candidate', invalidPaths: read
       if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
       return emptyResult();
     };
-    return sourcePreflightV1({ rootPath: root, expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: fixture as never, candidate: candidate as never, runCommand: response });
+    return sourcePreflightV1({ rootPath: root, expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: fixture as never, candidate: candidate as never, runCommand: response });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -69,7 +136,7 @@ function metadataPreflightOutcome(
     writeFileSync(join(root, 'dist', 'index.js'), buildEntries[0]!.bytes);
     prepareRoot(root);
     const input = {
-       fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) },
+       fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceCommitSha: declared(BR01_ACCEPTED_WP04_SHA), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) },
       candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)), sourcePaths: observed(['candidate.txt']) },
       build: { algorithmVersion: 'hestia-benchmark-build-sha256-v1', rootPath: 'dist', sha256: digestBuildV1(buildEntries), fileCount: 1, totalBytes: 5 },
     };
@@ -83,7 +150,7 @@ function metadataPreflightOutcome(
     };
        return sourcePreflightV1({
          rootPath: root,
-         expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+         expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
          ...(fixtureSemanticBytes === null ? {} : { fixtureSemanticBytes }),
          fixture: input.fixture as never,
          candidate: input.candidate as never,
@@ -111,7 +178,7 @@ describe('BR01 source preflight', () => {
       if (args[0] === 'status') return result('1 .M file.ts');
       return result('');
     };
-    const outcome = sourcePreflightV1({ rootPath: '.', expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: {} as never, candidate: {} as never, runCommand: response });
+    const outcome = sourcePreflightV1({ rootPath: '.', expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: {} as never, candidate: {} as never, runCommand: response });
     expect(outcome).toMatchObject({ status: 'rejected', code: 'source-dirty' });
     expect(calls.some((call) => call.includes('--porcelain=v2'))).toBe(true);
   });
@@ -124,8 +191,30 @@ describe('BR01 source preflight', () => {
       if (args[0] === 'status') return emptyResult();
       return emptyResult();
     };
-    const outcome = sourcePreflightV1({ rootPath: '.', expectedAcceptedWp04Sha: 'b'.repeat(40), fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: {} as never, candidate: {} as never, runCommand: response });
+    const outcome = sourcePreflightV1({ rootPath: '.', expectedSourceCommitSha: 'b'.repeat(40), fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: {} as never, candidate: {} as never, runCommand: response });
     expect(outcome).toMatchObject({ status: 'rejected', code: 'source-sha-mismatch' });
+  });
+  it('accepts a current source commit later than the historical c64 fixture owner', () => {
+    const currentSourceCommitSha = 'a'.repeat(40);
+    const outcome = runWp04Preflight({ currentSourceCommitSha });
+    expect(outcome).toMatchObject({ status: 'accepted' });
+    if (outcome.status === 'accepted') {
+      expect(outcome.provenance.commitSha).toBe(currentSourceCommitSha);
+      expect(outcome.provenance.fixture.sourceCommitSha).toMatchObject({ status: 'observed', value: BR01_ACCEPTED_WP04_SHA });
+    }
+  });
+  it('rejects a WP04 fixture commit that is not the historical owner binding', () => {
+    expect(runWp04Preflight({ mutateFixture: (fixture) => { fixture.sourceCommitSha.value = 'a'.repeat(40); } })).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
+  });
+  it('rejects a WP04 fixture fileset digest that is not the historical owner binding', () => {
+    expect(runWp04Preflight({ mutateFixture: (fixture) => { fixture.sourceFileSetSha256.value = `sha256:${'b'.repeat(64)}`; } })).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
+  });
+  it('does not let current bytes at the historical paths redefine c64 fixture blobs', () => {
+    const outcome = runWp04Preflight({ mutateCurrentFile: (path, bytes) => path === WP04_SOURCE_PATHS[0] ? new Uint8Array([...bytes, 0]) : bytes });
+    expect(outcome).toMatchObject({ status: 'accepted' });
+  });
+  it('accepts c64 historical blobs when all historical paths are absent from the current checkout', () => {
+    expect(runWp04Preflight({ omitCurrentHistoricalFiles: true })).toMatchObject({ status: 'accepted' });
   });
 
   it('rejects a git root mismatch before reading fixture or build files', () => {
@@ -136,7 +225,7 @@ describe('BR01 source preflight', () => {
         calls.push(`${command} ${args.join(' ')} ${cwd}`);
         return args[0] === 'rev-parse' && args[1] === '--show-toplevel' ? result(realpathSync('.')) : emptyResult();
       };
-      const outcome = sourcePreflightV1({ rootPath: root, expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: {} as never, candidate: {} as never, runCommand: response });
+      const outcome = sourcePreflightV1({ rootPath: root, expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: {} as never, candidate: {} as never, runCommand: response });
       expect(outcome).toMatchObject({ status: 'rejected', code: 'infrastructure-failure' });
       expect(calls).toHaveLength(1);
     } finally {
@@ -155,7 +244,7 @@ describe('BR01 source preflight', () => {
       const fixtureEntries = [{ path: 'fixture.txt', bytes: encoder.encode('fixture') }];
       const candidateEntries = [{ path: 'candidate.txt', bytes: encoder.encode('candidate') }];
       const fixture = {
-         id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST),
+         id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceCommitSha: declared(BR01_ACCEPTED_WP04_SHA),
          sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']),
       };
       const candidate = {
@@ -170,7 +259,7 @@ describe('BR01 source preflight', () => {
         if (args[0] === 'ls-files') return emptyResult();
         return emptyResult();
       };
-       const outcome = sourcePreflightV1({ rootPath: root, expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: fixture as never, candidate: candidate as never, runCommand: response });
+       const outcome = sourcePreflightV1({ rootPath: root, expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: fixture as never, candidate: candidate as never, runCommand: response });
       expect(outcome).toMatchObject({ status: 'rejected', code: 'source-tree-mismatch' });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -188,7 +277,7 @@ describe('BR01 source preflight', () => {
       const fixtureEntries = [{ path: 'fixture.txt', bytes: encoder.encode('fixture') }];
       const candidateEntries = [{ path: 'candidate.txt', bytes: encoder.encode('candidate') }];
       const fixture = {
-         id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST),
+         id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceCommitSha: declared(BR01_ACCEPTED_WP04_SHA),
         sourceFileSetSha256: declared(digestFileSetV1(fixtureEntries)), sourcePaths: declared(['fixture.txt']),
       };
       const candidate = {
@@ -202,7 +291,7 @@ describe('BR01 source preflight', () => {
         if (args[0] === 'ls-files') return emptyResult();
         return emptyResult();
       };
-       const outcome = sourcePreflightV1({ rootPath: root, expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: fixture as never, candidate: candidate as never, runCommand: response });
+       const outcome = sourcePreflightV1({ rootPath: root, expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA, fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES, fixture: fixture as never, candidate: candidate as never, runCommand: response });
       expect(outcome.status).toBe('accepted');
       if (outcome.status === 'accepted') {
          expect(outcome.provenance.fixture.semanticSha256).toMatchObject({ status: 'observed', value: FIXTURE_SEMANTIC_DIGEST });
@@ -240,6 +329,32 @@ describe('BR01 source preflight', () => {
     expect(outcome).toMatchObject({ status: 'accepted' });
     if (outcome.status === 'accepted') expect(outcome.provenance.fixture.semanticSha256).toMatchObject({ status: 'observed', value: FIXTURE_SEMANTIC_DIGEST });
   });
+  it('preserves a declared synthetic fixture source commit without promoting it', () => {
+    const outcome = metadataPreflightOutcome((input) => {
+      input.fixture.sourceCommitSha = declared(BR01_ACCEPTED_WP04_SHA);
+    });
+    expect(outcome).toMatchObject({ status: 'accepted' });
+    if (outcome.status === 'accepted') expect(outcome.provenance.fixture.sourceCommitSha).toEqual(declared(BR01_ACCEPTED_WP04_SHA));
+  });
+  it('preserves an unavailable synthetic fixture source commit', () => {
+    const outcome = metadataPreflightOutcome((input) => {
+      input.fixture.sourceCommitSha = { status: 'unknown', value: null, sourceRef: 'capture-v1', reasonCode: 'commit-not-observed' };
+    });
+    expect(outcome).toMatchObject({ status: 'accepted' });
+    if (outcome.status === 'accepted') expect(outcome.provenance.fixture.sourceCommitSha).toEqual({ status: 'unknown', value: null, sourceRef: 'capture-v1', reasonCode: 'commit-not-observed' });
+  });
+  it('rejects an observed synthetic fixture source commit without owner verification', () => {
+    const outcome = metadataPreflightOutcome((input) => {
+      input.fixture.sourceCommitSha = observed(BR01_ACCEPTED_WP04_SHA);
+    });
+    expect(outcome).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
+  });
+  it('rejects known registry fixtures whose owner binding is unavailable', () => {
+    const outcome = metadataPreflightOutcome((input) => {
+      input.fixture.id = 'scheduler-edit-stream-v1';
+    });
+    expect(outcome).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
+  });
   it('rejects a repository path whose case does not match the directory entry', () => {
     expect(metadataPreflightOutcome(() => undefined, (root) => {
       renameSync(join(root, 'fixture.txt'), join(root, 'Fixture.txt'));
@@ -265,17 +380,18 @@ describe('BR01 source preflight', () => {
         if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(BR01_ACCEPTED_WP04_SHA);
         if (args[0] === 'rev-parse' && args[2] === 'HEAD^{tree}') return result('a'.repeat(40));
         if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
-        if (args[0] === 'cat-file' && args[1] === 'blob') return { status: 0, stdout: acceptedWp04Blob(args[2]!.slice('HEAD:'.length)), stderr: empty };
+         if (args[0] === 'cat-file' && args[1] === 'blob') return { status: 0, stdout: acceptedWp04Blob(args[2]!.slice(`${BR01_ACCEPTED_WP04_SHA}:`.length)), stderr: empty };
         return emptyResult();
       };
       const outcome = sourcePreflightV1({
         rootPath: root,
-        expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+        expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
         fixtureSemanticBytes: getBenchmarkWp04SemanticBytesV1(),
         fixture: {
           id: 'wp04-golden-world-v1',
-          version: 1,
-          semanticSha256: observed(BENCHMARK_WP04_SEMANTIC_SHA256_V1),
+           version: 1,
+           semanticSha256: observed(BENCHMARK_WP04_SEMANTIC_SHA256_V1),
+           sourceCommitSha: observed(BR01_ACCEPTED_WP04_SHA),
           sourceFileSetSha256: observed(sourceDigest),
           sourcePaths: observed([...WP04_SOURCE_PATHS]),
         } as never,
@@ -412,7 +528,7 @@ describe('BR01 source preflight', () => {
     const oversized = new Uint8Array(BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes + 1);
     const overflow = sourcePreflightV1({
       rootPath: '.',
-      expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+       expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
       fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
       fixture: {} as never,
       candidate: {} as never,
@@ -421,7 +537,7 @@ describe('BR01 source preflight', () => {
     expect(overflow).toMatchObject({ status: 'rejected', code: 'infrastructure-failure' });
     const signaled = sourcePreflightV1({
       rootPath: '.',
-      expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+       expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
       fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
       fixture: {} as never,
       candidate: {} as never,
@@ -447,9 +563,9 @@ describe('BR01 source preflight', () => {
       };
       const outcome = sourcePreflightV1({
         rootPath: root,
-        expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+         expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
         fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
-        fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) } as never,
+        fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceCommitSha: declared(BR01_ACCEPTED_WP04_SHA), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) } as never,
         candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)), sourcePaths: observed(['candidate.txt']) } as never,
         runCommand: response,
       });
@@ -483,9 +599,9 @@ describe('BR01 source preflight', () => {
       };
       const outcome = sourcePreflightV1({
         rootPath: root,
-        expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+         expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
         fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
-        fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) } as never,
+         fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceCommitSha: declared(BR01_ACCEPTED_WP04_SHA), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) } as never,
         candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)), sourcePaths: observed(['candidate.txt']) } as never,
         runCommand: response,
       });

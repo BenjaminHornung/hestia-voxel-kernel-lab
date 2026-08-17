@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BENCHMARK_METRIC_CROSSWALK_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTIONS_V1, BENCHMARK_SCENARIO_REGISTRY_V1, BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1, BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1, BENCHMARK_TELEMETRY_RECORD_MAPPINGS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_V1, benchmarkScenarioDefinitionsV1, getBenchmarkWp04SemanticBytesV1, resolveScenarioMetricCapabilitySelectionV1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
+import { BENCHMARK_FUTURE_METRIC_PRODUCER_CONTRACTS_V1, BENCHMARK_METRIC_CROSSWALK_V1, BENCHMARK_METRIC_REACHABILITY_MATRIX_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTIONS_V1, BENCHMARK_SCENARIO_REGISTRY_V1, BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1, BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1, BENCHMARK_TELEMETRY_RECORD_MAPPINGS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_V1, benchmarkScenarioDefinitionsV1, getBenchmarkWp04SemanticBytesV1, resolveScenarioMetricCapabilitySelectionV1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { canonicalizeJsonV1, compareUtf16 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { validateMetricRegistryV1 } from '../../../../src/benchmark/contracts/validateV1';
-import { BENCHMARK_METRIC_DIMENSION_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1, BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTION_GOLDENS_V1, BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1, BENCHMARK_UTF16_ORDER_GOLDENS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_GOLDEN_V1 } from '../../../../tests/contracts/benchmark/scenario-registry-v1.golden';
+import { BENCHMARK_METRIC_DIMENSION_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1, BENCHMARK_METRIC_REACHABILITY_MATRIX_COUNT_GOLDEN_V1, BENCHMARK_METRIC_REACHABILITY_MATRIX_SHA256_GOLDEN_V1, BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTION_GOLDENS_V1, BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1, BENCHMARK_UTF16_ORDER_GOLDENS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_GOLDEN_V1 } from '../../../../tests/contracts/benchmark/scenario-registry-v1.golden';
 
 describe('BR01 registries', () => {
   it('contains all seven contract-only scenarios', () => {
@@ -31,7 +31,8 @@ describe('BR01 registries', () => {
     expect(() => { (definition as any).metricContracts = []; }).toThrow();
     expect(() => { (definition.metricContracts[0] as any).metricRef = 'mutated@1'; }).toThrow();
     expect(() => { (BENCHMARK_METRIC_REGISTRY_V1.metrics[0] as any).eventSemantics = 'mutated'; }).toThrow();
-    expect(validateMetricRegistryV1()).toMatchObject({ valid: true });
+    const validation = validateMetricRegistryV1();
+    expect(validation, validation.valid ? '' : JSON.stringify(validation.issues)).toMatchObject({ valid: true });
   });
   it('classifies every BR02 telemetry record exactly once', () => {
     const names = BENCHMARK_TELEMETRY_RECORD_MAPPINGS_V1.map((mapping) => mapping.recordName);
@@ -62,6 +63,20 @@ describe('BR01 registries', () => {
     ]);
     expect(resolveScenarioMetricCapabilitySelectionV1('backend-fixture-v1', 'gpu.time.ms@1' as never, [{ key: 'backend', value: 'three-webgl2' }])).toEqual(['webgl-disjoint-timer-query']);
     expect(resolveScenarioMetricCapabilitySelectionV1('backend-fixture-v1', 'gpu.time.ms@1' as never, [{ key: 'backend', value: 'raw-webgpu' }])).toEqual(['webgpu-timestamp-query']);
+  });
+  it('freezes the complete future-producer reachability matrix', () => {
+    expect(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1).toHaveLength(BENCHMARK_METRIC_REACHABILITY_MATRIX_COUNT_GOLDEN_V1);
+    expect(sha256BytesV1(canonicalizeJsonV1(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1))).toBe(BENCHMARK_METRIC_REACHABILITY_MATRIX_SHA256_GOLDEN_V1);
+    const keys = BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.map((entry) => `${entry.scenarioId}|${entry.phase}|${entry.backend}|${entry.metricRef}|${entry.scenarioMetricContractOrdinal}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toEqual([...keys].sort(compareUtf16));
+    expect(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.every((entry) => entry.futureProducerOwner === BENCHMARK_FUTURE_METRIC_PRODUCER_CONTRACTS_V1[entry.metricRef]?.owner
+      && entry.firstWorkPackageAbleToEmit === entry.futureProducerOwner
+      && entry.recordName === BENCHMARK_FUTURE_METRIC_PRODUCER_CONTRACTS_V1[entry.metricRef]?.recordName)).toBe(true);
+    expect(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) => entry.disposition === 'emit-sample')).toHaveLength(140);
+    expect(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) => entry.disposition === 'not-required-in-phase')).toHaveLength(128);
+    expect(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) => entry.requirement === 'capability-selected').length).toBeGreaterThan(0);
+    expect(Object.isFrozen(BENCHMARK_METRIC_REACHABILITY_MATRIX_V1)).toBe(true);
   });
   it('binds serialized capability selections into the scenario definition digest', () => {
     const definition = BENCHMARK_SCENARIO_REGISTRY_V1['backend-fixture-v1'].definition;

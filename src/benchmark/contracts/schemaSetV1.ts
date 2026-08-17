@@ -17,5 +17,5 @@ const benchmarkSchemaSetV1 = {
 
 const canonicalBenchmarkSchemaSetBytesV1 = canonicalizeJsonV1(benchmarkSchemaSetV1);
 
-export const BENCHMARK_SCHEMA_SET_SHA256_V1 = 'sha256:1d3ab467b21d1033601704e1d2889287581bf9be0990bb227ed78747381419d7' as Sha256DigestV1;
+export const BENCHMARK_SCHEMA_SET_SHA256_V1 = 'sha256:cc2d4ba6d2c148b94ff42458dc9fb7a7af2159711d713871e15848a7fe5ca4ef' as Sha256DigestV1;
 export const BENCHMARK_SCHEMA_SET_BYTES_V1 = new Uint8Array(canonicalBenchmarkSchemaSetBytesV1);

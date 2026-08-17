@@ -2,7 +2,7 @@ import { calculateRunBindingSha256V1 } from '../../../../src/benchmark/contracts
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { compareUtf16 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
 import type { BenchmarkValidationContextV1, BenchmarkValidationReceiptInputV1 } from '../../../../src/benchmark/contracts/typesV1';
-import { BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
+import { BENCHMARK_METRIC_REACHABILITY_MATRIX_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { BENCHMARK_SCHEMA_SET_SHA256_V1 } from '../../../../src/benchmark/contracts/schemaSetV1';
 import {
   BENCHMARK_TEST_METRIC_FIXTURES_V1,
@@ -51,6 +51,7 @@ const fixture = (id: string) => ({
   id,
   version: 1,
   semanticSha256: observed(DIGEST),
+  sourceCommitSha: declared(GIT_SHA),
   sourceFileSetSha256: observed(DIGEST),
   sourcePaths: observed(SOURCE_PATHS),
 });
@@ -283,8 +284,8 @@ function run(
     measurementEligible: measurementEligibility === 'eligible',
       measurementEligibilityReasons: options.invalid
         ? [{ code: 'sample-invalid', detail: 'fixture invalidation', phase }]
-        : measurementEligibility === 'ineligible' && (phase === 'measurement' || phase === 'cold' || phase === 'stress')
-          ? [{ code: 'metric-not-producible', detail: 'eligibility gate', phase }]
+       : measurementEligibility === 'ineligible' && (phase === 'measurement' || phase === 'cold' || phase === 'stress')
+           ? [{ code: options.samples === true ? 'environment-incomplete' : 'metric-not-producible', detail: 'eligibility gate', phase }]
           : [],
      iterations: options.samples ? Array.from({ length: options.iterationCount ?? 1 }, (_, iterationOrdinal) => ({ schemaVersion: 'benchmark-iteration-v1', iterationId: `iteration-${iterationOrdinal}`, iterationOrdinal, runId, phase, samples: [] })) : [],
   };
@@ -318,7 +319,7 @@ export function createBenchmarkCaseDocumentV1(options: {
   const scenarioId = options.scenarioId ?? 'mesh-golden-world-v1';
   const phase = options.phase ?? 'measurement';
   const container = options.container ?? (phase === 'measurement' || phase === 'warmup' ? 'warm-measurement' : phase);
-   const measurementEligibility = options.measurementEligibility ?? (options.invalid === true ? 'ineligible' : phase === 'measurement' || phase === 'cold' || phase === 'stress' ? 'ineligible' : 'ineligible');
+   const measurementEligibility = options.measurementEligibility ?? 'ineligible';
    const measurementRun = run('measurement-run', scenarioId, phase, container, measurementEligibility, { ...options, executionIteration: phase === 'measurement' ? 11 : options.executionIteration, sequencePosition: phase === 'measurement' ? 11 : options.sequencePosition });
    const runs = phase === 'measurement' && container === 'warm-measurement'
       ? [
@@ -338,6 +339,40 @@ export function createBenchmarkCaseDocumentV1(options: {
      measurementEligibilityReasons: (measurementRun.measurementEligibilityReasons as JsonRecord[]).map((reason) => ({ ...reason, detail: 'eligibility gate' })),
      browserProcesses: [{ schemaVersion: 'benchmark-browser-process-v1', browserProcessId: 'browser-process-1', hardwareCellId: 'hardware-cell-1', source: sourceFor((scenarioDefinitions[scenarioId] as any).fixtureContractId), environment: environment(scenarioId, { backend: options.backend, webgpuTimestamp: options.webgpuTimestamp }), ids: processIds(), runs }],
   };
+}
+
+export function applySyntheticFutureProducerRecordsV1(document: any, recordNames: readonly string[]): void {
+  const process = document.browserProcesses[0];
+  const run = process.runs.at(-1);
+  const backend = run.scenario.parameters.find((parameter: JsonRecord) => parameter.key === 'backend')?.value ?? 'not-applicable';
+  const reachable = BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.filter((entry) => entry.scenarioId === run.scenario.id
+    && entry.phase === run.execution.phase
+    && entry.backend === backend
+    && entry.disposition === 'emit-sample'
+    && recordNames.includes(entry.recordName));
+  const metricRefs = new Set<string>(reachable.map((entry) => entry.metricRef));
+  for (const iteration of run.iterations) {
+    iteration.samples = iteration.samples
+      .filter((sample: JsonRecord) => metricRefs.has(String(sample.metricRef)))
+      .map((sample: JsonRecord, ordinal: number) => ({ ...sample, ordinal }));
+  }
+  if (!recordNames.includes('browser.long-task')) {
+    const environments = [document.environment, process.environment, ...process.runs.map((candidate: JsonRecord) => candidate.environment)];
+    for (const environment of environments) {
+      const capability = environment.capabilities.find((entry: JsonRecord) => entry.id === 'long-tasks');
+      if (capability !== undefined) capability.value = { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'synthetic-record-omitted' };
+    }
+  }
+  const hasRecords = recordNames.length > 0;
+  run.execution.measurementEligibility = hasRecords ? 'eligible' : 'ineligible';
+  run.measurementEligible = hasRecords;
+  run.measurementEligibilityReasons = hasRecords ? [] : [{ code: 'metric-not-producible', detail: 'eligibility gate', phase: run.execution.phase }];
+  for (const candidate of process.runs) {
+    candidate.runBindingSha256 = calculateRunBindingSha256V1(candidate);
+    for (const iteration of candidate.iterations) for (const sample of iteration.samples) sample.runBindingSha256 = candidate.runBindingSha256;
+  }
+  document.measurementEligible = hasRecords;
+  document.measurementEligibilityReasons = hasRecords ? [] : [{ code: 'metric-not-producible', detail: 'eligibility gate', phase: run.execution.phase }];
 }
 
 export function createTwoIterationBenchmarkCaseDocumentV1(): any {

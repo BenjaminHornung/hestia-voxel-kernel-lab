@@ -7,7 +7,7 @@ import {
   benchmarkNegativeFixtureCasesByIdV1,
   benchmarkPositiveFixtureCasesByIdV1,
 } from '../../../../tests/fixtures/benchmark/v1/case-catalog';
-import { createBenchmarkCaseDocumentV1, createBenchmarkValidationContextV1 } from './benchmark-case-fixtures-v1';
+import { applySyntheticFutureProducerRecordsV1, createBenchmarkCaseDocumentV1, createBenchmarkValidationContextV1 } from './benchmark-case-fixtures-v1';
 import { calculateRunBindingSha256V1, validateBenchmarkRunStructureV1, validateBenchmarkRunV1 } from '../../../../src/benchmark/contracts/validateV1';
 import { BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { createBenchmarkCaseRuntimeV1 } from './benchmark-case-runtime-v1';
@@ -64,6 +64,42 @@ describe('BR01 executable fixture matrix', () => {
     expect(validateSchema(document), JSON.stringify(validateSchema.errors)).toBe(true);
     expect(validateBenchmarkRunStructureV1(document)).toMatchObject({ valid: true });
       expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1())).toMatchObject({ valid: true });
+  });
+  it('binds current source and historical fixture provenance independently', () => {
+    const baseline = (createBenchmarkCaseDocumentV1({ samples: true }) as any).browserProcesses[0].runs.at(-1);
+    const currentSourceChanged = JSON.parse(JSON.stringify(baseline));
+    currentSourceChanged.source.commitSha = 'b'.repeat(40);
+    const fixtureSourceChanged = JSON.parse(JSON.stringify(baseline));
+    fixtureSourceChanged.source.fixture.sourceCommitSha.value = 'b'.repeat(40);
+    expect(calculateRunBindingSha256V1(currentSourceChanged)).not.toBe(calculateRunBindingSha256V1(baseline));
+    expect(calculateRunBindingSha256V1(fixtureSourceChanged)).not.toBe(calculateRunBindingSha256V1(baseline));
+    expect(calculateRunBindingSha256V1(currentSourceChanged)).not.toBe(calculateRunBindingSha256V1(fixtureSourceChanged));
+  });
+  it.each([
+    ['mesh-golden-world-v1', { phase: 'cold', container: 'cold' }, ['run.total', 'worker.mesh-cpu', 'mesh.quads', 'mesh.output-bytes', 'coverage.sha256-match']],
+    ['scheduler-burst-v1', { phase: 'stress', container: 'stress' }, ['scheduler.queue-depth', 'scheduler.drain', 'scheduler.evicted', 'result.stale-dropped', 'revision.latest-visible', 'worker.heartbeat-gap']],
+    ['brush-stress-v1', { phase: 'stress', container: 'stress' }, ['input-to-revision-submit', 'revision.latest-visible', 'world.sha256-match', 'scheduler.queue-depth', 'scheduler.drain']],
+    ['backend-fixture-v1', { backend: 'three-webgl2' }, ['draw-submit.cpu', 'gpu.time', 'browser.raf-interval', 'memory.bytes', 'image.contract-sha256-match']],
+  ] as const)('keeps future producer reachability fail-closed before records and eligible after valid records: %s', (scenarioId, options, records) => {
+    const before = createBenchmarkCaseDocumentV1({ scenarioId, ...options, samples: true }) as any;
+    applySyntheticFutureProducerRecordsV1(before, []);
+    const beforeValidation = validateBenchmarkRunV1(before, createBenchmarkValidationContextV1({ scenarioId }));
+    expect(beforeValidation, beforeValidation.valid ? '' : JSON.stringify(beforeValidation.issues)).toMatchObject({ valid: true });
+    expect(before.measurementEligible).toBe(false);
+
+    const after = createBenchmarkCaseDocumentV1({ scenarioId, ...options, samples: true }) as any;
+    applySyntheticFutureProducerRecordsV1(after, records);
+    expect(validateBenchmarkRunV1(after, createBenchmarkValidationContextV1({ scenarioId }))).toMatchObject({ valid: true });
+    expect(after.measurementEligible).toBe(true);
+  });
+  it.each([
+    ['three-webgl2', 'webgl-disjoint-timer-query'],
+    ['raw-webgpu', 'webgpu-timestamp-query'],
+  ] as const)('rejects an eligible backend cell when its selected GPU capability is unavailable: %s', (backend, selected) => {
+    const document = createBenchmarkCaseDocumentV1({ scenarioId: 'backend-fixture-v1', backend, samples: true }) as any;
+    applySyntheticFutureProducerRecordsV1(document, ['draw-submit.cpu', 'gpu.time', 'browser.raf-interval', 'memory.bytes', 'image.contract-sha256-match']);
+    setCapability(document, selected, { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'api-not-supported' });
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'backend-fixture-v1' }))).toMatchObject({ valid: false, code: 'required-capability-missing' });
   });
   it('rejects a globally known metric that is absent from the bound scenario', () => {
     const document = createBenchmarkCaseDocumentV1({ samples: true }) as any;

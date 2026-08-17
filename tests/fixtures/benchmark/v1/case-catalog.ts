@@ -259,6 +259,7 @@ function setupSourcePreflight(kind: SourcePreflightKindV1): {
     id: 'fixture-v1',
     version: 1,
     semanticSha256: { status: 'observed', value: digestFileBytesV1(fixtureSemanticBytes), sourceRef: 'capture-v1', stability: 'stable' },
+    sourceCommitSha: { status: 'declared', value: BR01_ACCEPTED_WP04_SHA, sourceRef: 'plan-v1', stability: 'run-config' },
     sourceFileSetSha256: { status: 'observed', value: kind === 'fixture-mismatch' ? `sha256:${'b'.repeat(64)}` : fixtureDigest, sourceRef: 'capture-v1', stability: 'stable' },
     sourcePaths: { status: 'observed', value: ['fixture.txt'], sourceRef: 'capture-v1', stability: 'stable' },
   };
@@ -286,7 +287,7 @@ function setupSourcePreflight(kind: SourcePreflightKindV1): {
   };
   const input = {
     rootPath: root,
-    expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+    expectedSourceCommitSha: BR01_ACCEPTED_WP04_SHA,
     fixtureSemanticBytes,
     fixture: fixture as never,
     candidate: candidate as never,
