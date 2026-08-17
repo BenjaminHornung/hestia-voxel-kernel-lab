@@ -19,6 +19,7 @@ import {
   parseCanonicalJsonV1,
 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
 import {
+  bundleRelativePathV1,
   compareCanonicalRelativePathsV1,
   sortCanonicalRelativePathsV1,
 } from '../../../../src/benchmark/provenance/canonicalPathV1';
@@ -28,12 +29,13 @@ import {
   formatBundleDigestV1,
   parseBundleDigestV1,
   verifyBundleDirectoryV1,
+  type BundleFileInputV1,
   type BundleFileV1,
 } from '../../../../src/benchmark/provenance/bundleV1';
 import {
   digestFileBytesV1,
   digestFileSetV1,
-  type FileSetEntryV1,
+  type FileSetEntryInputV1,
 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import {
   sourcePreflightV1,
@@ -41,8 +43,11 @@ import {
 } from '../../../../src/benchmark/provenance/sourcePreflightV1';
 import {
   calculateRunBindingSha256V1,
+  createBenchmarkValidationReceiptV1,
   validateBenchmarkRunV1,
 } from '../../../../src/benchmark/contracts/validateV1';
+import { BENCHMARK_SCHEMA_SET_BYTES_V1 } from '../../../../src/benchmark/contracts/schemaSetV1';
+import { repositoryRelativePathV1 } from '../../../../src/benchmark/provenance/canonicalPathV1';
 import {
   BENCHMARK_TEST_SCENARIO_DEFINITION_DIGESTS_V1,
   BENCHMARK_TEST_SCENARIO_DEFINITIONS_V1,
@@ -50,6 +55,8 @@ import {
 import type { BenchmarkCaseRuntimeV1 } from '../../../unit/benchmark/contracts/benchmark-case-runtime-v1';
 import {
   createBenchmarkCaseDocumentV1,
+  createBenchmarkTelemetryAdapterV1,
+  createBenchmarkTelemetryExportV1,
   createBenchmarkValidationContextV1,
 } from '../../../unit/benchmark/contracts/benchmark-case-fixtures-v1';
 
@@ -237,8 +244,8 @@ function setupSourcePreflight(kind: SourcePreflightKindV1): {
   readonly expected: { readonly status: 'accepted' | 'rejected'; readonly code?: string };
 } {
   const root = mkdtempSync(join(tmpdir(), `br01-${kind}-`));
-  const fixtureEntries: FileSetEntryV1[] = [{ path: 'fixture.txt', bytes: textEncoder.encode('fixture') }];
-  const candidateEntries: FileSetEntryV1[] = [{ path: 'candidate.txt', bytes: textEncoder.encode('candidate') }];
+  const fixtureEntries: FileSetEntryInputV1[] = [{ path: 'fixture.txt', bytes: textEncoder.encode('fixture') }];
+  const candidateEntries: FileSetEntryInputV1[] = [{ path: 'candidate.txt', bytes: textEncoder.encode('candidate') }];
   const fixtureSemanticBytes = canonicalizeJsonV1({ fixtureContractId: 'fixture-v1', version: 1 });
   mkdirSync(join(root, 'dist'));
   writeFileSync(join(root, 'fixture.txt'), fixtureEntries[0]!.bytes);
@@ -365,22 +372,41 @@ interface BundleFixture {
   readonly bundle: JsonRecord;
 }
 
-function createBundleFixture(options: { readonly includeBinary?: boolean; readonly includeText?: boolean } = {}): BundleFixture {
-  const rawRun = canonicalizeJsonV1(createBenchmarkCaseDocumentV1({ phase: 'cold', container: 'cold', samples: true }));
-  const artifacts: BundleFileV1[] = [
+function createBundleFixture(options: { readonly includeBinary?: boolean; readonly includeText?: boolean; readonly metricRegistry: any }): BundleFixture {
+  const document = createBenchmarkCaseDocumentV1({ phase: 'cold', container: 'cold', samples: true });
+  const rawRun = canonicalizeJsonV1(document);
+  const telemetryExport = canonicalizeJsonV1(createBenchmarkTelemetryExportV1(document));
+  const receipt = createBenchmarkValidationReceiptV1({
+    planId: 'plan-v1' as never,
+    slotId: 'slot-measurement' as never,
+    runId: 'measurement-run' as never,
+    telemetryExportRawBytes: telemetryExport,
+    benchmarkRunRawBytes: rawRun,
+    benchmarkRunCanonicalBytes: rawRun,
+    schemaSetBytes: BENCHMARK_SCHEMA_SET_BYTES_V1,
+    metricRegistry: options.metricRegistry,
+    telemetryAdapter: createBenchmarkTelemetryAdapterV1(),
+    validatorSourceCommitSha: 'a'.repeat(40) as never,
+    validatorSourceFiles: [{ path: repositoryRelativePathV1('src/benchmark/contracts/validateV1.ts'), bytes: textEncoder.encode('validator') }],
+    validationContext: createBenchmarkValidationContextV1(),
+  });
+  const artifacts: BundleFileInputV1[] = [
     ...(options.includeBinary === true ? [{ path: 'artifacts/capture.png', bytes: new Uint8Array([0, 1, 2]) }] : []),
     { path: 'raw/measurement-run.json', bytes: rawRun },
+    { path: 'receipts/measurement-run.json', bytes: canonicalizeJsonV1(receipt) },
+    { path: 'telemetry/measurement-run.json', bytes: telemetryExport },
     ...(options.includeText === true ? [
       { path: 'summary/summary.json', bytes: textEncoder.encode('{}') },
       { path: 'summary/summary.md', bytes: textEncoder.encode('# summary\n') },
     ] : []),
   ];
+  artifacts.sort((left, right) => compareCanonicalRelativePathsV1(left.path, right.path));
   const artifact = {
     schemaVersion: 'benchmark-artifact-manifest-v1',
     protocolVersion: 'benchmark-protocol-v1',
     artifacts: artifacts.map((file) => ({
       path: file.path,
-      role: file.path.endsWith('.png') ? 'screenshot' : file.path.endsWith('.md') ? 'summary-markdown' : file.path.startsWith('raw/') ? 'raw-run-json' : 'summary-json',
+      role: file.path.endsWith('.png') ? 'screenshot' : file.path.endsWith('.md') ? 'summary-markdown' : file.path.startsWith('raw/') ? 'raw-run-json' : file.path.startsWith('telemetry/') ? 'telemetry-export-json' : file.path.startsWith('receipts/') ? 'validation-receipt-json' : 'summary-json',
       mediaType: file.path.endsWith('.png') ? 'image/png' : file.path.endsWith('.md') ? 'text/markdown' : 'application/json',
       serialization: file.path.endsWith('.png') ? 'binary-exact' : file.path.endsWith('.md') ? 'utf8-lf-final-newline' : 'jcs-rfc8785',
       byteLength: file.bytes.byteLength,
@@ -403,7 +429,7 @@ function createBundleFixture(options: { readonly includeBinary?: boolean; readon
       byteLength: artifactBytes.byteLength,
       sha256: digestFileBytesV1(artifactBytes),
     },
-    runs: [{ runId: 'measurement-run', path: 'raw/measurement-run.json', sha256: digestFileBytesV1(rawRun) }],
+    runs: [{ runId: 'measurement-run', rawRun: { path: 'raw/measurement-run.json', sha256: digestFileBytesV1(rawRun) }, telemetryExport: { path: 'telemetry/measurement-run.json', sha256: digestFileBytesV1(telemetryExport) }, validationReceipt: { path: 'receipts/measurement-run.json', sha256: digestFileBytesV1(canonicalizeJsonV1(receipt)) } }],
     excludedFromBundleDigest: ['bundle.sha256'],
   };
   return { files: buildBundleFilesV1(artifact as never, bundle as never, artifacts), artifact, bundle };
@@ -430,7 +456,7 @@ function materializedBundleFiles(root: string, prefix = ''): BundleFileV1[] {
     const absolute = join(root, entry.name);
     const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
     if (entry.isDirectory()) files.push(...materializedBundleFiles(absolute, path));
-    else files.push({ path, bytes: new Uint8Array(readFileSync(absolute)) });
+    else files.push({ path: bundleRelativePathV1(path), bytes: new Uint8Array(readFileSync(absolute)) });
   }
   return files;
 }
@@ -448,19 +474,17 @@ function rewriteArtifactManifestAndBindings(root: string, mutate: (manifest: Jso
   if (rebuildBundleDigest) writeFileSync(join(root, 'bundle.sha256'), formatBundleDigestV1(bundleDigestFilesV1(materializedBundleFiles(root))));
 }
 
-type BinaryArtifactRoleV1 = 'trace' | 'heap-snapshot' | 'gpu-capture';
+type BinaryArtifactRoleV1 = 'trace';
 
 const BINARY_ARTIFACT_ROLE_FIXTURES: Readonly<Record<BinaryArtifactRoleV1, { readonly path: string; readonly mediaType: string }>> = {
   trace: { path: 'traces/process-0042/trace.json.gz', mediaType: 'application/gzip' },
-  'heap-snapshot': { path: 'artifacts/capture.bin', mediaType: 'application/octet-stream' },
-  'gpu-capture': { path: 'artifacts/capture.bin', mediaType: 'application/octet-stream' },
 };
 
 function mutateBinaryArtifactRole(root: string, role: BinaryArtifactRoleV1, mismatch: 'extension' | 'media-type' | 'location' | 'name' | 'raw-location-name'): void {
   const fixture = BINARY_ARTIFACT_ROLE_FIXTURES[role];
   const originalPath = 'artifacts/capture.png';
   const targetPath = mismatch === 'extension'
-    ? role === 'trace' ? 'artifacts/capture.bin' : 'artifacts/capture.invalid'
+    ? 'artifacts/capture.bin'
     : mismatch === 'location' ? 'artifacts/process-0042/trace.json.gz'
       : mismatch === 'name' ? 'traces/process-0042/not-trace.json.gz'
         : mismatch === 'raw-location-name' ? 'raw/not-a-trace.json.gz' : fixture.path;
@@ -470,7 +494,7 @@ function mutateBinaryArtifactRole(root: string, role: BinaryArtifactRoleV1, mism
     const entry = (manifest.artifacts as JsonRecord[]).find((candidate) => candidate.path === originalPath)!;
     entry.path = targetPath;
     entry.role = role;
-    entry.mediaType = mismatch === 'media-type' ? role === 'trace' ? 'APPLICATION/GZIP' : 'APPLICATION/OCTET-STREAM' : fixture.mediaType;
+    entry.mediaType = mismatch === 'media-type' ? 'APPLICATION/GZIP' : fixture.mediaType;
     entry.serialization = 'binary-exact';
   }, true);
 }
@@ -487,12 +511,14 @@ function rebindArtifactFile(root: string, path: string, rebuildBundleDigest: boo
 
 function executeBundleCase(rawOptions: BenchmarkFixtureCaseOptionsV1): BenchmarkFixtureExecutionResultV1 {
   const options = rawOptions as BenchmarkFixtureCaseOptionsV1 & { readonly variants: readonly BundleVariantOptions[] };
+  const runtime = (rawOptions as BenchmarkFixtureCaseOptionsV1 & { readonly runtime?: BenchmarkCaseRuntimeV1 }).runtime;
+  if (runtime === undefined) throw new Error('Benchmark case runtime was not injected.');
   const variantResults: JsonRecord[] = [];
   for (const variant of options.variants) {
     const root = mkdtempSync(join(tmpdir(), `br01-${variant.name}-`));
     let platformOutcome: string | undefined;
     try {
-      const fixture = createBundleFixture({ includeBinary: variant.includeBinary, includeText: variant.includeText });
+       const fixture = createBundleFixture({ includeBinary: variant.includeBinary, includeText: variant.includeText, metricRegistry: runtime.metricRegistry });
       materializeBundle(root, fixture.files);
       try {
         variant.mutate(root);
@@ -552,14 +578,16 @@ function executeParseCase(rawOptions: BenchmarkFixtureCaseOptionsV1): BenchmarkF
     : pass({ variants });
 }
 
-function executeBomCase(): BenchmarkFixtureExecutionResultV1 {
+function executeBomCase(rawOptions: BenchmarkFixtureCaseOptionsV1): BenchmarkFixtureExecutionResultV1 {
+  const runtime = (rawOptions as BenchmarkFixtureCaseOptionsV1 & { readonly runtime?: BenchmarkCaseRuntimeV1 }).runtime;
+  if (runtime === undefined) throw new Error('Benchmark case runtime was not injected.');
   const jsonResult = executeParseCase({
     kind: 'parse',
     variants: [{ name: 'json-bom', input: new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x7d]) }],
   });
   const root = mkdtempSync(join(tmpdir(), 'br01-n44-markdown-'));
   try {
-    const fixture = createBundleFixture({ includeText: true });
+     const fixture = createBundleFixture({ includeText: true, metricRegistry: runtime.metricRegistry });
     const artifact = clone(fixture.artifact);
     const bundle = clone(fixture.bundle);
     const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...textEncoder.encode('# summary\n')]);
@@ -595,7 +623,7 @@ function executeP11(): BenchmarkFixtureExecutionResultV1 {
 function executeP12P13(rawOptions: BenchmarkFixtureCaseOptionsV1): BenchmarkFixtureExecutionResultV1 {
   const options = rawOptions as BenchmarkFixtureCaseOptionsV1 & { readonly includeBinary?: boolean; readonly includeText?: boolean; readonly runtime?: BenchmarkCaseRuntimeV1 };
   if (options.runtime === undefined) throw new Error('Benchmark case runtime was not injected.');
-  const fixture = createBundleFixture({ includeBinary: options.includeBinary, includeText: options.includeText });
+  const fixture = createBundleFixture({ includeBinary: options.includeBinary, includeText: options.includeText, metricRegistry: options.runtime.metricRegistry });
   const root = mkdtempSync(join(tmpdir(), 'br01-positive-bundle-'));
   try {
     materializeBundle(root, fixture.files);
@@ -612,7 +640,7 @@ function executeP12P13(rawOptions: BenchmarkFixtureCaseOptionsV1): BenchmarkFixt
       : rawArtifacts.length === 1 && rawRunCount === 1 && bundleRunCount === 1 && artifactSchemaValid && bundleSchemaValid && verification.valid;
     return expected
       ? pass({ artifactCount: fixture.artifact.artifacts.length, rawArtifactCount: rawArtifacts.length, rawRunCount, bundleRunCount, artifactSchemaValid, bundleSchemaValid })
-      : reject('provenance-or-bundle', 'bundle-invalid', { artifactCount: fixture.artifact.artifacts.length, rawArtifactCount: rawArtifacts.length, rawRunCount, bundleRunCount, artifactSchemaValid, bundleSchemaValid, verificationValid: verification.valid });
+       : reject('provenance-or-bundle', 'bundle-invalid', { artifactCount: fixture.artifact.artifacts.length, rawArtifactCount: rawArtifacts.length, rawRunCount, bundleRunCount, artifactSchemaValid, bundleSchemaValid, verificationValid: verification.valid, verificationError: verification.error });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -633,9 +661,11 @@ function executeP14(): BenchmarkFixtureExecutionResultV1 {
     : reject('provenance-or-bundle', 'path-order-invalid', { ordered });
 }
 
-function executeP15(): BenchmarkFixtureExecutionResultV1 {
-  const first = createBundleFixture({ includeBinary: true, includeText: true });
-  const second = createBundleFixture({ includeBinary: true, includeText: true });
+function executeP15(rawOptions: BenchmarkFixtureCaseOptionsV1): BenchmarkFixtureExecutionResultV1 {
+  const runtime = (rawOptions as BenchmarkFixtureCaseOptionsV1 & { readonly runtime?: BenchmarkCaseRuntimeV1 }).runtime;
+  if (runtime === undefined) throw new Error('Benchmark case runtime was not injected.');
+  const first = createBundleFixture({ includeBinary: true, includeText: true, metricRegistry: runtime.metricRegistry });
+  const second = createBundleFixture({ includeBinary: true, includeText: true, metricRegistry: runtime.metricRegistry });
   const firstRoot = mkdtempSync(join(tmpdir(), 'br01-p15-first-'));
   const secondRoot = mkdtempSync(join(tmpdir(), 'br01-p15-second-'));
   try {
@@ -701,8 +731,8 @@ export const benchmarkPositiveFixtureCasesV1 = [
   { id: 'P09', description: 'invalid run with a reason and no samples', executor: executeRunCase, options: run({ document: { invalid: true, samples: false }, collectFacts: (document: JsonRecord) => ({ validity: targetRun(document).execution.validity.status, reasonCount: targetRun(document).execution.validity.reasons.length, sampleCount: targetSamples(document).length }) }), expected: expectedPass({ schemaValid: true, validity: 'invalid', reasonCount: 1, sampleCount: 0 }) },
   { id: 'P10', description: 'valid counter value zero is retained as a measurement', executor: executeRunCase, options: run({ document: { samples: true, counterZero: true }, collectFacts: (document: JsonRecord) => ({ zeroCounterCount: targetSamples(document).filter((sample) => sample.kind === 'counter' && sample.result.status === 'valid' && sample.result.value === 0).length }) }), expected: expectedPass({ schemaValid: true, zeroCounterCount: 1 }) },
   { id: 'P11', description: 'JCS Unicode is preserved without normalization', executor: executeP11, options: { kind: 'canonical-json' }, expected: expectedPass({ normalized: false }) },
-  { id: 'P12', description: 'valid bundle with exactly one raw run', executor: executeP12P13, options: { kind: 'bundle-positive', includeBinary: false, includeText: false }, expected: expectedPass({ artifactCount: 1, rawArtifactCount: 1, rawRunCount: 1, bundleRunCount: 1, artifactSchemaValid: true, bundleSchemaValid: true }) },
-  { id: 'P13', description: 'valid bundle with JSON, Markdown, and PNG artifacts', executor: executeP12P13, options: { kind: 'bundle-positive', includeBinary: true, includeText: true }, expected: expectedPass({ artifactCount: 4, rawArtifactCount: 1, rawRunCount: 1, bundleRunCount: 1, artifactSchemaValid: true, bundleSchemaValid: true }) },
+  { id: 'P12', description: 'valid bundle with one raw run, telemetry export, and validation receipt', executor: executeP12P13, options: { kind: 'bundle-positive', includeBinary: false, includeText: false }, expected: expectedPass({ artifactCount: 3, rawArtifactCount: 1, rawRunCount: 1, bundleRunCount: 1, artifactSchemaValid: true, bundleSchemaValid: true }) },
+  { id: 'P13', description: 'valid bundle with closure and JSON, Markdown, and PNG artifacts', executor: executeP12P13, options: { kind: 'bundle-positive', includeBinary: true, includeText: true }, expected: expectedPass({ artifactCount: 6, rawArtifactCount: 1, rawRunCount: 1, bundleRunCount: 1, artifactSchemaValid: true, bundleSchemaValid: true }) },
   { id: 'P14', description: 'canonical path ordering across multiple directory depths', executor: executeP14, options: { kind: 'path-order' }, expected: expectedPass({ ordered: ['a.json', 'a/2.json', 'a/deep/10.json', 'a/deep/2.json'] }) },
   { id: 'P15', description: 'two independently materialized identical rebuilds have identical bytes and digest', executor: executeP15, options: { kind: 'rebuild' }, expected: expectedPass({ sameBytes: true, sameDigest: true, independentlyMaterialized: true }) },
   { id: 'P16', description: 'infrastructure rerun explicitly binds replacement and approval IDs', executor: executeRunCase, options: run({ document: { samples: true, rerun: true }, collectFacts: (document: JsonRecord) => { const origin = targetRun(document).execution.origin; return { rerunKind: origin.kind, replacesRunId: origin.kind === 'infrastructure-rerun' ? origin.replacesRunId : undefined, approvalId: origin.kind === 'infrastructure-rerun' ? origin.approvalId : undefined, bindingMatches: targetRun(document).runBindingSha256 === calculateRunBindingSha256V1(targetRun(document) as never) }; } }), expected: expectedPass({ schemaValid: true, rerunKind: 'infrastructure-rerun', replacesRunId: 'previous-run', approvalId: 'approval-1', bindingMatches: true }) },
@@ -787,18 +817,18 @@ export const benchmarkNegativeFixtureCasesV1 = [
     { name: 'device-pixel-ratio', status: 'reject', stage: 'schema', code: 'number-domain-invalid', schemaValid: false },
     { name: 'refresh-rate', status: 'reject', stage: 'schema', code: 'number-domain-invalid', schemaValid: false },
   ] }) },
-  { id: 'N27', description: 'eligible run with hidden document', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'visibility', 'hidden'); setExecutionPageState(document, 'visibility', 'hidden'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true }), expected: expectedReject('semantic', 'document-hidden', { schemaValid: true }) },
-  { id: 'N28', description: 'eligible run without focus', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'focus', 'unfocused'); setExecutionPageState(document, 'focus', 'unfocused'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true }), expected: expectedReject('semantic', 'document-unfocused', { schemaValid: true }) },
-  { id: 'N29', description: 'eligible run with background tab', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'backgroundTabs', 1); setExecutionPageState(document, 'backgroundTabs', 1); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true }), expected: expectedReject('semantic', 'background-tabs-present', { schemaValid: true }) },
-  { id: 'N30', description: 'headless performance run', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'headless', true); setEnvironmentState(document, 'gateRole', 'performance-primary'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true }), expected: expectedReject('semantic', 'environment-incomplete', { schemaValid: true }) },
+  { id: 'N27', description: 'eligible run with hidden document', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'visibility', 'hidden'); setExecutionPageState(document, 'visibility', 'hidden'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true, measurementEligibility: 'eligible' }), expected: expectedReject('semantic', 'document-hidden', { schemaValid: true }) },
+  { id: 'N28', description: 'eligible run without focus', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'focus', 'unfocused'); setExecutionPageState(document, 'focus', 'unfocused'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true, measurementEligibility: 'eligible' }), expected: expectedReject('semantic', 'document-unfocused', { schemaValid: true }) },
+  { id: 'N29', description: 'eligible run with background tab', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'backgroundTabs', 1); setExecutionPageState(document, 'backgroundTabs', 1); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true, measurementEligibility: 'eligible' }), expected: expectedReject('semantic', 'background-tabs-present', { schemaValid: true }) },
+  { id: 'N30', description: 'headless performance run', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'headless', true); setEnvironmentState(document, 'gateRole', 'performance-primary'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true, measurementEligibility: 'eligible' }), expected: expectedReject('semantic', 'environment-incomplete', { schemaValid: true }) },
   { id: 'N31', description: 'warmup and trace runs marked eligible', executor: executeRunCase, options: runVariants([
     { name: 'warmup', document: { phase: 'warmup', container: 'warm-measurement', samples: true }, mutate: (document) => { const runValue = document.browserProcesses[0].runs.at(-1)!; runValue.execution.measurementEligibility = 'eligible'; runValue.measurementEligible = true; } },
-    { name: 'trace', document: { phase: 'trace', container: 'trace', samples: true }, mutate: (document) => { const runValue = document.browserProcesses[0].runs.at(-1)!; runValue.execution.measurementEligibility = 'eligible'; runValue.measurementEligible = true; } },
+     { name: 'trace', document: { scenarioId: 'navigation-leak-v1', phase: 'trace', container: 'trace', samples: true }, context: { scenarioId: 'navigation-leak-v1' }, mutate: (document) => { const runValue = document.browserProcesses[0].runs.at(-1)!; runValue.execution.measurementEligibility = 'eligible'; runValue.measurementEligible = true; } },
   ]), expected: expectedReject('semantic', 'measurement-ineligible', { variants: [
     { name: 'warmup', status: 'reject', stage: 'semantic', code: 'measurement-ineligible', schemaValid: true },
     { name: 'trace', status: 'reject', stage: 'semantic', code: 'measurement-ineligible', schemaValid: true },
   ] }) },
-  { id: 'N32', description: 'valid eligible run without samples', executor: executeRunCase, options: runMutation((document) => { const runValue = document.browserProcesses[0].runs.at(-1)!; runValue.execution.validity = { status: 'valid' }; runValue.measurementEligible = true; }, { samples: false }), expected: expectedReject('schema', 'sample-missing', { schemaValid: false }) },
+  { id: 'N32', description: 'valid eligible run without samples', executor: executeRunCase, options: runMutation((document) => { const runValue = document.browserProcesses[0].runs.at(-1)!; runValue.execution.validity = { status: 'valid' }; runValue.execution.measurementEligibility = 'eligible'; runValue.measurementEligible = true; }, { samples: false, measurementEligibility: 'eligible' }), expected: expectedReject('schema', 'sample-missing', { schemaValid: false }) },
   { id: 'N33', description: 'invalid run without a reason', executor: executeRunCase, options: runMutation((document) => { delete document.browserProcesses[0].runs.at(-1)!.execution.validity.reasons; }, { invalid: true, samples: true }), expected: expectedReject('schema', 'schema-invalid', { schemaValid: false }) },
   { id: 'N34', description: 'valid sample without a value', executor: executeRunCase, options: runMutation((document) => { delete document.browserProcesses[0].runs.at(-1)!.iterations[0].samples[0].result.value; }, { samples: true }), expected: expectedReject('schema', 'schema-invalid', { schemaValid: false }) },
   { id: 'N35', description: 'invalid sample with a value and no reason', executor: executeRunCase, options: runMutation((document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples[0].result = { status: 'invalid', value: 1 }; }, { samples: true }), expected: expectedReject('schema', 'schema-invalid', { schemaValid: false }) },
@@ -869,7 +899,7 @@ export const benchmarkNegativeFixtureCasesV1 = [
       rewriteArtifactManifestAndBindings(root, (manifest) => { const entry = (manifest.artifacts as JsonRecord[]).find((candidate) => candidate.path === 'summary/summary.md')!; entry.path = 'summary/summary.log'; }, true);
     }, false, true),
     makeBundleMutation('failure-log-md', (root) => rewriteArtifactManifestAndBindings(root, (manifest) => { const entry = (manifest.artifacts as JsonRecord[]).find((candidate) => candidate.path === 'summary/summary.md')!; entry.role = 'failure-log'; entry.mediaType = 'text/plain'; }, true), false, true),
-    ...(['trace', 'heap-snapshot', 'gpu-capture'] as const).flatMap((role) => [
+    ...(['trace'] as const).flatMap((role) => [
       makeBundleMutation(`${role}-wrong-extension`, (root) => mutateBinaryArtifactRole(root, role, 'extension'), true),
       makeBundleMutation(`${role}-wrong-media-type`, (root) => mutateBinaryArtifactRole(root, role, 'media-type'), true),
     ]),
@@ -879,7 +909,7 @@ export const benchmarkNegativeFixtureCasesV1 = [
   ]), expected: expectedReject('provenance-or-bundle', undefined, { variants: [
     { name: 'summary-markdown-log', status: 'reject', errorCategory: 'bundle-verification-error' },
     { name: 'failure-log-md', status: 'reject', errorCategory: 'bundle-verification-error' },
-    ...(['trace', 'heap-snapshot', 'gpu-capture'] as const).flatMap((role) => [
+    ...(['trace'] as const).flatMap((role) => [
       { name: `${role}-wrong-extension`, status: 'reject', errorCategory: 'bundle-verification-error' },
       { name: `${role}-wrong-media-type`, status: 'reject', errorCategory: 'bundle-verification-error' },
     ]),
@@ -904,18 +934,18 @@ export const benchmarkNegativeFixtureCasesV1 = [
   { id: 'N60', description: 'bundle timestamp changed after build', executor: executeBundleCase, options: bundle([makeBundleMutation('timestamp', (root) => rewriteJsonFile(root, 'bundle-manifest.json', (manifest) => { manifest.createdUtc = '2026-08-13T12:00:01.000Z'; }))]), expected: expectedReject('provenance-or-bundle', undefined, { variants: [{ name: 'timestamp', status: 'reject', errorCategory: 'bundle-verification-error' }] }) },
   { id: 'N61', description: 'scenario parameter outside registry domain', executor: executeRunCase, options: runMutation((document) => { const parameter = document.browserProcesses[0].runs.at(-1)!.scenario.parameters.find((entry: JsonRecord) => entry.key === 'seed')!; parameter.value = 0x1_0000_0000; }), expected: expectedReject('semantic', 'parameter-domain-invalid', { schemaValid: true }) },
   { id: 'N62', description: 'runtime state and execution page state differ', executor: executeRunCase, options: runMutation((document) => { document.browserProcesses[0].runs[0].execution.pageState.visibility = 'hidden'; }), expected: expectedReject('semantic', 'runtime-state-mismatch', { schemaValid: true }) },
-  { id: 'N63', description: 'eligible run with documented competing load', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'competingLoad', { status: 'documented', detail: 'load' }); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true }), expected: expectedReject('semantic', 'environment-incomplete', { schemaValid: true }) },
-  { id: 'N64', description: 'eligible performance run with unobservable thermal state', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'thermalState', 'not-observable'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true }), expected: expectedReject('semantic', 'environment-incomplete', { schemaValid: true }) },
+  { id: 'N63', description: 'eligible run with documented competing load', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'competingLoad', { status: 'documented', detail: 'load' }); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true, measurementEligibility: 'eligible' }), expected: expectedReject('semantic', 'environment-incomplete', { schemaValid: true }) },
+  { id: 'N64', description: 'eligible performance run with unobservable thermal state', executor: executeRunCase, options: runMutation((document) => { setEnvironmentState(document, 'thermalState', 'not-observable'); refreshBindings(document); }, { phase: 'cold', container: 'cold', samples: true, measurementEligibility: 'eligible' }), expected: expectedReject('semantic', 'environment-incomplete', { schemaValid: true }) },
   { id: 'N65', description: 'required metric missing, wrong kind, and wrong unit', executor: executeRunCase, options: runVariants([
-    { name: 'missing', mutate: (document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples.pop(); }, document: { samples: true } },
-    { name: 'wrong-kind', mutate: (document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples[0].kind = 'counter'; }, document: { samples: true } },
-    { name: 'wrong-unit', mutate: (document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples[0].unit = 'bytes'; }, document: { samples: true } },
+     { name: 'missing', mutate: (document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples.pop(); }, document: { samples: true, measurementEligibility: 'eligible' } },
+     { name: 'wrong-kind', mutate: (document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples[0].kind = 'counter'; }, document: { samples: true, measurementEligibility: 'eligible' } },
+     { name: 'wrong-unit', mutate: (document) => { document.browserProcesses[0].runs.at(-1)!.iterations[0].samples[0].unit = 'bytes'; }, document: { samples: true, measurementEligibility: 'eligible' } },
   ]), expected: expectedReject('semantic', undefined, { variants: [
-    { name: 'missing', status: 'reject', stage: 'semantic', code: 'metric-missing', schemaValid: true },
+     { name: 'missing', status: 'reject', stage: 'semantic', code: 'metric-not-producible', schemaValid: true },
     { name: 'wrong-kind', status: 'reject', stage: 'semantic', code: 'metric-unit-mismatch', schemaValid: true },
     { name: 'wrong-unit', status: 'reject', stage: 'semantic', code: 'metric-unit-mismatch', schemaValid: true },
   ] }) },
-  { id: 'N66', description: 'supported conditional GPU metric is missing', executor: executeRunCase, options: { ...runMutation((document) => { setCapabilityObserved(document, 'webgpu-timestamp-query'); refreshBindings(document); }, { scenarioId: 'backend-fixture-v1', backend: 'raw-webgpu', samples: true, webgpuTimestamp: 'unsupported' }), context: { scenarioId: 'backend-fixture-v1' } }, expected: expectedReject('semantic', 'metric-missing', { schemaValid: true }) },
+   { id: 'N66', description: 'supported conditional GPU metric is missing', executor: executeRunCase, options: { ...runMutation((document) => { setCapabilityObserved(document, 'webgpu-timestamp-query'); refreshBindings(document); }, { scenarioId: 'backend-fixture-v1', backend: 'raw-webgpu', samples: true, webgpuTimestamp: 'unsupported', measurementEligibility: 'eligible' }), context: { scenarioId: 'backend-fixture-v1' } }, expected: expectedReject('semantic', 'metric-not-producible', { schemaValid: true }) },
   { id: 'N67', description: 'canonical path ends with a slash', executor: executeBundleCase, options: bundle([makeBundleMutation('trailing-slash', badPath('raw/'))]), expected: expectedReject('provenance-or-bundle', undefined, { variants: [{ name: 'trailing-slash', status: 'reject', errorCategory: 'bundle-verification-error' }] }) },
   { id: 'N68', description: 'unpaired UTF-16 surrogate in a key and a value', executor: executeParseCase, options: parse([
     { name: 'key', input: new Uint8Array([123, 34, 92, 117, 100, 56, 48, 48, 34, 58, 49, 125]) },
@@ -924,10 +954,9 @@ export const benchmarkNegativeFixtureCasesV1 = [
 ] as const satisfies readonly BenchmarkFixtureCaseV1<BenchmarkNegativeFixtureCaseIdV1>[];
 
 function rewriteTextArtifact(root: string, bytes: Uint8Array): void {
-  const fixture = createBundleFixture({ includeText: true });
-  const artifact = clone(fixture.artifact);
-  const bundle = clone(fixture.bundle);
-  const artifacts = fixture.files.filter((file) => !['artifact-manifest.json', 'bundle-manifest.json', 'bundle.sha256', 'summary/summary.md'].includes(file.path));
+  const artifact = parseCanonicalJsonV1(new Uint8Array(readFileSync(join(root, 'artifact-manifest.json')))) as JsonRecord;
+  const bundle = parseCanonicalJsonV1(new Uint8Array(readFileSync(join(root, 'bundle-manifest.json')))) as JsonRecord;
+  const artifacts = materializedBundleFiles(root).filter((file) => !['artifact-manifest.json', 'bundle-manifest.json', 'bundle.sha256', 'summary/summary.md'].includes(file.path));
   const entry = (artifact.artifacts as JsonRecord[]).find((candidate) => candidate.path === 'summary/summary.md')!;
   entry.byteLength = bytes.byteLength;
   entry.sha256 = digestFileBytesV1(bytes);
@@ -955,6 +984,17 @@ function setEnvironmentState(document: JsonRecord, field: string, value: unknown
       : field === 'gateRole' ? environment.gateRole
         : environment.runtimeState[field];
     availability.value = value;
+  }
+  const reasonCode = field === 'visibility' ? 'document-hidden'
+    : field === 'focus' ? 'document-unfocused'
+      : field === 'backgroundTabs' ? 'background-tabs-present'
+        : field === 'thermalState' ? (value === 'throttled' ? 'thermal-throttling' : 'environment-incomplete')
+          : 'environment-incomplete';
+  const runValue = document.browserProcesses[0].runs.at(-1) as JsonRecord;
+  if (runValue.execution.phase === 'cold' || runValue.execution.phase === 'measurement' || runValue.execution.phase === 'stress') {
+    runValue.measurementEligibilityReasons = [{ code: reasonCode, detail: 'eligibility gate', phase: runValue.execution.phase }];
+    document.measurementEligibilityReasons = [{ code: reasonCode, detail: 'eligibility gate', phase: runValue.execution.phase }];
+    document.measurementEligible = false;
   }
 }
 

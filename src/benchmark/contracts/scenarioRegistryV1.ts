@@ -1,10 +1,15 @@
-import { createHash } from 'node:crypto';
 import { canonicalizeJsonV1, compareUtf16 } from '../provenance/canonicalJsonV1';
-import { sha256BytesV1 } from '../provenance/fileSetDigestV1';
+import { BENCHMARK_WARMUP_RULE_V1 } from './browserValidationV1';
 import type {
+  BenchmarkBackendCellV1,
   BenchmarkComparisonAxisV1,
+  BenchmarkMetricDimensionContractV1,
+  BenchmarkMetricGroupingV1,
+  BenchmarkMetricPairingV1,
   BenchmarkMetricNumericDomainV1,
   BenchmarkMetricWarmupControlV1,
+  BenchmarkMetricProducibilityEntryV1,
+  BenchmarkProcessContainerV1,
   BenchmarkSampleKindV1,
   BenchmarkSamplePhaseV1,
   BenchmarkSampleDimensionV1,
@@ -14,6 +19,7 @@ import type {
   BenchmarkScenarioMetricCapabilitySelectionV1,
   BenchmarkScenarioMetricContractV1,
   BenchmarkScenarioParameterContractV1,
+  BenchmarkScenarioWarmupControlV1,
   BenchmarkScenarioIdV1,
   CanonicalIdV1,
   CanonicalMetricRefV1,
@@ -28,7 +34,6 @@ import { BENCHMARK_PROTOCOL_VERSION } from './versions';
 
 const id = (value: string) => value as CanonicalIdV1;
 const metricRef = (value: string) => value as CanonicalMetricRefV1;
-const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}` as Sha256DigestV1;
 
 const phases = {
   cold: 'cold',
@@ -38,6 +43,16 @@ const phases = {
   warmup: 'warmup',
   leak: 'leak',
 } as const;
+
+const BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1: Readonly<Record<BenchmarkScenarioIdV1, Sha256DigestV1>> = {
+  'mesh-golden-world-v1': 'sha256:534f20b53a436f92ffc134f28dce398f2e586069dea69d92055660a664b385eb' as Sha256DigestV1,
+  'mesh-density-sweep-v1': 'sha256:7fa812d4a6b2a3eab8e42a7ab3596453520546d4ffbb5e01e57ef6b4efe5a128' as Sha256DigestV1,
+  'scheduler-steady-v1': 'sha256:5a95cf466bfd780a457fd8d8154701a1e20c7302b4ec6aec1e5b6af351a2171f' as Sha256DigestV1,
+  'scheduler-burst-v1': 'sha256:e2dda8bf5a264277fc30f61fa10858efb3e7702fe3dfaceb3947a427cfff2242' as Sha256DigestV1,
+  'brush-stress-v1': 'sha256:f101c131a4e50df3f67f64d1dee88f0ff41bea04a9c315e2f815da66cac18e72' as Sha256DigestV1,
+  'navigation-leak-v1': 'sha256:f1a5611516eee57b4c2e18f13fd2dc8142bbc7c97e7beea67da4ac2d1a50b58a' as Sha256DigestV1,
+  'backend-fixture-v1': 'sha256:d7c77ae97fc787db9185ccd363276dc0c41a1763e0a57117f9bafa367a72ec84' as Sha256DigestV1,
+};
 
 const fairnessKeys = [
   id('browser-build'),
@@ -131,6 +146,7 @@ function definition(
   capabilityContracts: readonly BenchmarkScenarioCapabilityContractV1[],
   comparisonAxes: readonly BenchmarkComparisonAxisV1[],
   metricCapabilitySelections: readonly BenchmarkScenarioMetricCapabilitySelectionV1[] = [],
+  warmupControl: BenchmarkScenarioWarmupControlV1 | null = null,
 ): BenchmarkScenarioDefinitionV1 {
   return {
     schemaVersion: 'benchmark-scenario-definition-v1',
@@ -146,6 +162,7 @@ function definition(
     capabilityContracts: [...capabilityContracts].sort((left, right) => compareUtf16(left.id, right.id)),
     comparisonAxes: [...comparisonAxes].sort(compareUtf16) as unknown as NonEmptyReadonlyArray<BenchmarkComparisonAxisV1>,
     fairnessKeys,
+    warmupControl,
   };
 }
 
@@ -158,33 +175,34 @@ const chunkEdge = parameter('chunk-edge', enumDomain([32, 64]));
 const workerCount = parameter('worker-count', rangeDomain(0, 64));
 const schedulerWorkerCount = parameter('worker-count', rangeDomain(1, 64));
 const shaCommand = parameter('command-stream-sha256', { kind: 'sha256' });
+const warmupControl = (ref: string): BenchmarkScenarioWarmupControlV1 => ({ metricRef: metricRef(ref), rule: BENCHMARK_WARMUP_RULE_V1 });
 
 const definitions: readonly BenchmarkScenarioDefinitionV1[] = [
   definition('mesh-golden-world-v1', 'wp04-golden-world-v1', [phases.cold, phases.measurement, phases.trace, phases.warmup], [seed, backend, meshMesher, chunkEdge32, workerCount], [
     requiredMetric('world.mesh.total.ms@1', 'duration', 'ms'), requiredMetric('chunk.mesh.cpu.ms@1', 'duration', 'ms'),
     requiredMetric('mesh.quads.count@1', 'counter', 'count'), requiredMetric('geometry.bytes@1', 'memory', 'bytes'),
     requiredMetric('coverage.sha256.match@1', 'liveness', 'count'),
-  ], commonMeshCapabilities, ['candidate', 'mesher']),
+  ], commonMeshCapabilities, ['candidate', 'mesher'], [], warmupControl('chunk.mesh.cpu.ms@1')),
   definition('mesh-density-sweep-v1', 'density-volume-suite-v1', [phases.cold, phases.measurement, phases.trace, phases.warmup], [seed, backend, meshMesher, chunkEdge, workerCount, parameter('density-case', enumDomain(['checkerboard', 'empty', 'fifty-percent', 'full', 'ninety-percent', 'one-percent', 'ten-percent']))], [
     requiredMetric('chunk.mesh.cpu.ms@1', 'duration', 'ms'), requiredMetric('mesh.quads.count@1', 'counter', 'count'),
     requiredMetric('geometry.bytes@1', 'memory', 'bytes'), requiredMetric('coverage.sha256.match@1', 'liveness', 'count'),
-  ], commonMeshCapabilities, ['candidate', 'chunk-edge', 'mesher']),
+  ], commonMeshCapabilities, ['candidate', 'chunk-edge', 'mesher'], [], warmupControl('chunk.mesh.cpu.ms@1')),
   definition('scheduler-steady-v1', 'scheduler-edit-stream-v1', [phases.measurement, phases.stress, phases.trace, phases.warmup], [seed, backend, aoMesher, chunkEdge32, schedulerWorkerCount, parameter('duration-ms', enumDomain([60000])), parameter('edit-interval-ms', enumDomain([250])), shaCommand], [
     requiredMetric('scheduler.queue.depth.count@1', 'counter', 'count'), requiredMetric('worker.active.count@1', 'counter', 'count'),
     requiredMetric('adoption.cpu.ms@1', 'duration', 'ms'), requiredMetric('revision.latest.visible@1', 'liveness', 'revision'),
     requiredMetric('heartbeat.gap.ms@1', 'duration', 'ms'), capabilityMetric('longtask.duration.ms@1', 'long-task', 'ms', 'long-tasks'),
-  ], [...commonMeshCapabilities, ...schedulerCapabilities], ['candidate', 'worker-count']),
+  ], [...commonMeshCapabilities, ...schedulerCapabilities], ['candidate', 'worker-count'], [], warmupControl('scheduler.queue.depth.count@1')),
   definition('scheduler-burst-v1', 'scheduler-edit-stream-v1', [phases.measurement, phases.stress, phases.trace, phases.warmup], [seed, backend, aoMesher, chunkEdge32, schedulerWorkerCount, parameter('duration-ms', enumDomain([60000])), parameter('burst-size', enumDomain([20])), parameter('burst-interval-ms', enumDomain([2000])), shaCommand], [
     requiredMetric('scheduler.queue.depth.count@1', 'counter', 'count'), requiredMetric('scheduler.drain.ms@1', 'duration', 'ms'),
     requiredMetric('scheduler.drop.count@1', 'counter', 'count'), requiredMetric('scheduler.stale.count@1', 'counter', 'count'),
     requiredMetric('revision.latest.visible@1', 'liveness', 'revision'), requiredMetric('heartbeat.gap.ms@1', 'duration', 'ms'),
     capabilityMetric('longtask.duration.ms@1', 'long-task', 'ms', 'long-tasks'),
-  ], [...commonMeshCapabilities, ...schedulerCapabilities], ['candidate', 'worker-count']),
+  ], [...commonMeshCapabilities, ...schedulerCapabilities], ['candidate', 'worker-count'], [], warmupControl('scheduler.queue.depth.count@1')),
   definition('brush-stress-v1', 'brush-command-stream-v1', [phases.stress, phases.trace, phases.warmup], [seed, backend, aoMesher, chunkEdge32, schedulerWorkerCount, parameter('edit-count', enumDomain([100, 1000])), shaCommand], [
     requiredMetric('input.revision.submit.ms@1', 'duration', 'ms'), requiredMetric('revision.latest.visible@1', 'liveness', 'revision'),
     requiredMetric('world.sha256.match@1', 'liveness', 'count'), requiredMetric('scheduler.queue.depth.count@1', 'counter', 'count'),
     requiredMetric('scheduler.drain.ms@1', 'duration', 'ms'), capabilityMetric('longtask.duration.ms@1', 'long-task', 'ms', 'long-tasks'),
-  ], [...commonMeshCapabilities, ...schedulerCapabilities], ['candidate', 'worker-count']),
+  ], [...commonMeshCapabilities, ...schedulerCapabilities], ['candidate', 'worker-count'], [], warmupControl('input.revision.submit.ms@1')),
   definition('navigation-leak-v1', 'navigation-route-sequence-v1', [phases.leak, phases.trace], [parameter('stabilization-cycles', { kind: 'enum', values: [20] }), parameter('measurement-cycles', { kind: 'enum', values: [100] })], [
     requiredMetric('memory.bytes@1', 'memory', 'bytes', [{ key: id('memory-kind'), value: 'js-heap' }]),
     requiredMetric('memory.bytes@1', 'memory', 'bytes', [{ key: id('memory-kind'), value: 'embedder-heap' }]),
@@ -195,7 +213,7 @@ const definitions: readonly BenchmarkScenarioDefinitionV1[] = [
   definition('backend-fixture-v1', 'backend-parity-world-v1', [phases.cold, phases.measurement, phases.trace, phases.warmup], [seed, backend, aoMesher, chunkEdge32, workerCount, parameter('camera-contract-sha256', { kind: 'sha256' }), parameter('feature-contract-sha256', { kind: 'sha256' })], [
     requiredMetric('draw.submit.cpu.ms@1', 'duration', 'ms'), requiredMetric('gpu.time.ms@1', 'gpu', 'ms'), requiredMetric('raf.interval.ms@1', 'frame', 'ms'),
     requiredMetric('memory.bytes@1', 'memory', 'bytes', [{ key: id('memory-kind'), value: 'owner-bound' }]), requiredMetric('image.contract.sha256.match@1', 'liveness', 'count'),
-  ], capabilities([['performance-time-origin', 'must-support'], ['webgl-disjoint-timer-query', 'must-declare'], ['webgl2', 'must-declare'], ['webgpu-timestamp-query', 'must-declare'], ['webgpu', 'must-declare']]), ['backend', 'candidate'], backendMetricCapabilitySelections),
+  ], capabilities([['performance-time-origin', 'must-support'], ['webgl-disjoint-timer-query', 'must-declare'], ['webgl2', 'must-declare'], ['webgpu-timestamp-query', 'must-declare'], ['webgpu', 'must-declare']]), ['backend', 'candidate'], backendMetricCapabilitySelections, warmupControl('draw.submit.cpu.ms@1')),
 ];
 
 const frozenDefinitions = freezeGraph(definitions);
@@ -217,7 +235,7 @@ export function resolveScenarioMetricCapabilitySelectionV1(
 }
 
 function definitionDigest(definitionValue: BenchmarkScenarioDefinitionV1): Sha256DigestV1 {
-  return digest(new TextDecoder().decode(canonicalizeJsonV1(definitionValue)));
+  return BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1[definitionValue.id];
 }
 
 export interface BenchmarkScenarioRegistryEntryV1 {
@@ -298,7 +316,7 @@ const authoritativeWp04SemanticContractV1 = freezeGraph({
 } as const);
 
 const authoritativeWp04SemanticBytesV1 = canonicalizeJsonV1(authoritativeWp04SemanticContractV1);
-export const BENCHMARK_WP04_SEMANTIC_SHA256_V1 = sha256BytesV1(authoritativeWp04SemanticBytesV1);
+export const BENCHMARK_WP04_SEMANTIC_SHA256_V1 = 'sha256:6481f4b81631c6bbed5560970f92aa82e51de77a233ec40d919dbbf765f99b44' as Sha256DigestV1;
 
 export function getBenchmarkWp04SemanticBytesV1(): Uint8Array {
   return new Uint8Array(authoritativeWp04SemanticBytesV1);
@@ -313,23 +331,69 @@ const unavailableBinding = (reasonCode: string) => ({ status: 'unknown' as const
 
 export const BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1 = freezeGraph({
   'wp04-golden-world-v1': {
+    id: 'wp04-golden-world-v1',
+    version: 1,
     sourceCommitSha: observedBinding('c64aeef1f51dd0ed2d8431411cf3ba1e84195b9d'),
     sourcePaths: observedBinding(['evidence/wp04/manifest.json', 'tests/contracts/wp02FixtureGolden.ts', 'tests/contracts/wp03GreedyGolden.ts', 'tests/contracts/wp04AoGolden.ts']),
-    sourceFileSetSha256: observedBinding('sha256:5350f946fd27820d17c0c0abdcd676c87a23c319e6adb46d320ca610addcf898'),
+    sourceFileSetSha256: observedBinding('sha256:5a89e11f59c2fbe1d35eaa782aed039505edbc45282302698ad4009fb04900e0'),
   },
-  'density-volume-suite-v1': { sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
-  'scheduler-edit-stream-v1': { sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
-  'brush-command-stream-v1': { sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
-  'navigation-route-sequence-v1': { sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
-  'backend-parity-world-v1': { sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
+  'density-volume-suite-v1': { id: 'density-volume-suite-v1', version: 1, sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
+  'scheduler-edit-stream-v1': { id: 'scheduler-edit-stream-v1', version: 1, sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
+  'brush-command-stream-v1': { id: 'brush-command-stream-v1', version: 1, sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
+  'navigation-route-sequence-v1': { id: 'navigation-route-sequence-v1', version: 1, sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
+  'backend-parity-world-v1': { id: 'backend-parity-world-v1', version: 1, sourceCommitSha: unavailableBinding('owner-bound'), sourcePaths: unavailableBinding('owner-bound'), sourceFileSetSha256: unavailableBinding('owner-bound') },
 } as const);
 
-type ExplicitMetricSpec = Omit<MetricDefinitionV1, 'schemaVersion' | 'eventSemantics' | 'populationSemantics'> & { readonly eventSemantics: string; readonly populationSemantics: string };
-const metric = (spec: ExplicitMetricSpec): MetricDefinitionV1 => ({ schemaVersion: 'benchmark-metric-definition-v1', ...spec, eventSemantics: spec.eventSemantics as NonEmptyString, populationSemantics: spec.populationSemantics as NonEmptyString });
+type ExplicitMetricSpec = Omit<MetricDefinitionV1, 'schemaVersion' | 'eventSemantics' | 'populationSemantics' | 'dimensionContracts'> & {
+  readonly eventSemantics: string;
+  readonly populationSemantics: string;
+  readonly dimensionContracts?: readonly BenchmarkMetricDimensionContractV1[];
+};
+
+const HIERARCHY_DIMENSION_KEYS = new Set(['hardware-profile', 'phase', 'candidate', 'iteration-ordinal', 'bootstrap-cluster-id']);
+
+export const BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1: Readonly<Record<string, BenchmarkMetricDimensionContractV1['domain']>> = freezeGraph({
+  'actual-sha256': { kind: 'sha256' },
+  'burst-ordinal': { kind: 'non-negative-safe-integer' },
+  'checkpoint-id': { kind: 'canonical-id' },
+  'chunk-key': { kind: 'canonical-id' },
+  'drop-kind': { kind: 'canonical-id' },
+  'expected-sha256': { kind: 'sha256' },
+  'expected-world-revision': { kind: 'non-negative-safe-integer' },
+  'frame-block-ordinal': { kind: 'non-negative-safe-integer' },
+  'input-ordinal': { kind: 'non-negative-safe-integer' },
+  'memory-kind': { kind: 'canonical-id' },
+  'observation-window-id': { kind: 'canonical-id' },
+  'operation-ordinal': { kind: 'non-negative-safe-integer' },
+  'operation-semantic-key': { kind: 'canonical-id' },
+  'render-pass-id': { kind: 'canonical-id' },
+  'stale-reason': { kind: 'canonical-id' },
+  'time-block-ordinal': { kind: 'non-negative-safe-integer' },
+} as const);
+const derivedDimensionContracts = (metricRefValue: CanonicalMetricRefV1, grouping: BenchmarkMetricGroupingV1, pairing: BenchmarkMetricPairingV1): readonly BenchmarkMetricDimensionContractV1[] => {
+  const keys = new Set([...grouping.keys, ...pairing.keys].filter((key) => !HIERARCHY_DIMENSION_KEYS.has(key)));
+  if (metricRefValue.endsWith('.sha256.match@1')) {
+    keys.add(id('actual-sha256'));
+    keys.add(id('expected-sha256'));
+  }
+  return [...keys].sort(compareUtf16).map((key) => {
+    const domain = BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1[key];
+    if (domain === undefined) throw new Error(`No explicit dimension domain owner for ${key}.`);
+    return { key, domain };
+  });
+};
+const metric = (spec: ExplicitMetricSpec): MetricDefinitionV1 => ({
+  schemaVersion: 'benchmark-metric-definition-v1',
+  ...spec,
+  dimensionContracts: spec.dimensionContracts ?? derivedDimensionContracts(spec.metricRef, spec.grouping, spec.pairing),
+  eventSemantics: spec.eventSemantics as NonEmptyString,
+  populationSemantics: spec.populationSemantics as NonEmptyString,
+});
 const metricDomain = (kind: BenchmarkMetricNumericDomainV1['kind']): BenchmarkMetricNumericDomainV1 => kind === 'positive-finite-number'
   ? { kind, minimum: 0, maximum: null }
   : { kind, minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const noWarmupControl: BenchmarkMetricWarmupControlV1 | null = null;
+const metricWarmupControl = (ref: string, epsilon: number): BenchmarkMetricWarmupControlV1 => ({ metricRef: metricRef(ref), epsilon });
 const emit = (recordName: string, ref: string, unit: BenchmarkSampleUnitV1): TelemetrySourceMappingV1 => ({ recordName: id(recordName), disposition: 'emit-sample', metricRef: metricRef(ref), unit });
 const diagnostic = (recordName: string): TelemetrySourceMappingV1 => ({ recordName: id(recordName), disposition: 'diagnostic-only' });
 const context = (recordName: string): TelemetrySourceMappingV1 => ({ recordName: id(recordName), disposition: 'context-only' });
@@ -337,12 +401,12 @@ const unavailable = (): TelemetrySourceMappingV1 => diagnostic('telemetry.invali
 
 const explicitMetrics: readonly MetricDefinitionV1[] = [
   metric({ metricRef: metricRef('world.mesh.total.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'One non-overlapping end-to-end world mesh critical path per iteration.', populationSemantics: 'One world iteration population per declared phase.', allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement'], capabilityRequirements: [], sourceMapping: [diagnostic('run.total')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('iteration-ordinal')], population: 'one non-overlapping end-to-end world mesh critical path per iteration' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('iteration-ordinal')], level: 'iteration' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
-  metric({ metricRef: metricRef('chunk.mesh.cpu.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Pure mesher CPU duration for one identified chunk.', populationSemantics: 'One chunk operation population per iteration and chunk.', allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('worker.mesh-cpu', 'chunk.mesh.cpu.ms@1', 'ms'), diagnostic('mesh.cpu')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('iteration-ordinal'), id('chunk-key')], population: 'pure mesher CPU duration for one identified chunk' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('iteration-ordinal'), id('chunk-key')], level: 'event' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
+  metric({ metricRef: metricRef('chunk.mesh.cpu.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Pure mesher CPU duration for one identified chunk.', populationSemantics: 'One chunk operation population per iteration and chunk.', allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress', 'warmup'], capabilityRequirements: [], sourceMapping: [emit('worker.mesh-cpu', 'chunk.mesh.cpu.ms@1', 'ms'), diagnostic('mesh.cpu')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('iteration-ordinal'), id('chunk-key')], population: 'pure mesher CPU duration for one identified chunk' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('iteration-ordinal'), id('chunk-key')], level: 'event' }, direction: 'lower', warmupControl: metricWarmupControl('chunk.mesh.cpu.ms@1', 0.001), practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('snapshot.halo.build.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Build duration for one identified immutable snapshot or halo.', populationSemantics: 'One chunk operation population per iteration and chunk.', allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('snapshot.build', 'snapshot.halo.build.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('iteration-ordinal'), id('chunk-key')], population: 'build duration for one identified immutable snapshot or halo' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('iteration-ordinal'), id('chunk-key')], level: 'event' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('scheduler.queue.wait.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Main-thread admission until dispatch of one scheduler operation.', populationSemantics: 'One scheduler operation population per operation ordinal and semantic key.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('scheduler.queue-wait', 'scheduler.queue.wait.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('operation-ordinal'), id('operation-semantic-key')], population: 'main-thread admission until dispatch of one scheduler operation' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('operation-ordinal'), id('operation-semantic-key')], level: 'event' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('worker.total.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Worker receive, validation, compute, serialize, and post duration for one operation.', populationSemantics: 'One scheduler operation population per operation ordinal and semantic key.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [diagnostic('worker.validation')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('operation-ordinal'), id('operation-semantic-key')], population: 'worker receive, validation, compute, serialize, and post duration for one operation' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('operation-ordinal'), id('operation-semantic-key')], level: 'event' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('adoption.cpu.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Main-thread receive, validation, stale-check, and buffer adoption duration for one operation.', populationSemantics: 'One scheduler operation population per operation ordinal and semantic key.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('result.adoption', 'adoption.cpu.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('operation-ordinal'), id('operation-semantic-key')], population: 'main-thread receive, validation, stale-check, and buffer adoption duration for one operation' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('operation-ordinal'), id('operation-semantic-key')], level: 'event' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
-  metric({ metricRef: metricRef('input.revision.submit.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Trusted input start until draw submit of the expected world revision.', populationSemantics: 'One input and revision population per input ordinal and expected world revision.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('input-to-revision-submit', 'input.revision.submit.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('input-ordinal'), id('expected-world-revision')], population: 'trusted input start until draw submit of the expected world revision' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('input-ordinal'), id('expected-world-revision')], level: 'event' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
+  metric({ metricRef: metricRef('input.revision.submit.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Trusted input start until draw submit of the expected world revision.', populationSemantics: 'One input and revision population per input ordinal and expected world revision.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress', 'warmup'], capabilityRequirements: [], sourceMapping: [emit('input-to-revision-submit', 'input.revision.submit.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('input-ordinal'), id('expected-world-revision')], population: 'trusted input start until draw submit of the expected world revision' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('input-ordinal'), id('expected-world-revision')], level: 'event' }, direction: 'lower', warmupControl: metricWarmupControl('input.revision.submit.ms@1', 0.001), practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('raf.interval.ms@1'), kind: 'frame', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Distance between consecutive requestAnimationFrame callbacks in one measurement block.', populationSemantics: 'One frame series population per time block; individual intervals are not directly paired.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [id('request-animation-frame')], sourceMapping: [emit('browser.raf-interval', 'raf.interval.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('time-block-ordinal')], population: 'distance between consecutive requestAnimationFrame callbacks in one measurement block' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('time-block-ordinal')], level: 'time-block' }, direction: 'context-dependent', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('longtask.duration.ms@1'), kind: 'long-task', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Duration of each browser long task reported at or above 50 ms.', populationSemantics: 'One frame and long-task series population per time block; individual events are not directly paired.', allowedContainers: ['warm-measurement', 'stress', 'leak'], allowedPhases: ['measurement', 'stress', 'leak'], capabilityRequirements: [id('long-tasks')], sourceMapping: [emit('browser.long-task', 'longtask.duration.ms@1', 'ms')], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('time-block-ordinal')], population: 'duration of each browser long task reported at or above 50 ms' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('time-block-ordinal')], level: 'time-block' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: 0.10, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('longtask.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Number of browser long-task entries in a predefined measurement window.', populationSemantics: 'One counter population per observation window.', allowedContainers: ['warm-measurement', 'stress', 'leak'], allowedPhases: ['measurement', 'stress', 'leak'], capabilityRequirements: [id('long-tasks')], sourceMapping: [unavailable()], grouping: { keys: [id('hardware-profile'), id('phase'), id('candidate'), id('observation-window-id')], population: 'number of browser long-task entries in a predefined measurement window' as NonEmptyString }, pairing: { keys: [id('bootstrap-cluster-id'), id('observation-window-id')], level: 'window' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
@@ -354,7 +418,7 @@ const explicitMetrics: readonly MetricDefinitionV1[] = [
   metric({ metricRef: metricRef('mesh.quads.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Number of generated mesh quads.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('mesh.quads', 'mesh.quads.count@1', 'count')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'higher', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('geometry.bytes@1'), kind: 'memory', unit: 'bytes', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Bytes in a completed geometry transfer.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('mesh.output-bytes', 'geometry.bytes@1', 'bytes')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
    metric({ metricRef: metricRef('coverage.sha256.match@1'), kind: 'liveness', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Binary coverage digest equality assertion.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement'], capabilityRequirements: [], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'higher', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
-  metric({ metricRef: metricRef('scheduler.queue.depth.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Scheduler queue depth at a declared sampling point.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [emit('scheduler.queue-depth', 'scheduler.queue.depth.count@1', 'count')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'context-dependent', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
+  metric({ metricRef: metricRef('scheduler.queue.depth.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Scheduler queue depth at a declared sampling point.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress', 'warmup'], capabilityRequirements: [], sourceMapping: [emit('scheduler.queue-depth', 'scheduler.queue.depth.count@1', 'count')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'context-dependent', warmupControl: metricWarmupControl('scheduler.queue.depth.count@1', 1), practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('worker.active.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Number of active worker jobs at a declared sampling point.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['warm-measurement', 'stress', 'leak'], allowedPhases: ['measurement', 'stress', 'leak'], capabilityRequirements: [], sourceMapping: [emit('scheduler.in-flight', 'worker.active.count@1', 'count')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'context-dependent', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('revision.latest.visible@1'), kind: 'liveness', unit: 'revision', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Latest revision observed as visible.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'higher', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('heartbeat.gap.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'Gap between worker heartbeat observations.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
@@ -363,11 +427,87 @@ const explicitMetrics: readonly MetricDefinitionV1[] = [
   metric({ metricRef: metricRef('dom.node.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Number of live DOM nodes.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['leak', 'trace'], allowedPhases: ['leak', 'trace'], capabilityRequirements: [id('cdp-memory-dom-counters')], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('event.listener.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Number of live event listeners.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['leak', 'trace'], allowedPhases: ['leak', 'trace'], capabilityRequirements: [id('cdp-runtime-heap-usage')], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
   metric({ metricRef: metricRef('gpu.resource.count@1'), kind: 'counter', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Number of live GPU resources.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['leak', 'trace'], allowedPhases: ['leak', 'trace'], capabilityRequirements: [id('cdp-system-info')], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
-  metric({ metricRef: metricRef('draw.submit.cpu.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'CPU duration submitting one draw workload.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement'], capabilityRequirements: [], sourceMapping: [emit('draw-submit.cpu', 'draw.submit.cpu.ms@1', 'ms')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
+    metric({ metricRef: metricRef('draw.submit.cpu.ms@1'), kind: 'duration', unit: 'ms', numericDomain: metricDomain('positive-finite-number'), eventSemantics: 'CPU duration submitting one draw workload.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement', 'warmup'], capabilityRequirements: [], sourceMapping: [emit('draw-submit.cpu', 'draw.submit.cpu.ms@1', 'ms')], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'lower', warmupControl: metricWarmupControl('draw.submit.cpu.ms@1', 0.001), practicalEffectDelta: null, automaticDecision: 'forbidden' }),
    metric({ metricRef: metricRef('image.contract.sha256.match@1'), kind: 'liveness', unit: 'count', numericDomain: metricDomain('non-negative-safe-integer'), eventSemantics: 'Binary image contract equality assertion.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.', allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement'], capabilityRequirements: [], sourceMapping: [unavailable()], grouping: { keys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric' as NonEmptyString }, pairing: { keys: [], level: 'run' }, direction: 'higher', warmupControl: noWarmupControl, practicalEffectDelta: null, automaticDecision: 'forbidden' }),
 ];
 
 const metricList: readonly MetricDefinitionV1[] = freezeGraph([...explicitMetrics].sort((left, right) => compareUtf16(left.metricRef, right.metricRef)));
+
+function backendCells(definitionValue: BenchmarkScenarioDefinitionV1): readonly BenchmarkBackendCellV1[] {
+  return definitionValue.parameterContracts.some((contract) => contract.key === 'backend')
+    ? ['raw-webgpu', 'three-webgl2']
+    : ['not-applicable'];
+}
+
+function phaseContainer(phase: BenchmarkSamplePhaseV1): BenchmarkProcessContainerV1 {
+  return phase === 'warmup' || phase === 'measurement' ? 'warm-measurement' : phase;
+}
+
+function selectedCapability(
+  definitionValue: BenchmarkScenarioDefinitionV1,
+  contract: BenchmarkScenarioMetricContractV1,
+  backendValue: BenchmarkBackendCellV1,
+  metric: MetricDefinitionV1,
+): CanonicalIdV1 {
+  const selection = definitionValue.metricCapabilitySelections.find((entry) => entry.metricRef === contract.metricRef);
+  const selected = selection?.selections.find((entry) => entry.parameterValue === backendValue)?.capabilityId;
+  return selected ?? (contract.requirement.kind === 'when-capability-supported' ? contract.requirement.capabilityId : metric.capabilityRequirements[0] ?? id('capability-bound'));
+}
+
+function buildMetricProducibilityCrosswalk(): readonly BenchmarkMetricProducibilityEntryV1[] {
+  const entries: BenchmarkMetricProducibilityEntryV1[] = [];
+  for (const definitionValue of frozenDefinitions) {
+    for (const phase of definitionValue.allowedPhases) {
+      for (const backendValue of backendCells(definitionValue)) {
+        for (const [scenarioMetricContractOrdinal, contract] of definitionValue.metricContracts.entries()) {
+          const metric = metricList.find((entry) => entry.metricRef === contract.metricRef);
+          if (metric === undefined) continue;
+          const base = { scenarioId: definitionValue.id, phase, backend: backendValue, metricRef: contract.metricRef, scenarioMetricContractOrdinal } as const;
+          const allowedInPhase = metric.allowedPhases.includes(phase);
+          const allowedInContainer = metric.allowedContainers.includes(phaseContainer(phase));
+          const producer = metric.sourceMapping.find((mapping) => mapping.disposition === 'emit-sample');
+          if (!allowedInPhase) {
+            entries.push({ ...base, classification: 'eligibility-bound-unavailable', required: false, reasonCode: 'phase-not-allowed' });
+          } else if (!allowedInContainer) {
+            entries.push({ ...base, classification: 'eligibility-bound-unavailable', required: false, reasonCode: 'container-not-allowed' });
+          } else if (producer?.disposition === 'emit-sample' && producer.metricRef === metric.metricRef && producer.unit === metric.unit) {
+            entries.push({ ...base, classification: 'emit-sample', producer: { recordName: producer.recordName, metricRef: producer.metricRef, unit: producer.unit } });
+          } else if (definitionValue.metricCapabilitySelections.some((entry) => entry.metricRef === contract.metricRef)
+            || metric.capabilityRequirements.length > 0
+            || contract.requirement.kind === 'when-capability-supported') {
+            entries.push({
+              ...base,
+              classification: 'capability-bound-unavailable',
+              required: contract.requirement.kind === 'required',
+              capabilityId: selectedCapability(definitionValue, contract, backendValue, metric),
+              reasonCode: producer === undefined || producer.disposition !== 'emit-sample' ? 'producer-unavailable' : 'capability-bound',
+            });
+          } else {
+            entries.push({
+              ...base,
+              classification: 'eligibility-bound-unavailable',
+              required: contract.requirement.kind === 'required',
+              reasonCode: metric.sourceMapping.every((mapping) => mapping.disposition === 'diagnostic-only') ? 'diagnostic-only' : 'producer-unavailable',
+            });
+          }
+        }
+      }
+    }
+  }
+  return freezeGraph(entries.sort((left, right) => {
+    const scenario = compareUtf16(left.scenarioId, right.scenarioId);
+    if (scenario !== 0) return scenario;
+    const phase = compareUtf16(left.phase, right.phase);
+    if (phase !== 0) return phase;
+    const backend = compareUtf16(left.backend, right.backend);
+    if (backend !== 0) return backend;
+    const metric = compareUtf16(left.metricRef, right.metricRef);
+    return metric !== 0 ? metric : left.scenarioMetricContractOrdinal - right.scenarioMetricContractOrdinal;
+  }));
+}
+
+export const BENCHMARK_METRIC_PRODUCIBILITY_CROSSWALK_V1 = buildMetricProducibilityCrosswalk();
+
 export const BENCHMARK_METRIC_CROSSWALK_V1: readonly (readonly [string, CanonicalMetricRefV1])[] = freezeGraph([
   ['world-mesh-ms', metricRef('world.mesh.total.ms@1')], ['chunk-mesh-ms', metricRef('chunk.mesh.cpu.ms@1')], ['quad-count', metricRef('mesh.quads.count@1')],
   ['geometry-bytes', metricRef('geometry.bytes@1')], ['coverage-sha256-match', metricRef('coverage.sha256.match@1')], ['queue-depth', metricRef('scheduler.queue.depth.count@1')],
@@ -396,13 +536,15 @@ const metricRegistryDigestInput = {
   protocolVersion: BENCHMARK_PROTOCOL_VERSION,
   metrics: metricList,
   telemetryMappings: telemetryMappingList,
+  producibilityCrosswalk: BENCHMARK_METRIC_PRODUCIBILITY_CROSSWALK_V1,
 } as const;
 
 export const BENCHMARK_METRIC_REGISTRY_V1: MetricRegistryV1 = freezeGraph({
   ...metricRegistryDigestInput,
   metrics: metricList as unknown as NonEmptyReadonlyArray<MetricDefinitionV1>,
   telemetryMappings: telemetryMappingList as unknown as NonEmptyReadonlyArray<TelemetrySourceMappingV1>,
-  metricRegistrySha256: digest(new TextDecoder().decode(canonicalizeJsonV1(metricRegistryDigestInput))),
+  producibilityCrosswalk: BENCHMARK_METRIC_PRODUCIBILITY_CROSSWALK_V1 as unknown as NonEmptyReadonlyArray<BenchmarkMetricProducibilityEntryV1>,
+  metricRegistrySha256: 'sha256:6057af054a9987f5b89b52762220ca48bb5e96cef400395cbec4f9b46b1fafb2' as Sha256DigestV1,
 });
 
 export const BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1 = freezeGraph(telemetryMappingList.map((mapping) => mapping.recordName)) as readonly CanonicalIdV1[];

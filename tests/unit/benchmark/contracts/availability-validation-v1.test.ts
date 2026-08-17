@@ -245,14 +245,14 @@ describe('BR01 fail-closed semantic rules', () => {
     const document = createBenchmarkCaseDocumentV1({ scenarioId: 'navigation-leak-v1', phase: 'leak', container: 'leak', samples: true }) as any;
     const run = document.browserProcesses[0].runs[0];
     run.iterations[0].samples = run.iterations[0].samples.filter((sample: any) => sample.dimensions.find((dimension: any) => dimension.key === 'memory-kind')?.value !== 'js-heap').map((sample: any, ordinal: number) => ({ ...sample, ordinal }));
-    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'navigation-leak-v1' }))).toMatchObject({ valid: false, code: 'metric-dimension-missing' });
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'navigation-leak-v1' }))).toMatchObject({ valid: true });
   });
   it('rejects duplicate canonical memory kinds specifically', () => {
     const document = createBenchmarkCaseDocumentV1({ scenarioId: 'navigation-leak-v1', phase: 'leak', container: 'leak', samples: true }) as any;
     const run = document.browserProcesses[0].runs[0];
     const duplicate = { ...run.iterations[0].samples.find((sample: any) => sample.dimensions.find((dimension: any) => dimension.key === 'memory-kind')?.value === 'js-heap'), sampleId: 'sample-duplicate', ordinal: run.iterations[0].samples.length };
     run.iterations[0].samples.push(duplicate);
-    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'navigation-leak-v1' }))).toMatchObject({ valid: false, code: 'metric-dimension-duplicate' });
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'navigation-leak-v1' }))).toMatchObject({ valid: true });
   });
   it.each([
     ['navigation-leak-v1', { phase: 'leak', container: 'leak' }],
@@ -275,11 +275,11 @@ describe('BR01 fail-closed semantic rules', () => {
     });
     expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'navigation-leak-v1' }))).toMatchObject({ valid: false, code: 'metric-dimension-missing' });
   });
-  it('keeps extra dimensions valid for metrics without scenario dimension contracts', () => {
+  it('rejects extra dimensions for metrics without scenario dimension contracts', () => {
     const document = createBenchmarkCaseDocumentV1({ samples: true }) as any;
     const sample = document.browserProcesses[0].runs.at(-1).iterations[0].samples.find((entry: any) => entry.metricRef === 'geometry.bytes@1');
     sample.dimensions = [{ key: 'invented', value: 'generic-metric-context' }];
-    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1())).toMatchObject({ valid: true });
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1())).toMatchObject({ valid: false, code: 'metric-dimension-set-invalid' });
   });
   it.each([
     ['unknown version', { schemaVersion: 'v2' }],

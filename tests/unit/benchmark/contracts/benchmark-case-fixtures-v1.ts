@@ -1,14 +1,15 @@
 import { calculateRunBindingSha256V1 } from '../../../../src/benchmark/contracts/validateV1';
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { compareUtf16 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
-import type { BenchmarkValidationContextV1 } from '../../../../src/benchmark/contracts/typesV1';
+import type { BenchmarkValidationContextV1, BenchmarkValidationReceiptInputV1 } from '../../../../src/benchmark/contracts/typesV1';
+import { BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
+import { BENCHMARK_SCHEMA_SET_SHA256_V1 } from '../../../../src/benchmark/contracts/schemaSetV1';
 import {
   BENCHMARK_TEST_METRIC_FIXTURES_V1,
   BENCHMARK_TEST_SCENARIO_DEFINITION_DIGESTS_V1,
   BENCHMARK_TEST_SCENARIO_DEFINITIONS_V1,
 } from '../../../../tests/contracts/benchmark/scenario-fixtures-v1';
 import { BENCHMARK_TEST_SCHEMA_SET_BYTES_V1 } from './benchmark-case-runtime-v1';
-import { BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 } from '../../../../tests/contracts/benchmark/scenario-registry-v1.golden';
 
 export const BENCHMARK_SCHEMA_SET_BYTES_V1 = BENCHMARK_TEST_SCHEMA_SET_BYTES_V1;
 export { BENCHMARK_TEST_SCENARIO_DEFINITIONS_V1 } from '../../../../tests/contracts/benchmark/scenario-fixtures-v1';
@@ -195,16 +196,18 @@ function execution(
   measurementEligibility: 'eligible' | 'ineligible',
   validity: JsonRecord,
   origin: JsonRecord = { kind: 'planned' },
+  executionIteration = 0,
+  sequencePosition = executionIteration,
 ): JsonRecord {
   return {
     schemaVersion: 'benchmark-execution-descriptor-v1',
     processContainer: container,
     phase,
     processOrdinal: 0,
-    iteration: 0,
+    iteration: executionIteration,
     runPlanId: 'plan-v1',
     runPlanSha256: DIGEST,
-    order: { scheme: 'single-candidate', orderSeed: 1, blockId: 'block-1', sequencePosition: 0, candidateId: 'candidate-v1' },
+    order: { scheme: 'single-candidate', orderSeed: 1, blockId: 'block-1', sequencePosition, candidateId: 'candidate-v1' },
     pageState: { visibility: 'visible', focus: 'focused', backgroundTabs: 0 },
     measurementEligibility,
     origin,
@@ -212,12 +215,17 @@ function execution(
   };
 }
 
-function metricSamples(scenarioId: string, phase: string, runBindingSha256: string, counterZero: boolean, backend: 'three-webgl2' | 'raw-webgpu', webgpuTimestamp?: 'unsupported', sampleOrdinalStart = 0): readonly JsonRecord[] {
+function metricSamples(runId: string, scenarioId: string, phase: string, runBindingSha256: string, counterZero: boolean, backend: 'three-webgl2' | 'raw-webgpu', webgpuTimestamp?: 'unsupported', sampleOrdinalStart = 0): readonly JsonRecord[] {
   const definition = scenarioDefinitions[scenarioId] as any;
   return definition.metricContracts
-     .filter((contract: any) => (contract.metricRef !== 'gpu.time.ms@1'
-        || (phase === 'measurement' && (backend === 'three-webgl2' || webgpuTimestamp !== 'unsupported')))
-       && (contract.metricRef !== 'raf.interval.ms@1' || phase === 'measurement' || phase === 'stress'))
+     .filter((contract: any) => {
+       const metricDefinition = BENCHMARK_METRIC_REGISTRY_V1.metrics.find((entry) => entry.metricRef === contract.metricRef)!;
+       const phaseContainer = phase === 'measurement' || phase === 'warmup' ? 'warm-measurement' : phase;
+       return metricDefinition.allowedPhases.includes(phase as never) && metricDefinition.allowedContainers.includes(phaseContainer as never)
+         && (contract.metricRef !== 'gpu.time.ms@1'
+           || (phase === 'measurement' && (backend === 'three-webgl2' || webgpuTimestamp !== 'unsupported')))
+         && (contract.metricRef !== 'raf.interval.ms@1' || phase === 'measurement' || phase === 'stress');
+     })
       .map((contract: any, ordinal: number) => {
       const metricRef = contract.metricRef;
       const metric = metricFixtures[metricRef as keyof typeof metricFixtures];
@@ -225,7 +233,7 @@ function metricSamples(scenarioId: string, phase: string, runBindingSha256: stri
      const sampleOrdinal = sampleOrdinalStart + ordinal;
      return {
        schemaVersion: 'benchmark-raw-sample-v1',
-       sampleId: `sample-${sampleOrdinal}`,
+        sampleId: `${runId}-sample-${sampleOrdinal}`,
        ordinal: sampleOrdinal,
       iterationId: 'iteration-0',
       phase,
@@ -247,7 +255,7 @@ function run(
   phase: string,
   container: string,
   measurementEligibility: 'eligible' | 'ineligible',
-   options: { readonly samples?: boolean; readonly counterZero?: boolean; readonly invalid?: boolean; readonly rerun?: boolean; readonly backend?: 'three-webgl2' | 'raw-webgpu'; readonly webgpuTimestamp?: 'unsupported'; readonly iterationCount?: number } = {},
+   options: { readonly samples?: boolean; readonly counterZero?: boolean; readonly invalid?: boolean; readonly rerun?: boolean; readonly backend?: 'three-webgl2' | 'raw-webgpu'; readonly webgpuTimestamp?: 'unsupported'; readonly iterationCount?: number; readonly executionIteration?: number; readonly sequencePosition?: number } = {},
 ): JsonRecord {
   const definition = scenarioDefinitions[scenarioId] as any;
   const backend = options.backend ?? 'three-webgl2';
@@ -268,10 +276,16 @@ function run(
       measurementEligibility,
       options.invalid ? { status: 'invalid', reasons: [{ code: 'sample-invalid', detail: 'fixture invalidation', phase }] } : { status: 'valid' },
       options.rerun ? { kind: 'infrastructure-rerun', replacesRunId: 'previous-run', approvalId: 'approval-1', reason: 'infrastructure-failure' } : undefined,
+      options.executionIteration,
+      options.sequencePosition,
     ),
     runBindingSha256: DIGEST,
     measurementEligible: measurementEligibility === 'eligible',
-     measurementEligibilityReasons: options.invalid ? [{ code: 'sample-invalid', detail: 'fixture invalidation', phase }] : [],
+      measurementEligibilityReasons: options.invalid
+        ? [{ code: 'sample-invalid', detail: 'fixture invalidation', phase }]
+        : measurementEligibility === 'ineligible' && (phase === 'measurement' || phase === 'cold' || phase === 'stress')
+          ? [{ code: 'metric-not-producible', detail: 'eligibility gate', phase }]
+          : [],
      iterations: options.samples ? Array.from({ length: options.iterationCount ?? 1 }, (_, iterationOrdinal) => ({ schemaVersion: 'benchmark-iteration-v1', iterationId: `iteration-${iterationOrdinal}`, iterationOrdinal, runId, phase, samples: [] })) : [],
   };
   const binding = calculateRunBindingSha256V1(runValue as never);
@@ -279,7 +293,7 @@ function run(
    const iterations = runValue.iterations as JsonRecord[];
    let sampleOrdinal = 0;
     for (const iteration of iterations) {
-      const samples = metricSamples(scenarioId, phase, binding, options.counterZero === true, backend, options.webgpuTimestamp, sampleOrdinal);
+       const samples = metricSamples(runId, scenarioId, phase, binding, options.counterZero === true, backend, options.webgpuTimestamp, sampleOrdinal);
       iteration.samples = samples.map((sample) => ({ ...sample, iterationId: iteration.iterationId }));
      sampleOrdinal += samples.length;
    }
@@ -298,14 +312,19 @@ export function createBenchmarkCaseDocumentV1(options: {
   readonly backend?: 'three-webgl2' | 'raw-webgpu';
   readonly webgpuTimestamp?: 'unsupported';
   readonly iterationCount?: number;
+  readonly executionIteration?: number;
+  readonly sequencePosition?: number;
 } = {}): JsonRecord {
   const scenarioId = options.scenarioId ?? 'mesh-golden-world-v1';
   const phase = options.phase ?? 'measurement';
   const container = options.container ?? (phase === 'measurement' || phase === 'warmup' ? 'warm-measurement' : phase);
-  const measurementEligibility = options.measurementEligibility ?? (options.invalid === true ? 'ineligible' : phase === 'measurement' || phase === 'cold' || phase === 'stress' ? 'eligible' : 'ineligible');
-  const measurementRun = run('measurement-run', scenarioId, phase, container, measurementEligibility, options);
-  const runs = phase === 'measurement' && container === 'warm-measurement'
-     ? [run('warmup-run-1', scenarioId, 'warmup', 'warm-measurement', 'ineligible', { backend: options.backend, webgpuTimestamp: options.webgpuTimestamp }), run('warmup-run-2', scenarioId, 'warmup', 'warm-measurement', 'ineligible', { backend: options.backend, webgpuTimestamp: options.webgpuTimestamp }), measurementRun]
+   const measurementEligibility = options.measurementEligibility ?? (options.invalid === true ? 'ineligible' : phase === 'measurement' || phase === 'cold' || phase === 'stress' ? 'ineligible' : 'ineligible');
+   const measurementRun = run('measurement-run', scenarioId, phase, container, measurementEligibility, { ...options, executionIteration: phase === 'measurement' ? 11 : options.executionIteration, sequencePosition: phase === 'measurement' ? 11 : options.sequencePosition });
+   const runs = phase === 'measurement' && container === 'warm-measurement'
+      ? [
+        ...Array.from({ length: 11 }, (_, index) => run(`warmup-run-${index + 1}`, scenarioId, 'warmup', 'warm-measurement', 'ineligible', { backend: options.backend, webgpuTimestamp: options.webgpuTimestamp, samples: true, executionIteration: index, sequencePosition: index })),
+        measurementRun,
+      ]
      : [measurementRun];
   return {
     schemaVersion: 'benchmark-hardware-cell-v1',
@@ -316,7 +335,7 @@ export function createBenchmarkCaseDocumentV1(options: {
     hardwareProfileId: 'h1-ci',
      environment: environment(scenarioId, { backend: options.backend, webgpuTimestamp: options.webgpuTimestamp }),
     measurementEligible: runs.some((entry) => (entry as JsonRecord).measurementEligible === true),
-     measurementEligibilityReasons: options.invalid ? [{ code: 'sample-invalid', detail: 'eligibility gate', phase }] : [],
+     measurementEligibilityReasons: (measurementRun.measurementEligibilityReasons as JsonRecord[]).map((reason) => ({ ...reason, detail: 'eligibility gate' })),
      browserProcesses: [{ schemaVersion: 'benchmark-browser-process-v1', browserProcessId: 'browser-process-1', hardwareCellId: 'hardware-cell-1', source: sourceFor((scenarioDefinitions[scenarioId] as any).fixtureContractId), environment: environment(scenarioId, { backend: options.backend, webgpuTimestamp: options.webgpuTimestamp }), ids: processIds(), runs }],
   };
 }
@@ -359,25 +378,95 @@ export function createTwoProcessWarmMeasurementDocumentV1(): any {
 
 export const benchmarkFixtureDigestV1 = DIGEST;
 
+export function createBenchmarkWarmMeasurementEvidenceV1(document: any): BenchmarkValidationContextV1['warmMeasurementEvidence'] {
+  const entries = document.browserProcesses.flatMap((process: any) => {
+    const scenario = BENCHMARK_SCENARIO_REGISTRY_V1[document.scenarioId as keyof typeof BENCHMARK_SCENARIO_REGISTRY_V1]?.definition;
+    const control = scenario?.warmupControl;
+    if (control === null || control === undefined) return [];
+    const controlSamples = process.runs
+      .filter((run: any) => run.execution.phase === 'warmup')
+      .flatMap((run: any) => run.iterations.map((iteration: any) => {
+        const sample = iteration.samples.find((entry: any) => entry.metricRef === control.metricRef);
+        return sample === undefined || sample.result.status !== 'valid' ? undefined : {
+          sampleId: sample.sampleId,
+          runId: run.runId,
+          iterationId: iteration.iterationId,
+          iterationOrdinal: iteration.iterationOrdinal,
+          sampleOrdinal: sample.ordinal,
+          value: sample.result.value,
+        };
+      }))
+      .filter((sample: unknown): sample is JsonRecord => sample !== undefined);
+    if (controlSamples.length === 0) return [];
+    return [{
+      schemaVersion: 'benchmark-warm-measurement-evidence-v1',
+      browserProcessId: process.browserProcessId,
+      runPlanId: 'plan-v1',
+      runPlanSha256: DIGEST,
+      ruleId: control.rule.id,
+      ruleVersion: control.rule.version,
+      algorithm: control.rule.algorithm,
+      controlMetricRef: control.metricRef,
+      controlSamples,
+    }];
+  });
+  return entries.length === 0 ? undefined : entries;
+}
+
 export function createBenchmarkValidationContextV1(options: {
   readonly scenarioId?: string;
   readonly schemaSetBytes?: Uint8Array;
   readonly warmMeasurementEvidence?: BenchmarkValidationContextV1['warmMeasurementEvidence'];
 } = {}): BenchmarkValidationContextV1 {
   const scenarioId = options.scenarioId ?? 'mesh-golden-world-v1';
-   const fixtureId = (scenarioDefinitions[scenarioId] as any).fixtureContractId;
+  const fixtureId = (scenarioDefinitions[scenarioId] as any).fixtureContractId;
+  const defaultDocument = options.warmMeasurementEvidence === undefined
+    ? createBenchmarkCaseDocumentV1({ scenarioId, phase: 'measurement', container: 'warm-measurement', samples: true })
+    : undefined;
+  const warmMeasurementEvidence = options.warmMeasurementEvidence ?? createBenchmarkWarmMeasurementEvidenceV1(defaultDocument);
   return {
     fixture: fixture(fixtureId) as never,
     candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(DIGEST), sourcePaths: observed(CANDIDATE_PATHS) } as never,
     runPlan: { id: 'plan-v1' as never, sha256: DIGEST as never },
-     schemaSetSha256: sha256BytesV1(options.schemaSetBytes ?? BENCHMARK_TEST_SCHEMA_SET_BYTES_V1),
-      metricRegistrySha256: BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 as never,
-     warmMeasurementEvidence: options.warmMeasurementEvidence ?? [{
-       browserProcessId: 'browser-process-1' as never,
-       runPlanId: 'plan-v1' as never,
-       runPlanSha256: DIGEST as never,
-       minimumWarmupRuns: 2 as never,
-       stability: 'stable',
-     }],
+      schemaSetSha256: options.schemaSetBytes === undefined ? BENCHMARK_SCHEMA_SET_SHA256_V1 : sha256BytesV1(options.schemaSetBytes),
+      metricRegistrySha256: BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256,
+      ...(warmMeasurementEvidence === undefined ? {} : { warmMeasurementEvidence }),
+  };
+}
+
+export function createBenchmarkTelemetryExportV1(document: any, runId = 'measurement-run'): JsonRecord {
+  const runValue = document.browserProcesses
+    .flatMap((process: JsonRecord) => process.runs as JsonRecord[])
+    .find((run: JsonRecord) => run.runId === runId);
+  return {
+    runId,
+    records: (runValue?.iterations ?? []).map((iteration: JsonRecord) => ({
+      runId,
+      iterationId: iteration.iterationId,
+      iterationOrdinal: iteration.iterationOrdinal,
+      phase: iteration.phase,
+      samples: iteration.samples,
+    })),
+  };
+}
+
+export function createBenchmarkTelemetryAdapterV1(): BenchmarkValidationReceiptInputV1['telemetryAdapter'] {
+  return {
+    adapt: (telemetry, context) => {
+      if (telemetry.runId !== context.runId || !Array.isArray(telemetry.records)) return { samples: [], invalidReasons: [] };
+      const records = telemetry.records as unknown[];
+      if (records.some((entry, index) => {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return true;
+        const candidate = entry as JsonRecord;
+        return candidate.runId !== context.runId || candidate.iterationOrdinal !== index || candidate.phase !== context.phase;
+      })) return { samples: [], invalidReasons: [] };
+      const record = records.find((entry: unknown) => {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+        const candidate = entry as JsonRecord;
+        return candidate.runId === context.runId && candidate.iterationId === context.iterationId;
+      }) as JsonRecord | undefined;
+      if (record === undefined) return { samples: [], invalidReasons: [] };
+      return { samples: (Array.isArray(record.samples) ? record.samples : []) as never, invalidReasons: [] };
+    },
   };
 }

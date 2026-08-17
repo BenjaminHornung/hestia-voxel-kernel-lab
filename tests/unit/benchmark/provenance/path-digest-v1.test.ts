@@ -1,15 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { assertCanonicalRelativePathV1, compareCanonicalRelativePathsV1 } from '../../../../src/benchmark/provenance/canonicalPathV1';
-import { digestBundleV1, digestBuildV1, digestFileSetV1, frameFileSetV1, sha256BytesV1, type FileSetEntryV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
+import { assertBuildRelativePathV1, assertBundleRelativePathV1, assertCanonicalRelativePathV1, assertRepositoryRelativePathV1, buildRelativePathV1, compareCanonicalRelativePathsV1, repositoryRelativePathV1 } from '../../../../src/benchmark/provenance/canonicalPathV1';
+import { digestBundleV1, digestBuildV1, digestFileSetV1, frameFileSetV1, sha256BytesV1, type FileSetEntryInputV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { BENCHMARK_DIGEST_GOLDENS_V1 } from '../../../../tests/contracts/benchmark/digest-v1.golden';
 
-const files: FileSetEntryV1[] = [
+const files: FileSetEntryInputV1[] = [
   { path: 'raw/a.json', bytes: new TextEncoder().encode('{}') },
 ];
 
 describe('BR01 paths and digests', () => {
   it('rejects non-canonical paths', () => {
-    for (const path of ['/a', '../a', 'a//b', 'A/a', 'a/']) expect(() => assertCanonicalRelativePathV1(path)).toThrow();
+    for (const path of ['/a', '../a', 'a//b', 'A/a', 'a/', 'C:/a', '\\\\server\\share', 'a\\b', 'a/\0b']) expect(() => assertBundleRelativePathV1(path)).toThrow();
+  });
+  it('keeps repository and build ownership case-preserving while bundles remain lowercase', () => {
+    expect(repositoryRelativePathV1('tests/contracts/wp04AoGolden.ts')).toBe('tests/contracts/wp04AoGolden.ts');
+    expect(buildRelativePathV1('assets/index-DwXV5Hbk.js')).toBe('assets/index-DwXV5Hbk.js');
+    expect(() => assertRepositoryRelativePathV1('tests/contracts/wp04AoGolden.ts/../x')).toThrow();
+    expect(() => assertBuildRelativePathV1('C:\\dist\\assets\\index.js')).toThrow();
+    expect(() => assertCanonicalRelativePathV1('Assets/index.js')).toThrow();
+    expect(() => repositoryRelativePathV1('tests/contracts/wp04aogolden.ts')).not.toThrow();
   });
   it('sorts paths by raw UTF-16 code units across punctuation and depth', () => {
     expect(compareCanonicalRelativePathsV1('a/2', 'a/10')).toBeGreaterThan(0);
@@ -22,9 +30,16 @@ describe('BR01 paths and digests', () => {
   it('uses the same frame bytes for digest and frame APIs', () => {
     expect(sha256BytesV1(frameFileSetV1(files))).toBe(digestFileSetV1(files));
   });
+  it('routes each digest domain through its owning path policy', () => {
+    const repository = [{ path: 'tests/contracts/wp04AoGolden.ts', bytes: new Uint8Array([1]) }];
+    const build = [{ path: 'assets/index-DwXV5Hbk.js', bytes: new Uint8Array([1]) }];
+    expect(() => digestFileSetV1(repository)).not.toThrow();
+    expect(() => digestBuildV1(build)).not.toThrow();
+    expect(() => digestBundleV1(build)).toThrow();
+  });
   it('matches the primary source digest vectors', () => {
-    const one: FileSetEntryV1[] = [{ path: 'raw/a.json', bytes: new TextEncoder().encode('{}') }];
-    const two: FileSetEntryV1[] = [
+    const one: FileSetEntryInputV1[] = [{ path: 'raw/a.json', bytes: new TextEncoder().encode('{}') }];
+    const two: FileSetEntryInputV1[] = [
       { path: 'raw/b.bin', bytes: new Uint8Array([0x00, 0xff, 0x7f]) },
       { path: 'raw/a.json', bytes: new TextEncoder().encode('{"x":"é"}') },
     ];

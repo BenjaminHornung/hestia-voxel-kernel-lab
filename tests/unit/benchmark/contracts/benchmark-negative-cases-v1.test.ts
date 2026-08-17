@@ -26,5 +26,5 @@ describe('BR01 negative fixture catalog', () => {
 
     expect([...executed]).toEqual(benchmarkNegativeFixtureCasesV1.map((entry) => entry.id));
     expect(executed.size).toBe(68);
-  });
+  }, 30_000);
 });

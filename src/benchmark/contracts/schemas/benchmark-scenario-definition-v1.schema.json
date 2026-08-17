@@ -3,7 +3,7 @@
   "$id": "https://hestia.invalid/schemas/benchmark-scenario-definition-v1.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "protocolVersion", "id", "version", "fixtureContractId", "fixtureContractVersion", "allowedPhases", "parameterContracts", "metricContracts", "metricCapabilitySelections", "capabilityContracts", "comparisonAxes", "fairnessKeys"],
+  "required": ["schemaVersion", "protocolVersion", "id", "version", "fixtureContractId", "fixtureContractVersion", "allowedPhases", "parameterContracts", "metricContracts", "metricCapabilitySelections", "capabilityContracts", "comparisonAxes", "fairnessKeys", "warmupControl"],
   "properties": {
     "schemaVersion": { "const": "benchmark-scenario-definition-v1" },
     "protocolVersion": { "const": "benchmark-protocol-v1" },
@@ -17,7 +17,8 @@
     "metricCapabilitySelections": { "type": "array", "items": { "$ref": "#/$defs/metricCapabilitySelection" } },
     "capabilityContracts": { "type": "array", "items": { "$ref": "#/$defs/capabilityContract" } },
     "comparisonAxes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["candidate", "backend", "mesher", "chunk-edge", "worker-count"] } },
-    "fairnessKeys": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+    "fairnessKeys": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "warmupControl": { "oneOf": [{ "$ref": "#/$defs/warmupControl" }, { "type": "null" }] }
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
@@ -28,6 +29,8 @@
       "metricCapabilitySelection": { "type": "object", "additionalProperties": false, "required": ["scenarioId", "metricRef", "parameterKey", "selections"], "properties": { "scenarioId": { "enum": ["mesh-golden-world-v1", "mesh-density-sweep-v1", "scheduler-steady-v1", "scheduler-burst-v1", "brush-stress-v1", "navigation-leak-v1", "backend-fixture-v1"] }, "metricRef": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*@[1-9][0-9]*$" }, "parameterKey": { "const": "backend" }, "selections": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/metricCapabilitySelectionEntry" } } } },
       "metricCapabilitySelectionEntry": { "type": "object", "additionalProperties": false, "required": ["parameterValue", "capabilityId"], "properties": { "parameterValue": { "enum": ["raw-webgpu", "three-webgl2"] }, "capabilityId": { "$ref": "#/$defs/id" } } },
       "capabilityContract": { "type": "object", "additionalProperties": false, "required": ["id", "requirement"], "properties": { "id": { "$ref": "#/$defs/id" }, "requirement": { "enum": ["must-support", "must-declare"] } } },
-     "dimension": { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "$ref": "#/$defs/id" }, "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } } }
+      "dimension": { "type": "object", "additionalProperties": false, "required": ["key", "value"], "properties": { "key": { "$ref": "#/$defs/id" }, "value": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } } },
+      "warmupControl": { "type": "object", "additionalProperties": false, "required": ["metricRef", "rule"], "properties": { "metricRef": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*@[1-9][0-9]*$" }, "rule": { "$ref": "#/$defs/warmupRule" } } },
+      "warmupRule": { "type": "object", "additionalProperties": false, "required": ["id", "version", "algorithm", "windowSize", "maximumRelativeDeviation", "consecutiveStableComparisons", "minimumWarmupIterations", "maximumWarmupIterations"], "properties": { "id": { "$ref": "#/$defs/id" }, "version": { "const": 1 }, "algorithm": { "const": "median-last-5-vs-preceding-5-relative-deviation-v1" }, "windowSize": { "const": 5 }, "maximumRelativeDeviation": { "const": 0.05 }, "consecutiveStableComparisons": { "const": 2 }, "minimumWarmupIterations": { "const": 10 }, "maximumWarmupIterations": { "const": 50 } } }
   }
 }

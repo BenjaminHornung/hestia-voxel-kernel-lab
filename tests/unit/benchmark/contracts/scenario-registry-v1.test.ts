@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BENCHMARK_METRIC_CROSSWALK_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTIONS_V1, BENCHMARK_SCENARIO_REGISTRY_V1, BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1, BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1, BENCHMARK_TELEMETRY_RECORD_MAPPINGS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_V1, benchmarkScenarioDefinitionsV1, resolveScenarioMetricCapabilitySelectionV1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
+import { BENCHMARK_METRIC_CROSSWALK_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTIONS_V1, BENCHMARK_SCENARIO_REGISTRY_V1, BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1, BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1, BENCHMARK_TELEMETRY_RECORD_MAPPINGS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_V1, benchmarkScenarioDefinitionsV1, getBenchmarkWp04SemanticBytesV1, resolveScenarioMetricCapabilitySelectionV1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { canonicalizeJsonV1, compareUtf16 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { validateMetricRegistryV1 } from '../../../../src/benchmark/contracts/validateV1';
-import { BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1, BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTION_GOLDENS_V1, BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1, BENCHMARK_UTF16_ORDER_GOLDENS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_GOLDEN_V1 } from '../../../../tests/contracts/benchmark/scenario-registry-v1.golden';
+import { BENCHMARK_METRIC_DIMENSION_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_GOLDENS_V1, BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1, BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1, BENCHMARK_SCENARIO_METRIC_CAPABILITY_SELECTION_GOLDENS_V1, BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1, BENCHMARK_UTF16_ORDER_GOLDENS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_GOLDEN_V1 } from '../../../../tests/contracts/benchmark/scenario-registry-v1.golden';
 
 describe('BR01 registries', () => {
   it('contains all seven contract-only scenarios', () => {
@@ -86,6 +86,14 @@ describe('BR01 registries', () => {
   it('matches the exact scenario definition digest golden', () => {
     for (const definition of benchmarkScenarioDefinitionsV1) expect(BENCHMARK_SCENARIO_REGISTRY_V1[definition.id].definitionSha256).toBe(BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1[definition.id]);
   });
+  it('recomputes checked-in registry digests from canonical bytes in Node', () => {
+    for (const definition of benchmarkScenarioDefinitionsV1) {
+      expect(sha256BytesV1(canonicalizeJsonV1(definition))).toBe(BENCHMARK_SCENARIO_REGISTRY_V1[definition.id].definitionSha256);
+    }
+    expect(sha256BytesV1(getBenchmarkWp04SemanticBytesV1())).toBe(BENCHMARK_WP04_SEMANTIC_SHA256_V1);
+    const { metricRegistrySha256: _metricRegistrySha256, ...metricRegistryDigestInput } = BENCHMARK_METRIC_REGISTRY_V1;
+    expect(sha256BytesV1(canonicalizeJsonV1(metricRegistryDigestInput))).toBe(BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256);
+  });
   it('uses the direct UTF-16 code-unit order for punctuation and digits', () => {
     for (const [left, right, expectedSign] of BENCHMARK_UTF16_ORDER_GOLDENS_V1) expect(Math.sign(compareUtf16(left, right))).toBe(expectedSign);
   });
@@ -119,6 +127,10 @@ describe('BR01 registries', () => {
     }]));
     expect(actual).toEqual(BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1);
   });
+  it('matches independent literal dimension owner goldens for every metric', () => {
+    const actual = Object.fromEntries(BENCHMARK_METRIC_REGISTRY_V1.metrics.map((metric) => [metric.metricRef, metric.dimensionContracts.map((dimension) => ({ key: dimension.key, domain: dimension.domain }))]));
+    expect(actual).toEqual(BENCHMARK_METRIC_DIMENSION_CONTRACT_GOLDENS_V1);
+  });
   it('matches the independent literal golden for the complete global telemetry mapping set', () => {
     expect(BENCHMARK_TELEMETRY_RECORD_MAPPINGS_V1).toEqual(BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1);
     expect(BENCHMARK_REQUIRED_TELEMETRY_RECORD_NAMES_V1).toEqual(BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1.map((mapping) => mapping.recordName));
@@ -127,6 +139,21 @@ describe('BR01 registries', () => {
     const registry = JSON.parse(JSON.stringify(BENCHMARK_METRIC_REGISTRY_V1)) as any;
     registry.metricRegistrySha256 = sha256BytesV1(canonicalizeJsonV1({ schemaVersion: registry.schemaVersion, protocolVersion: registry.protocolVersion, metrics: registry.metrics }));
     expect(validateMetricRegistryV1(registry)).toMatchObject({ valid: false, code: 'registry-digest-mismatch' });
+  });
+  it.each([
+    ['unknown dimension key', (registry: any) => { registry.metrics.find((entry: any) => entry.metricRef === 'chunk.mesh.cpu.ms@1').dimensionContracts[0].key = 'chunk-ke'; }],
+    ['mistyped dimension domain', (registry: any) => { registry.metrics.find((entry: any) => entry.metricRef === 'chunk.mesh.cpu.ms@1').dimensionContracts[0].domain.kind = 'sha256'; }],
+  ] as const)('fails closed for a %s', (_label, mutate) => {
+    const registry = JSON.parse(JSON.stringify(BENCHMARK_METRIC_REGISTRY_V1)) as any;
+    mutate(registry);
+    registry.metricRegistrySha256 = sha256BytesV1(canonicalizeJsonV1({
+      schemaVersion: registry.schemaVersion,
+      protocolVersion: registry.protocolVersion,
+      metrics: registry.metrics,
+      telemetryMappings: registry.telemetryMappings,
+      producibilityCrosswalk: registry.producibilityCrosswalk,
+    }));
+    expect(validateMetricRegistryV1(registry)).toMatchObject({ valid: false });
   });
   it('rejects a recomputed local emit mapping that disagrees with its global mapping', () => {
     const registry = JSON.parse(JSON.stringify(BENCHMARK_METRIC_REGISTRY_V1)) as any;
@@ -200,8 +227,10 @@ describe('BR01 registries', () => {
     });
   });
   it('represents future source bindings as unavailable instead of fabricated', () => {
-    expect(BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1['wp04-golden-world-v1'].sourceCommitSha.status).toBe('observed');
-    expect(BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1['wp04-golden-world-v1'].sourceFileSetSha256.value).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const wp04 = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1['wp04-golden-world-v1'];
+    expect(wp04).toMatchObject({ id: 'wp04-golden-world-v1', version: 1, sourceCommitSha: { status: 'observed', value: 'c64aeef1f51dd0ed2d8431411cf3ba1e84195b9d' } });
+    expect(wp04.sourcePaths.value).toEqual(['evidence/wp04/manifest.json', 'tests/contracts/wp02FixtureGolden.ts', 'tests/contracts/wp03GreedyGolden.ts', 'tests/contracts/wp04AoGolden.ts']);
+    expect(wp04.sourceFileSetSha256.value).toBe('sha256:5a89e11f59c2fbe1d35eaa782aed039505edbc45282302698ad4009fb04900e0');
     for (const key of ['scheduler-edit-stream-v1', 'brush-command-stream-v1', 'navigation-route-sequence-v1', 'backend-parity-world-v1'] as const) {
       expect(BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[key]).toMatchObject({ sourceCommitSha: { status: 'unknown', value: null }, sourcePaths: { status: 'unknown', value: null }, sourceFileSetSha256: { status: 'unknown', value: null } });
     }

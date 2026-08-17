@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { BR01_ACCEPTED_WP04_SHA, EMPTY_STATUS_SHA256 } from '../../../../src/benchmark/contracts/versions';
-import { BENCHMARK_WP04_SEMANTIC_SHA256_V1, getBenchmarkWp04SemanticBytesV1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
-import { sourcePreflightV1, type SourcePreflightCommandResultV1 } from '../../../../src/benchmark/provenance/sourcePreflightV1';
-import { digestBuildV1, digestFileSetV1, sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
+import { BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1, BR01_ACCEPTED_WP04_SHA, EMPTY_STATUS_SHA256 } from '../../../../src/benchmark/contracts/versions';
+import { BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1, BENCHMARK_WP04_SEMANTIC_SHA256_V1, getBenchmarkWp04SemanticBytesV1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
+import { sourcePreflightV1, verifyBuildHandoffV1, type SourcePreflightCommandResultV1 } from '../../../../src/benchmark/provenance/sourcePreflightV1';
+import { digestBuildV1, digestFileSetPathsV1, digestFileSetV1, sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { canonicalizeJsonV1 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
 import { validateBenchmarkRunStructureV1 } from '../../../../src/benchmark/contracts/validateV1';
 import { createBenchmarkCaseDocumentV1 } from '../contracts/benchmark-case-fixtures-v1';
@@ -17,6 +18,11 @@ const result = (stdout: string | Uint8Array, status = 0): SourcePreflightCommand
 const emptyResult = (): SourcePreflightCommandResultV1 => ({ status: 0, stdout: empty, stderr: empty });
 const observed = <T>(value: T) => ({ status: 'observed' as const, value, sourceRef: 'capture-v1', stability: 'stable' as const });
 const declared = <T>(value: T) => ({ status: 'declared' as const, value, sourceRef: 'plan-v1', stability: 'run-config' as const });
+const WP04_SOURCE_PATHS = ['evidence/wp04/manifest.json', 'tests/contracts/wp02FixtureGolden.ts', 'tests/contracts/wp03GreedyGolden.ts', 'tests/contracts/wp04AoGolden.ts'] as const;
+
+function acceptedWp04Blob(path: string): Uint8Array {
+  return new Uint8Array(execFileSync('git', ['cat-file', 'blob', `${BR01_ACCEPTED_WP04_SHA}:${path}`], { cwd: realpathSync('.') }));
+}
 
 function pathPreflightOutcome(owner: 'fixture' | 'candidate', invalidPaths: readonly string[]) {
   const root = mkdtempSync(join(tmpdir(), `br01-${owner}-path-order-`));
@@ -234,12 +240,58 @@ describe('BR01 source preflight', () => {
     expect(outcome).toMatchObject({ status: 'accepted' });
     if (outcome.status === 'accepted') expect(outcome.provenance.fixture.semanticSha256).toMatchObject({ status: 'observed', value: FIXTURE_SEMANTIC_DIGEST });
   });
-  it('accepts the authoritative WP04 semantic fixture bytes and digest', () => {
-    const outcome = metadataPreflightOutcome((input) => {
-      input.fixture.id = 'wp04-golden-world-v1';
-      input.fixture.semanticSha256 = observed(BENCHMARK_WP04_SEMANTIC_SHA256_V1);
-    }, () => undefined, getBenchmarkWp04SemanticBytesV1());
-    expect(outcome).toMatchObject({ status: 'accepted' });
+  it('rejects a repository path whose case does not match the directory entry', () => {
+    expect(metadataPreflightOutcome(() => undefined, (root) => {
+      renameSync(join(root, 'fixture.txt'), join(root, 'Fixture.txt'));
+    })).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
+  });
+  it('accepts the authoritative WP04 semantic fixture and exact c64 Git blob fileset', () => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-wp04-owner-'));
+    try {
+      const blobs = WP04_SOURCE_PATHS.map((path) => ({ path, bytes: acceptedWp04Blob(path) }));
+      const sourceDigest = digestFileSetV1(blobs);
+      expect(sourceDigest).toBe(BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1['wp04-golden-world-v1'].sourceFileSetSha256.value);
+      for (const entry of blobs) {
+        const target = join(root, ...entry.path.split('/'));
+        mkdirSync(join(target, '..'), { recursive: true });
+        writeFileSync(target, entry.bytes);
+      }
+      mkdirSync(join(root, 'dist'));
+      writeFileSync(join(root, 'candidate.txt'), new TextEncoder().encode('candidate'));
+      writeFileSync(join(root, 'dist', 'index.js'), new TextEncoder().encode('build'));
+      const candidateEntries = [{ path: 'candidate.txt', bytes: new TextEncoder().encode('candidate') }];
+      const response = (_command: string, args: readonly string[]): SourcePreflightCommandResultV1 => {
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return result(root);
+        if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(BR01_ACCEPTED_WP04_SHA);
+        if (args[0] === 'rev-parse' && args[2] === 'HEAD^{tree}') return result('a'.repeat(40));
+        if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
+        if (args[0] === 'cat-file' && args[1] === 'blob') return { status: 0, stdout: acceptedWp04Blob(args[2]!.slice('HEAD:'.length)), stderr: empty };
+        return emptyResult();
+      };
+      const outcome = sourcePreflightV1({
+        rootPath: root,
+        expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+        fixtureSemanticBytes: getBenchmarkWp04SemanticBytesV1(),
+        fixture: {
+          id: 'wp04-golden-world-v1',
+          version: 1,
+          semanticSha256: observed(BENCHMARK_WP04_SEMANTIC_SHA256_V1),
+          sourceFileSetSha256: observed(sourceDigest),
+          sourcePaths: observed([...WP04_SOURCE_PATHS]),
+        } as never,
+        candidate: {
+          id: 'candidate-v1',
+          version: 1,
+          sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)),
+          sourcePaths: observed(['candidate.txt']),
+        } as never,
+        runCommand: response,
+      });
+      expect(outcome.status).toBe('accepted');
+      if (outcome.status === 'accepted') expect(verifyBuildHandoffV1(outcome.buildHandoff)).toMatchObject({ status: 'verified' });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
   it.each([
     ['altered canonical bytes', canonicalizeJsonV1({ wp02: { altered: true } })],
@@ -323,5 +375,127 @@ describe('BR01 source preflight', () => {
     ['candidate', 'duplicate', ['candidate-a.txt', 'candidate-a.txt'], 'candidate-contract-mismatch'],
   ] as const)('rejects %s %s source paths without reordering', (owner, _case, paths, code) => {
     expect(pathPreflightOutcome(owner, paths)).toMatchObject({ status: 'rejected', code });
+  });
+  it('streams a large fileset with the same framing as the byte-entry API', () => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-streamed-fileset-'));
+    try {
+      const bytes = new Uint8Array(128 * 1024 + 17);
+      for (let index = 0; index < bytes.length; index += 1) bytes[index] = index % 251;
+      writeFileSync(join(root, 'large.bin'), bytes);
+      const streamed = digestFileSetPathsV1([{ path: 'large.bin', absolutePath: join(root, 'large.bin') }]);
+      expect(streamed).toMatchObject({ digest: digestFileSetV1([{ path: 'large.bin', bytes }]), fileCount: 1, totalBytes: bytes.byteLength });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('enforces stricter caller limits without widening the v1 contract', () => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-stream-limits-'));
+    try {
+      writeFileSync(join(root, 'two.bin'), new Uint8Array([1, 2]));
+      writeFileSync(join(root, 'three.bin'), new Uint8Array([3, 4]));
+      expect(() => digestFileSetPathsV1([{ path: 'two.bin', absolutePath: join(root, 'two.bin') }], 'fileset', { maxFileBytes: 1 })).toThrow();
+      expect(() => digestFileSetPathsV1([
+        { path: 'three.bin', absolutePath: join(root, 'three.bin') },
+        { path: 'two.bin', absolutePath: join(root, 'two.bin') },
+      ], 'fileset', { maxFiles: 1 })).toThrow();
+      expect(() => digestFileSetPathsV1([
+        { path: 'three.bin', absolutePath: join(root, 'three.bin') },
+        { path: 'two.bin', absolutePath: join(root, 'two.bin') },
+      ], 'fileset', { maxAggregateBytes: 3 })).toThrow();
+      expect(BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes).toBe(1_048_576);
+      expect(BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs).toBe(5_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('fails closed for command output overflow and signals', () => {
+    const oversized = new Uint8Array(BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes + 1);
+    const overflow = sourcePreflightV1({
+      rootPath: '.',
+      expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+      fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
+      fixture: {} as never,
+      candidate: {} as never,
+      runCommand: () => ({ status: 0, stdout: oversized, stderr: empty }),
+    });
+    expect(overflow).toMatchObject({ status: 'rejected', code: 'infrastructure-failure' });
+    const signaled = sourcePreflightV1({
+      rootPath: '.',
+      expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+      fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
+      fixture: {} as never,
+      candidate: {} as never,
+      runCommand: () => ({ status: null, stdout: empty, stderr: empty, signal: 'SIGTERM' }),
+    });
+    expect(signaled).toMatchObject({ status: 'rejected', code: 'infrastructure-failure' });
+  });
+  it('detects a build mutation after an accepted preflight handoff', () => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-build-handoff-'));
+    try {
+      const encoder = new TextEncoder();
+      mkdirSync(join(root, 'dist'));
+      writeFileSync(join(root, 'fixture.txt'), encoder.encode('fixture'));
+      writeFileSync(join(root, 'candidate.txt'), encoder.encode('candidate'));
+      writeFileSync(join(root, 'dist', 'index.js'), encoder.encode('build'));
+      const fixtureEntries = [{ path: 'fixture.txt', bytes: encoder.encode('fixture') }];
+      const candidateEntries = [{ path: 'candidate.txt', bytes: encoder.encode('candidate') }];
+      const response = (_command: string, args: readonly string[]): SourcePreflightCommandResultV1 => {
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return result(root);
+        if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(BR01_ACCEPTED_WP04_SHA);
+        if (args[0] === 'rev-parse' && args[2] === 'HEAD^{tree}') return result('a'.repeat(40));
+        return emptyResult();
+      };
+      const outcome = sourcePreflightV1({
+        rootPath: root,
+        expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+        fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
+        fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) } as never,
+        candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)), sourcePaths: observed(['candidate.txt']) } as never,
+        runCommand: response,
+      });
+      expect(outcome.status).toBe('accepted');
+      if (outcome.status === 'accepted') {
+        writeFileSync(join(root, 'dist', 'index.js'), encoder.encode('changed'));
+        expect(verifyBuildHandoffV1(outcome.buildHandoff)).toMatchObject({ status: 'rejected', code: 'build-digest-mismatch' });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it.each([
+    ['added ignored-dist file', (root: string, encoder: TextEncoder) => { writeFileSync(join(root, 'dist', '.ignored.js'), encoder.encode('added')); }],
+    ['deleted ignored-dist file', (root: string, _encoder: TextEncoder) => { unlinkSync(join(root, 'dist', 'index.js')); }],
+  ] as const)('detects an %s after an accepted preflight handoff', (_label, mutate) => {
+    const root = mkdtempSync(join(tmpdir(), 'br01-build-handoff-cardinality-'));
+    try {
+      const encoder = new TextEncoder();
+      mkdirSync(join(root, 'dist'));
+      writeFileSync(join(root, 'fixture.txt'), encoder.encode('fixture'));
+      writeFileSync(join(root, 'candidate.txt'), encoder.encode('candidate'));
+      writeFileSync(join(root, 'dist', 'index.js'), encoder.encode('build'));
+      const fixtureEntries = [{ path: 'fixture.txt', bytes: encoder.encode('fixture') }];
+      const candidateEntries = [{ path: 'candidate.txt', bytes: encoder.encode('candidate') }];
+      const response = (_command: string, args: readonly string[]): SourcePreflightCommandResultV1 => {
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return result(root);
+        if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(BR01_ACCEPTED_WP04_SHA);
+        if (args[0] === 'rev-parse' && args[2] === 'HEAD^{tree}') return result('a'.repeat(40));
+        return emptyResult();
+      };
+      const outcome = sourcePreflightV1({
+        rootPath: root,
+        expectedAcceptedWp04Sha: BR01_ACCEPTED_WP04_SHA,
+        fixtureSemanticBytes: FIXTURE_SEMANTIC_BYTES,
+        fixture: { id: 'fixture-v1', version: 1, semanticSha256: observed(FIXTURE_SEMANTIC_DIGEST), sourceFileSetSha256: observed(digestFileSetV1(fixtureEntries)), sourcePaths: observed(['fixture.txt']) } as never,
+        candidate: { id: 'candidate-v1', version: 1, sourceFileSetSha256: observed(digestFileSetV1(candidateEntries)), sourcePaths: observed(['candidate.txt']) } as never,
+        runCommand: response,
+      });
+      expect(outcome.status).toBe('accepted');
+      if (outcome.status === 'accepted') {
+        mutate(root, encoder);
+        expect(verifyBuildHandoffV1(outcome.buildHandoff)).toMatchObject({ status: 'rejected', code: 'build-digest-mismatch' });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

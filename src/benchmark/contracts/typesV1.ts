@@ -5,6 +5,8 @@ import {
   BENCHMARK_REPOSITORY_URL,
   BENCHMARK_SCHEMA_VERSIONS,
   BENCHMARK_STATUS_COMMAND,
+  BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1,
+  BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1,
   EMPTY_STATUS_SHA256,
 } from './versions';
 import type { BenchmarkProtocolVersion } from './versions';
@@ -16,8 +18,13 @@ export type NonEmptyString = Branded<string, 'NonEmptyString'>;
 export type CanonicalIdV1 = Branded<string, 'CanonicalIdV1'>;
 export type CanonicalId = CanonicalIdV1;
 export type CanonicalMetricRefV1 = Branded<string, 'CanonicalMetricRefV1'>;
-export type CanonicalRelativePathV1 = Branded<string, 'CanonicalRelativePathV1'>;
-export type CanonicalRelativePath = CanonicalRelativePathV1;
+export type RepositoryRelativePathV1 = Branded<string, 'RepositoryRelativePathV1'>;
+export type BundleRelativePathV1 = Branded<string, 'BundleRelativePathV1'>;
+export type BuildRelativePathV1 = Branded<string, 'BuildRelativePathV1'>;
+/** @deprecated Use the owner-specific path types. This alias retains bundle ownership. */
+export type CanonicalRelativePathV1 = BundleRelativePathV1;
+/** @deprecated Use BundleRelativePathV1. */
+export type CanonicalRelativePath = BundleRelativePathV1;
 export type Sha256DigestV1 = Branded<`sha256:${string}`, 'Sha256DigestV1'>;
 export type Sha256Digest = Sha256DigestV1;
 export type GitShaV1 = Branded<string, 'GitShaV1'>;
@@ -125,6 +132,8 @@ export type BenchmarkInvalidReason =
   | 'http-error'
   | 'process-crash'
   | 'operator-abort'
+  | 'metric-not-producible'
+  | 'warmup-not-stable'
   | 'infrastructure-failure';
 
 export interface BenchmarkInvalidReasonV1 {
@@ -141,19 +150,24 @@ export interface BenchmarkBuildBindingV1 {
   readonly totalBytes: SafePositiveIntegerV1;
 }
 
+/** Node preflight may add resolved filesystem identity beside this node-neutral expectation. */
+export interface BenchmarkBuildHandoffMetadataV1 {
+  readonly expected: BenchmarkBuildBindingV1;
+}
+
 export interface BenchmarkFixtureContractBindingV1 {
   readonly id: CanonicalIdV1;
   readonly version: SafePositiveIntegerV1;
   readonly semanticSha256: AvailabilityV1<Sha256DigestV1>;
   readonly sourceFileSetSha256: AvailabilityV1<Sha256DigestV1>;
-  readonly sourcePaths: AvailabilityV1<NonEmptyReadonlyArray<CanonicalRelativePathV1>>;
+  readonly sourcePaths: AvailabilityV1<NonEmptyReadonlyArray<RepositoryRelativePathV1>>;
 }
 
 export interface BenchmarkCandidateBindingV1 {
   readonly id: CanonicalIdV1;
   readonly version: SafePositiveIntegerV1;
   readonly sourceFileSetSha256: AvailabilityV1<Sha256DigestV1>;
-  readonly sourcePaths: AvailabilityV1<NonEmptyReadonlyArray<CanonicalRelativePathV1>>;
+  readonly sourcePaths: AvailabilityV1<NonEmptyReadonlyArray<RepositoryRelativePathV1>>;
 }
 
 export interface BenchmarkSourceProvenanceV1 {
@@ -184,7 +198,7 @@ export type BenchmarkSourcePreflightFailureCodeV1 = Extract<
 >;
 
 export type BenchmarkSourcePreflightResultV1 =
-  | { readonly status: 'accepted'; readonly provenance: BenchmarkSourceProvenanceV1 }
+  | { readonly status: 'accepted'; readonly provenance: BenchmarkSourceProvenanceV1; readonly buildHandoff: BenchmarkBuildHandoffMetadataV1 }
   | {
       readonly status: 'rejected';
       readonly code: BenchmarkSourcePreflightFailureCodeV1;
@@ -192,6 +206,7 @@ export type BenchmarkSourcePreflightResultV1 =
     };
 
 export type BenchmarkBackendV1 = 'three-webgl2' | 'raw-webgpu';
+export type BenchmarkBackendCellV1 = BenchmarkBackendV1 | 'not-applicable';
 export type BenchmarkMesherV1 = 'visible' | 'greedy' | 'greedy-ao' | 'not-applicable';
 
 export type BenchmarkScenarioParameterV1 =
@@ -267,6 +282,71 @@ export interface BenchmarkScenarioMetricContractV1 {
      | { readonly kind: 'when-capability-supported'; readonly capabilityId: CanonicalIdV1 };
 }
 
+export type BenchmarkMetricDimensionDomainV1 =
+  | { readonly kind: 'canonical-id' }
+  | { readonly kind: 'non-negative-safe-integer' }
+  | { readonly kind: 'sha256' };
+
+export interface BenchmarkMetricDimensionContractV1 {
+  readonly key: CanonicalIdV1;
+  readonly domain: BenchmarkMetricDimensionDomainV1;
+}
+
+export type BenchmarkWarmupAlgorithmV1 = 'median-last-5-vs-preceding-5-relative-deviation-v1';
+
+export interface BenchmarkWarmupRuleV1 {
+  readonly id: CanonicalIdV1;
+  readonly version: 1;
+  readonly algorithm: BenchmarkWarmupAlgorithmV1;
+  readonly windowSize: 5;
+  readonly maximumRelativeDeviation: 0.05;
+  readonly consecutiveStableComparisons: 2;
+  readonly minimumWarmupIterations: 10;
+  readonly maximumWarmupIterations: 50;
+}
+
+export interface BenchmarkScenarioWarmupControlV1 {
+  readonly metricRef: CanonicalMetricRefV1;
+  readonly rule: BenchmarkWarmupRuleV1;
+}
+
+export type BenchmarkMetricProducibilityReasonV1 =
+  | 'phase-not-allowed'
+  | 'container-not-allowed'
+  | 'producer-unavailable'
+  | 'diagnostic-only'
+  | 'capability-bound';
+
+export interface BenchmarkMetricProducibilityCellV1 {
+  readonly scenarioId: BenchmarkScenarioIdV1;
+  readonly phase: BenchmarkSamplePhaseV1;
+  readonly backend: BenchmarkBackendCellV1;
+  readonly metricRef: CanonicalMetricRefV1;
+  readonly scenarioMetricContractOrdinal: number;
+}
+
+export type BenchmarkMetricProducibilityEntryV1 = BenchmarkMetricProducibilityCellV1 & (
+  | {
+      readonly classification: 'emit-sample';
+      readonly producer: {
+        readonly recordName: CanonicalIdV1;
+        readonly metricRef: CanonicalMetricRefV1;
+        readonly unit: BenchmarkSampleUnitV1;
+      };
+    }
+  | {
+      readonly classification: 'capability-bound-unavailable';
+      readonly required: boolean;
+      readonly capabilityId: CanonicalIdV1;
+      readonly reasonCode: Extract<BenchmarkMetricProducibilityReasonV1, 'capability-bound' | 'producer-unavailable' | 'diagnostic-only'>;
+    }
+  | {
+      readonly classification: 'eligibility-bound-unavailable';
+      readonly required: boolean;
+      readonly reasonCode: Exclude<BenchmarkMetricProducibilityReasonV1, 'capability-bound'>;
+    }
+);
+
 export interface BenchmarkScenarioMetricCapabilitySelectionV1 {
   readonly scenarioId: BenchmarkScenarioIdV1;
   readonly metricRef: CanonicalMetricRefV1;
@@ -303,6 +383,7 @@ export interface BenchmarkScenarioDefinitionV1 {
   readonly capabilityContracts: readonly BenchmarkScenarioCapabilityContractV1[];
   readonly comparisonAxes: NonEmptyReadonlyArray<BenchmarkComparisonAxisV1>;
   readonly fairnessKeys: readonly CanonicalIdV1[];
+  readonly warmupControl: BenchmarkScenarioWarmupControlV1 | null;
 }
 
 export interface BenchmarkScenarioBindingV1 {
@@ -439,11 +520,22 @@ export interface BenchmarkExecutionDescriptorV1 {
 }
 
 export interface BenchmarkWarmMeasurementEvidenceV1 {
+  readonly schemaVersion: 'benchmark-warm-measurement-evidence-v1';
   readonly browserProcessId: CanonicalIdV1;
   readonly runPlanId: CanonicalIdV1;
   readonly runPlanSha256: Sha256DigestV1;
-  readonly minimumWarmupRuns: SafePositiveIntegerV1;
-  readonly stability: 'stable' | 'unstable';
+  readonly ruleId: CanonicalIdV1;
+  readonly ruleVersion: 1;
+  readonly algorithm: BenchmarkWarmupAlgorithmV1;
+  readonly controlMetricRef: CanonicalMetricRefV1;
+  readonly controlSamples: NonEmptyReadonlyArray<{
+    readonly sampleId: CanonicalIdV1;
+    readonly runId: CanonicalIdV1;
+    readonly iterationId: CanonicalIdV1;
+    readonly iterationOrdinal: number;
+    readonly sampleOrdinal: number;
+    readonly value: number;
+  }>;
 }
 
 export type BenchmarkSampleObservationV1 =
@@ -532,15 +624,17 @@ export interface HardwareCellV1 {
 
 export type BenchmarkRunDocumentV1 = HardwareCellV1;
 
-export type BenchmarkArtifactRoleV1 =
-  | 'raw-run-json'
-  | 'summary-json'
-  | 'summary-markdown'
-  | 'screenshot'
-  | 'trace'
-  | 'failure-log'
-  | 'heap-snapshot'
-  | 'gpu-capture';
+export const BENCHMARK_ARTIFACT_ROLE_VALUES_V1 = [
+  'raw-run-json',
+  'telemetry-export-json',
+  'validation-receipt-json',
+  'summary-json',
+  'summary-markdown',
+  'screenshot',
+  'trace',
+  'failure-log',
+] as const;
+export type BenchmarkArtifactRoleV1 = typeof BENCHMARK_ARTIFACT_ROLE_VALUES_V1[number];
 
 export type BenchmarkArtifactSerializationV1 =
   | 'jcs-rfc8785'
@@ -548,7 +642,7 @@ export type BenchmarkArtifactSerializationV1 =
   | 'binary-exact';
 
 export interface BenchmarkArtifactEntryV1 {
-  readonly path: CanonicalRelativePathV1;
+  readonly path: BundleRelativePathV1;
   readonly role: BenchmarkArtifactRoleV1;
   readonly mediaType: NonEmptyString;
   readonly serialization: BenchmarkArtifactSerializationV1;
@@ -563,12 +657,15 @@ export interface BenchmarkArtifactManifestV1 {
   readonly artifacts: readonly BenchmarkArtifactEntryV1[];
 }
 
+export const BENCHMARK_BUNDLE_CLAIM_CLASS_VALUES_V1 = ['correctness', 'diagnostic', 'informational'] as const;
+export type BenchmarkBundleClaimClassV1 = typeof BENCHMARK_BUNDLE_CLAIM_CLASS_VALUES_V1[number];
+
 export interface BenchmarkBundleManifestV1 {
   readonly schemaVersion: 'benchmark-bundle-manifest-v1';
   readonly protocolVersion: BenchmarkProtocolVersion;
   readonly bundleId: CanonicalIdV1;
   readonly createdUtc: UtcTimestampMsV1;
-  readonly claimClass: 'correctness' | 'diagnostic' | 'performance-gate' | 'informational';
+  readonly claimClass: BenchmarkBundleClaimClassV1;
   readonly canonicalJson: 'rfc8785-jcs';
   readonly pathPolicy: 'hestia-relative-posix-lower-v1';
   readonly digestAlgorithmVersion: 'hestia-benchmark-bundle-sha256-v1';
@@ -579,10 +676,34 @@ export interface BenchmarkBundleManifestV1 {
   };
   readonly runs: NonEmptyReadonlyArray<{
     readonly runId: CanonicalIdV1;
-    readonly path: CanonicalRelativePathV1;
-    readonly sha256: Sha256DigestV1;
+    readonly rawRun: {
+      readonly path: BundleRelativePathV1;
+      readonly sha256: Sha256DigestV1;
+    };
+    readonly telemetryExport: {
+      readonly path: BundleRelativePathV1;
+      readonly sha256: Sha256DigestV1;
+    };
+    readonly validationReceipt: {
+      readonly path: BundleRelativePathV1;
+      readonly sha256: Sha256DigestV1;
+    };
   }>;
   readonly excludedFromBundleDigest: readonly ['bundle.sha256'];
+}
+
+export interface BenchmarkTelemetryDerivationEvidenceV1 {
+  readonly schemaVersion: 'benchmark-telemetry-derivation-evidence-v1';
+  readonly adapterContractId: typeof BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1;
+  readonly adapterContractVersion: typeof BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1;
+  readonly metricRegistrySha256: Sha256DigestV1;
+  readonly targetRunId: CanonicalIdV1;
+  readonly targetRunBindingSha256: Sha256DigestV1;
+  readonly telemetryExportRawByteSha256: Sha256DigestV1;
+  readonly adapterResultsCanonicalSha256: Sha256DigestV1;
+  readonly derivedRawSamplesCanonicalSha256: Sha256DigestV1;
+  readonly derivedSampleCount: SafePositiveIntegerV1;
+  readonly evidenceSha256: Sha256DigestV1;
 }
 
 export interface BenchmarkValidationReceiptV1 {
@@ -600,6 +721,8 @@ export interface BenchmarkValidationReceiptV1 {
   readonly runBindingSha256: Sha256DigestV1;
   readonly schemaSetSha256: Sha256DigestV1;
   readonly metricRegistrySha256: Sha256DigestV1;
+  readonly telemetryDerivationEvidence: BenchmarkTelemetryDerivationEvidenceV1;
+  readonly telemetryDerivationEvidenceSha256: Sha256DigestV1;
   readonly validator: {
     readonly id: 'br01-validator-v1';
     readonly sourceCommitSha: GitShaV1;
@@ -645,8 +768,11 @@ export interface BenchmarkValidationReceiptInputV1 {
   readonly benchmarkRunCanonicalBytes?: Uint8Array;
   readonly schemaSetBytes: Uint8Array;
   readonly metricRegistry: MetricRegistryV1;
+  readonly telemetryAdapter: {
+    readonly adapt: AdaptTelemetryExportV1;
+  };
   readonly validatorSourceCommitSha: GitShaV1;
-  readonly validatorSourceFiles: readonly { readonly path: string; readonly bytes: Uint8Array }[];
+  readonly validatorSourceFiles: readonly { readonly path: RepositoryRelativePathV1; readonly bytes: Uint8Array }[];
   readonly validationContext: BenchmarkValidationContextV1;
 }
 
@@ -661,6 +787,15 @@ export interface TelemetryAdapterContextV1 {
 }
 
 export interface TelemetryAdapterResultV1 {
+  readonly samples: readonly BenchmarkRawSampleV1[];
+  readonly invalidReasons: readonly BenchmarkInvalidReasonV1[];
+}
+
+export interface BenchmarkTelemetryAdapterResultProjectionV1 {
+  readonly iterationId: CanonicalIdV1;
+  readonly iterationOrdinal: number;
+  readonly runId: CanonicalIdV1;
+  readonly phase: BenchmarkSamplePhaseV1;
   readonly samples: readonly BenchmarkRawSampleV1[];
   readonly invalidReasons: readonly BenchmarkInvalidReasonV1[];
 }
@@ -719,6 +854,7 @@ export interface MetricDefinitionV1 {
   readonly sourceMapping: readonly TelemetrySourceMappingV1[];
   readonly grouping: BenchmarkMetricGroupingV1;
   readonly pairing: BenchmarkMetricPairingV1;
+  readonly dimensionContracts: readonly BenchmarkMetricDimensionContractV1[];
   readonly direction: BenchmarkMetricDirectionV1;
   readonly warmupControl: BenchmarkMetricWarmupControlV1 | null;
   readonly practicalEffectDelta: number | null;
@@ -730,6 +866,7 @@ export interface MetricRegistryV1 {
   readonly protocolVersion: BenchmarkProtocolVersion;
   readonly metrics: NonEmptyReadonlyArray<MetricDefinitionV1>;
   readonly telemetryMappings: NonEmptyReadonlyArray<TelemetrySourceMappingV1>;
+  readonly producibilityCrosswalk: NonEmptyReadonlyArray<BenchmarkMetricProducibilityEntryV1>;
   readonly metricRegistrySha256: Sha256DigestV1;
 }
 
@@ -737,4 +874,8 @@ export const CONTRACT_VERSION_LITERALS = {
   protocol: BENCHMARK_PROTOCOL_VERSION,
   schemas: BENCHMARK_SCHEMA_VERSIONS,
   domains: BENCHMARK_DIGEST_DOMAINS,
+  telemetryAdapter: {
+    id: BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1,
+    version: BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1,
+  },
 } as const;

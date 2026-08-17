@@ -1,6 +1,8 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import { readFileSync } from 'node:fs';
 import { canonicalizeJsonV1 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
+import type { MetricRegistryV1 } from '../../../../src/benchmark/contracts/typesV1';
+import { BENCHMARK_METRIC_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 
 export interface BenchmarkCaseRuntimeV1 {
   readonly validateRunSchema: (value: unknown) => boolean;
@@ -9,6 +11,7 @@ export interface BenchmarkCaseRuntimeV1 {
   readonly validateScenarioSchema: (value: unknown) => boolean;
   readonly schemaSetBytes: Uint8Array;
   readonly scenarioDefinitionDigests: Readonly<Record<string, string>>;
+  readonly metricRegistry: MetricRegistryV1;
 }
 
 const schemaNames = [
@@ -41,5 +44,6 @@ export function createBenchmarkCaseRuntimeV1(
     validateScenarioSchema,
     schemaSetBytes: BENCHMARK_TEST_SCHEMA_SET_BYTES_V1,
     scenarioDefinitionDigests,
+    metricRegistry: BENCHMARK_METRIC_REGISTRY_V1,
   };
 }

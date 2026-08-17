@@ -1,16 +1,20 @@
 import { canonicalizeJsonV1, compareUtf16, parseCanonicalJsonV1 } from '../provenance/canonicalJsonV1';
-import { canonicalRelativePathV1, compareCanonicalRelativePathsV1 } from '../provenance/canonicalPathV1';
-import { digestFileSetV1, sha256BytesV1 } from '../provenance/fileSetDigestV1';
+import { compareRepositoryRelativePathsV1, repositoryRelativePathV1 } from '../provenance/canonicalPathV1';
+import { digestFileSetV1, sha256BytesV1, timingSafeEqualSha256V1 } from '../provenance/fileSetDigestV1';
 import { BENCHMARK_SCHEMA_SET_SHA256_V1 } from './schemaSetV1';
+import { BENCHMARK_WARMUP_RULE_V1, recomputeWarmupStabilityV1 } from './browserValidationV1';
 import {
   BENCHMARK_METRIC_REGISTRY_V1,
   BENCHMARK_SCENARIO_REGISTRY_V1,
+  BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1,
+  benchmarkScenarioDefinitionsV1,
   resolveScenarioMetricCapabilitySelectionV1,
 } from './scenarioRegistryV1';
 import type {
   AvailabilityV1,
   BenchmarkInvalidReason,
   BenchmarkInvalidReasonV1,
+  BenchmarkMetricProducibilityEntryV1,
   BenchmarkIterationV1,
   BenchmarkEnvironmentManifestV1,
   BenchmarkRawSampleV1,
@@ -23,6 +27,8 @@ import type {
   BenchmarkValidationContextV1,
   BenchmarkValidationReceiptInputV1,
   BenchmarkValidationReceiptV1,
+  BenchmarkTelemetryAdapterResultProjectionV1,
+  BenchmarkTelemetryDerivationEvidenceV1,
   BenchmarkValidationStageV1,
   BrowserProcessV1,
   CanonicalIdV1,
@@ -32,6 +38,10 @@ import type {
   Sha256DigestV1,
 } from './typesV1';
 import { BENCHMARK_PROTOCOL_VERSION, BENCHMARK_STATUS_COMMAND, EMPTY_STATUS_SHA256 } from './versions';
+import {
+  BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1,
+  BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1,
+} from './versions';
 
 export interface BenchmarkValidationIssueV1 {
   readonly stage: BenchmarkValidationStageV1;
@@ -130,7 +140,6 @@ const METRIC_REF_PATTERN = /^[a-z0-9][a-z0-9._-]*@[1-9][0-9]*$/;
 const SHA_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const UTC_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
-const PATH_PATTERN = /^[a-z0-9](?:[a-z0-9._/-]*[a-z0-9._-])?$/;
 
 function validId(value: unknown, path: string): string {
   const result = string(value, path, true);
@@ -154,10 +163,11 @@ function validGitSha(value: unknown, path: string): string {
 }
 function validPath(value: unknown, path: string): string {
   const result = string(value, path, true);
-  schema(result.length <= 512 && PATH_PATTERN.test(result), path, 'Path is not canonical.', 'path-invalid');
-  const parts = result.split('/');
-  schema(parts.every((part) => part !== '.' && part !== '..' && part.length > 0), path, 'Path contains traversal or empty segments.', 'path-invalid');
-  canonicalRelativePathV1(result);
+  try {
+    repositoryRelativePathV1(result);
+  } catch {
+    fail('schema', 'path-invalid', path, 'Path is not canonical.');
+  }
   return result;
 }
 export function validUtc(value: unknown, path: string): string {
@@ -275,7 +285,7 @@ function validateSortedUniquePaths(value: unknown, path: string): string[] {
   schema(paths.length > 0, path, 'Path list must not be empty.');
   const result = paths.map((entry, index) => validPath(entry, `${path}[${index}]`));
   for (let index = 1; index < result.length; index += 1) {
-    semantic(compareCanonicalRelativePathsV1(result[index - 1]!, result[index]!) < 0, path, 'Paths must be strictly sorted and unique.', 'order-invalid');
+    semantic(compareRepositoryRelativePathsV1(result[index - 1]!, result[index]!) < 0, path, 'Paths must be strictly sorted and unique.', 'order-invalid');
   }
   return result;
 }
@@ -300,9 +310,31 @@ function validateScenarioBinding(value: unknown, path: string): void {
   if (registryEntry !== undefined) {
     semantic(scenario.definitionSha256 === registryEntry.definitionSha256, `${path}.definitionSha256`, 'Scenario definition digest does not match registry.', 'scenario-contract-mismatch');
     validateScenarioParameters(scenario, registryEntry.definition, `${path}.parameters`);
+    validateScenarioWarmupControl(registryEntry.definition, `${path}.warmupControl`);
     const fixture = object(scenario.fixture, `${path}.fixture`);
     semantic(fixture.id === registryEntry.definition.fixtureContractId && fixture.version === registryEntry.definition.fixtureContractVersion, `${path}.fixture`, 'Scenario fixture binding does not match its definition.', 'fixture-contract-mismatch');
   }
+}
+
+function validateScenarioWarmupControl(definition: BenchmarkScenarioDefinitionV1, path: string): void {
+  if (definition.warmupControl === null) {
+    semantic(!definition.allowedPhases.includes('warmup'), path, 'A scenario without warmup control must not allow warmup.', 'warmup-unsupported');
+    return;
+  }
+  semantic(definition.allowedPhases.includes('warmup'), path, 'A scenario warmup control requires the warmup phase.', 'warmup-unsupported');
+  const control = definition.warmupControl;
+  semantic(control.rule.id === BENCHMARK_WARMUP_RULE_V1.id && control.rule.version === BENCHMARK_WARMUP_RULE_V1.version
+    && control.rule.algorithm === BENCHMARK_WARMUP_RULE_V1.algorithm && control.rule.windowSize === 5
+    && control.rule.maximumRelativeDeviation === 0.05 && control.rule.consecutiveStableComparisons === 2
+    && control.rule.minimumWarmupIterations === 10 && control.rule.maximumWarmupIterations === 50,
+  path, 'Scenario warmup control must use the normative BR03 rule.', 'warmup-rule-mismatch');
+  const contracts = definition.metricContracts.filter((contract) => contract.metricRef === control.metricRef);
+  semantic(contracts.length === 1, path, 'Warmup control must reference exactly one scenario metric contract.', 'warmup-metric-mismatch');
+  const metric = BENCHMARK_METRIC_REGISTRY_V1.metrics.find((entry) => entry.metricRef === control.metricRef);
+  semantic(metric !== undefined && metric.warmupControl !== null && metric.warmupControl.metricRef === control.metricRef
+    && Number.isFinite(metric.warmupControl.epsilon) && metric.warmupControl.epsilon > 0
+    && metric.allowedPhases.includes('warmup') && metric.allowedContainers.includes('warm-measurement')
+    && metric.sourceMapping.some((mapping) => mapping.disposition === 'emit-sample' && mapping.metricRef === control.metricRef), path, 'Warmup control metric must have a canonical emit producer.', 'warmup-unsupported');
 }
 
 function validateScenarioParameters(
@@ -351,7 +383,7 @@ function validateReason(value: unknown, path: string): BenchmarkInvalidReasonV1 
     'candidate-contract-mismatch', 'scenario-contract-mismatch', 'run-plan-mismatch', 'environment-incomplete',
     'browser-version-mismatch', 'required-capability-missing', 'document-hidden', 'document-unfocused', 'background-tabs-present',
     'power-state-mismatch', 'thermal-throttling', 'clock-invalid', 'sample-invalid', 'gpu-disjoint', 'context-lost',
-    'console-error', 'page-error', 'request-failure', 'http-error', 'process-crash', 'operator-abort', 'infrastructure-failure',
+    'console-error', 'page-error', 'request-failure', 'http-error', 'process-crash', 'operator-abort', 'metric-not-producible', 'warmup-not-stable', 'infrastructure-failure',
   ], `${path}.code`);
   string(reason.detail, `${path}.detail`, true);
   oneOf(string(reason.phase, `${path}.phase`), phases, `${path}.phase`);
@@ -608,25 +640,19 @@ function metricCapabilityIds(metric: MetricDefinitionV1, runValue: BenchmarkRunV
     ?? metric.capabilityRequirements;
 }
 
-const HIERARCHY_DIMENSION_KEYS = new Set([
-  'hardware-profile',
-  'phase',
-  'candidate',
-  'iteration-ordinal',
-  'bootstrap-cluster-id',
-]);
-
-function requiredMetricDimensionKeys(metric: MetricDefinitionV1): readonly string[] {
-  return [...new Set([...metric.grouping.keys, ...metric.pairing.keys]
-    .filter((key) => !HIERARCHY_DIMENSION_KEYS.has(key)))];
-}
-
 function validateMetricSampleDimensions(sample: BenchmarkRawSampleV1, metric: MetricDefinitionV1, path: string): void {
-  const required = requiredMetricDimensionKeys(metric);
-  for (const key of required) {
-    const matches = sample.dimensions.filter((dimension) => dimension.key === key);
-    semantic(matches.length > 0, `${path}.dimensions`, `Metric ${metric.metricRef} requires dimension ${key}.`, 'metric-dimension-missing');
-    semantic(matches.length === 1, `${path}.dimensions`, `Metric ${metric.metricRef} has duplicate dimension ${key}.`, 'metric-dimension-duplicate');
+  for (const contract of metric.dimensionContracts) {
+    semantic(sample.dimensions.some((dimension) => dimension.key === contract.key), `${path}.dimensions`, `Metric ${metric.metricRef} requires dimension ${contract.key}.`, 'metric-dimension-missing');
+  }
+  semantic(sample.dimensions.length === metric.dimensionContracts.length, `${path}.dimensions`, `Metric ${metric.metricRef} requires an exact dimension set.`, 'metric-dimension-set-invalid');
+  for (const contract of metric.dimensionContracts) {
+    const matches = sample.dimensions.filter((dimension) => dimension.key === contract.key);
+    semantic(matches.length === 1, `${path}.dimensions`, `Metric ${metric.metricRef} requires exactly one dimension ${contract.key}.`, matches.length === 0 ? 'metric-dimension-missing' : 'metric-dimension-duplicate');
+    const value = matches[0]?.value;
+    if (value === undefined) continue;
+    if (contract.domain.kind === 'canonical-id') validId(value, `${path}.dimensions.${contract.key}`);
+    else if (contract.domain.kind === 'sha256') validSha(value, `${path}.dimensions.${contract.key}`);
+    else safeInteger(value, `${path}.dimensions.${contract.key}`, 0);
   }
 }
 
@@ -640,6 +666,43 @@ function scenarioMetricRequiredByRun(
   if (selectedCapabilities !== undefined) return selectedCapabilities.every((capabilityId) => availabilityIsObservedTrue(capabilities.get(capabilityId)));
   if (metricContract.requirement.kind === 'required') return true;
   return availabilityIsObservedTrue(capabilities.get(metricContract.requirement.capabilityId));
+}
+
+function backendCellForRun(runValue: BenchmarkRunV1, definition: BenchmarkScenarioDefinitionV1): string {
+  return definition.parameterContracts.some((contract) => contract.key === 'backend')
+    ? String(runValue.scenario.parameters.find((parameter) => parameter.key === 'backend')?.value ?? '')
+    : 'not-applicable';
+}
+
+function metricProducibilityEntryForRun(
+  runValue: BenchmarkRunV1,
+  definition: BenchmarkScenarioDefinitionV1,
+  metricContract: BenchmarkScenarioDefinitionV1['metricContracts'][number],
+  scenarioMetricContractOrdinal: number,
+  registry: MetricRegistryV1,
+): BenchmarkMetricProducibilityEntryV1 | undefined {
+  return registry.producibilityCrosswalk.find((entry) => entry.scenarioId === definition.id
+    && entry.phase === runValue.execution.phase
+    && entry.backend === backendCellForRun(runValue, definition)
+    && entry.metricRef === metricContract.metricRef
+    && entry.scenarioMetricContractOrdinal === scenarioMetricContractOrdinal);
+}
+
+function metricUnavailableForEligibleRun(
+  runValue: BenchmarkRunV1,
+  definition: BenchmarkScenarioDefinitionV1,
+  capabilities: ReadonlyMap<string, AvailabilityV1<true>>,
+  registry: MetricRegistryV1,
+): boolean {
+  if (runValue.execution.phase === 'warmup' || runValue.execution.phase === 'trace' || runValue.execution.phase === 'leak') return false;
+  for (const [scenarioMetricContractOrdinal, metricContract] of definition.metricContracts.entries()) {
+    const metric = metricFor(metricContract.metricRef, registry);
+    if (metric === undefined || !metric.allowedPhases.includes(runValue.execution.phase) || !metric.allowedContainers.includes(runValue.execution.processContainer)) continue;
+    if (!scenarioMetricRequiredByRun(runValue, metricContract, capabilities, definition)) continue;
+    const entry = metricProducibilityEntryForRun(runValue, definition, metricContract, scenarioMetricContractOrdinal, registry);
+    if (entry !== undefined && entry.classification !== 'emit-sample') return true;
+  }
+  return false;
 }
 
 function validateMetricValue(value: number, metric: MetricDefinitionV1, path: string): void {
@@ -744,6 +807,7 @@ function measurementEligibilityReasonCode(
   environment: BenchmarkEnvironmentManifestV1,
   runValue: BenchmarkRunV1,
   definition: BenchmarkScenarioDefinitionV1,
+  registry: MetricRegistryV1,
 ): BenchmarkInvalidReason {
   const environmentReason = environmentEligibilityReasonCode(environment);
   if (environmentReason !== undefined) return environmentReason;
@@ -759,6 +823,7 @@ function measurementEligibilityReasonCode(
   if (backend === 'three-webgl2' && !availabilityIsObservedTrue(capabilities.get('webgl2'))) return 'required-capability-missing';
   if (backend === 'raw-webgpu' && !availabilityIsObservedTrue(capabilities.get('webgpu'))) return 'required-capability-missing';
   if (runValue.execution.validity.status === 'invalid') return runValue.execution.validity.reasons[0]?.code ?? 'environment-incomplete';
+  if (metricUnavailableForEligibleRun(runValue, definition, capabilities, registry)) return 'metric-not-producible';
   return 'environment-incomplete';
 }
 
@@ -773,12 +838,30 @@ function validateWarmMeasurementEvidenceCollection(value: unknown, path: string)
   const seen = new Set<string>();
   for (let index = 0; index < entries.length; index += 1) {
     const entryPath = `${path}[${index}]`;
-    const evidence = closed(entries[index], ['browserProcessId', 'runPlanId', 'runPlanSha256', 'minimumWarmupRuns', 'stability'], entryPath);
+    const evidence = closed(entries[index], ['schemaVersion', 'browserProcessId', 'runPlanId', 'runPlanSha256', 'ruleId', 'ruleVersion', 'algorithm', 'controlMetricRef', 'controlSamples'], entryPath);
+    schema(evidence.schemaVersion === 'benchmark-warm-measurement-evidence-v1', `${entryPath}.schemaVersion`, 'Wrong warm measurement evidence schema version.');
     const browserProcessId = validId(evidence.browserProcessId, `${entryPath}.browserProcessId`);
     validId(evidence.runPlanId, `${entryPath}.runPlanId`);
     validSha(evidence.runPlanSha256, `${entryPath}.runPlanSha256`);
-    safeInteger(evidence.minimumWarmupRuns, `${entryPath}.minimumWarmupRuns`, 1);
-    oneOf(string(evidence.stability, `${entryPath}.stability`, true), ['stable', 'unstable'], `${entryPath}.stability`);
+    validId(evidence.ruleId, `${entryPath}.ruleId`);
+    schema(evidence.ruleId === BENCHMARK_WARMUP_RULE_V1.id && evidence.ruleVersion === BENCHMARK_WARMUP_RULE_V1.version
+      && evidence.algorithm === BENCHMARK_WARMUP_RULE_V1.algorithm, `${entryPath}.ruleId`, 'Warmup evidence must bind the normative rule.', 'warmup-rule-mismatch');
+    validMetricRef(evidence.controlMetricRef, `${entryPath}.controlMetricRef`);
+    const samples = array(evidence.controlSamples, `${entryPath}.controlSamples`);
+    schema(samples.length > 0, `${entryPath}.controlSamples`, 'Warmup evidence must contain control samples.', 'warmup-evidence-missing');
+    const sampleIds = new Set<string>();
+    for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
+      const samplePath = `${entryPath}.controlSamples[${sampleIndex}]`;
+      const sample = closed(samples[sampleIndex], ['sampleId', 'runId', 'iterationId', 'iterationOrdinal', 'sampleOrdinal', 'value'], samplePath);
+      validId(sample.sampleId, `${samplePath}.sampleId`);
+      validId(sample.runId, `${samplePath}.runId`);
+      validId(sample.iterationId, `${samplePath}.iterationId`);
+      safeInteger(sample.iterationOrdinal, `${samplePath}.iterationOrdinal`, 0);
+      safeInteger(sample.sampleOrdinal, `${samplePath}.sampleOrdinal`, 0);
+       finite(sample.value, `${samplePath}.value`, 0);
+      semantic(!sampleIds.has(sample.sampleId as string), `${samplePath}.sampleId`, 'Warmup control sample IDs must be unique.', 'warmup-sample-duplicate');
+      sampleIds.add(sample.sampleId as string);
+    }
     semantic(!seen.has(browserProcessId), `${entryPath}.browserProcessId`, 'Warm measurement evidence must contain one entry per browser process.', 'duplicate-id');
     semantic(previous === '' || compareUtf16(previous, browserProcessId) < 0, `${entryPath}.browserProcessId`, 'Warm measurement evidence must be sorted by browser process ID.', 'order-invalid');
     seen.add(browserProcessId);
@@ -792,23 +875,51 @@ function validateWarmMeasurementEvidence(
   runValue: BenchmarkRunV1,
   context: BenchmarkValidationContextV1,
 ): void {
-  if (runValue.execution.processContainer !== 'warm-measurement' || runValue.execution.phase !== 'measurement' || runValue.execution.measurementEligibility !== 'eligible') return;
+  if (runValue.execution.processContainer !== 'warm-measurement' || runValue.execution.phase !== 'measurement') return;
   const evidenceEntries = context.warmMeasurementEvidence?.filter((entry) => entry.browserProcessId === processValue.browserProcessId);
-  semantic(evidenceEntries !== undefined, '$.browserProcesses.runs', 'Eligible warm measurement requires accepted BR03 warmup evidence.', 'warmup-evidence-missing');
+  semantic(evidenceEntries !== undefined, '$.browserProcesses.runs', 'Warm measurement requires accepted BR03 warmup evidence.', 'warmup-evidence-missing');
   if (evidenceEntries === undefined) return;
   semantic(evidenceEntries.length === 1, '$.browserProcesses.runs', 'Eligible warm measurement requires exactly one process-specific warmup evidence entry.', 'warmup-evidence-duplicate');
   const evidence = evidenceEntries[0];
   if (evidence === undefined) return;
   semantic(evidence.browserProcessId === processValue.browserProcessId, '$.browserProcesses.runs', 'Warmup evidence belongs to a different browser process.', 'warmup-process-mismatch');
   semantic(evidence.runPlanId === context.runPlan.id && evidence.runPlanSha256 === context.runPlan.sha256, '$.browserProcesses.runs', 'Warmup evidence belongs to a different accepted plan.', 'warmup-plan-mismatch');
-  semantic(evidence.stability === 'stable', '$.browserProcesses.runs', 'Warmup stability evidence is not stable.', 'warmup-stability-invalid');
-  semantic(Number.isSafeInteger(evidence.minimumWarmupRuns) && evidence.minimumWarmupRuns > 0, '$.browserProcesses.runs', 'Warmup evidence minimum is invalid.', 'warmup-minimum-invalid');
-  const acceptedWarmups = processValue.runs.slice(0, runIndex).filter((candidate) => candidate.execution.processContainer === 'warm-measurement'
-    && candidate.execution.phase === 'warmup'
-    && candidate.execution.runPlanId === context.runPlan.id
-    && candidate.execution.runPlanSha256 === context.runPlan.sha256
-    && candidate.execution.validity.status === 'valid');
-  semantic(acceptedWarmups.length >= evidence.minimumWarmupRuns, '$.browserProcesses.runs', 'Warmup evidence minimum was not reached before measurement.', 'warmup-minimum-invalid');
+  const definition = BENCHMARK_SCENARIO_REGISTRY_V1[runValue.scenario.id].definition;
+  const control = definition.warmupControl;
+  semantic(control !== null, '$.browserProcesses.runs', 'Scenario does not define a warmup control metric.', 'warmup-unsupported');
+  if (control === null) return;
+  semantic(evidence.ruleId === control.rule.id && evidence.ruleVersion === control.rule.version && evidence.algorithm === control.rule.algorithm, '$.browserProcesses.runs', 'Warmup evidence rule does not match the scenario contract.', 'warmup-rule-mismatch');
+  semantic(evidence.controlMetricRef === control.metricRef, '$.browserProcesses.runs', 'Warmup evidence control metric does not match the scenario contract.', 'warmup-metric-mismatch');
+  const metric = metricFor(control.metricRef, BENCHMARK_METRIC_REGISTRY_V1);
+  semantic(metric !== undefined && metric.allowedPhases.includes('warmup') && metric.allowedContainers.includes('warm-measurement'), '$.browserProcesses.runs', 'Warmup control metric is not producible in the warmup phase.', 'warmup-unsupported');
+  const warmupRuns = processValue.runs.slice(0, runIndex).filter((candidate) => candidate.execution.phase === 'warmup');
+  const expectedSamples: Array<{ readonly sample: BenchmarkRawSampleV1; readonly run: BenchmarkRunV1; readonly iteration: BenchmarkIterationV1 }> = [];
+  for (const candidate of warmupRuns) {
+    semantic(candidate.execution.processContainer === 'warm-measurement' && candidate.execution.phase === 'warmup', '$.browserProcesses.runs', 'Warmup runs must precede measurement and use the warmup phase.', 'phase-transition-invalid');
+    semantic(candidate.execution.runPlanId === context.runPlan.id && candidate.execution.runPlanSha256 === context.runPlan.sha256, '$.browserProcesses.runs', 'Warmup run belongs to a different accepted plan.', 'warmup-plan-mismatch');
+    semantic(candidate.execution.validity.status === 'valid', '$.browserProcesses.runs', 'Warmup runs must be execution-valid.', 'warmup-sample-invalid');
+    for (const iteration of candidate.iterations) {
+      const matches = iteration.samples.filter((sample) => sample.metricRef === control.metricRef);
+      semantic(matches.length === 1, '$.browserProcesses.runs', 'Each warmup iteration must contain exactly one control sample.', 'warmup-sample-mismatch');
+      const sample = matches[0]!;
+      semantic(sample.result.status === 'valid', '$.browserProcesses.runs', 'Warmup control samples must be valid.', 'warmup-sample-invalid');
+      expectedSamples.push({ sample, run: candidate, iteration });
+    }
+  }
+  semantic(expectedSamples.length >= control.rule.minimumWarmupIterations, '$.browserProcesses.runs', 'Warmup evidence minimum was not reached before measurement.', 'warmup-minimum-invalid');
+  semantic(expectedSamples.length <= control.rule.maximumWarmupIterations, '$.browserProcesses.runs', 'Warmup evidence exceeds the maximum warmup iterations.', 'warmup-maximum-invalid');
+  semantic(evidence.controlSamples.length === expectedSamples.length, '$.browserProcesses.runs', 'Warmup evidence does not enumerate the preceding control samples exactly.', 'warmup-sample-mismatch');
+  for (let index = 0; index < expectedSamples.length; index += 1) {
+    const expected = expectedSamples[index]!;
+    const actual = evidence.controlSamples[index]!;
+    semantic(actual.sampleId === expected.sample.sampleId && actual.runId === expected.run.runId && actual.iterationId === expected.iteration.iterationId
+      && actual.iterationOrdinal === expected.iteration.iterationOrdinal && actual.sampleOrdinal === expected.sample.ordinal
+      && expected.sample.result.status === 'valid' && actual.value === expected.sample.result.value,
+    `$.browserProcesses.runs[${runIndex}].warmupEvidence.controlSamples[${index}]`, 'Warmup evidence sample identity or value does not match the preceding run.', 'warmup-sample-mismatch');
+  }
+  if (metric === undefined || metric.warmupControl === null) return;
+  const result = recomputeWarmupStabilityV1(evidence.controlSamples.map((sample) => sample.value), control.rule, metric.warmupControl.epsilon);
+  semantic(result.status === 'STABLE' && result.stabilizationIteration === expectedSamples.length, '$.browserProcesses.runs', 'Warmup control values did not reach the normative stability rule at the first stable boundary.', 'warmup-not-stable');
 }
 
 function dimensionsMatchContract(
@@ -816,10 +927,16 @@ function dimensionsMatchContract(
   metric: MetricDefinitionV1,
   contract: BenchmarkScenarioDefinitionV1['metricContracts'][number],
 ): boolean {
-  if (contract.dimensions === undefined) return true;
-  const expectedKeys = new Set([...requiredMetricDimensionKeys(metric), ...contract.dimensions.map((dimension) => dimension.key)]);
-  if (sample.dimensions.length !== expectedKeys.size || sample.dimensions.some((dimension) => !expectedKeys.has(dimension.key))) return false;
-  return contract.dimensions.every((expected) => sample.dimensions.some((actual) => actual.key === expected.key && sameCanonicalValue(actual.value, expected.value)));
+  const fixedDimensions = contract.dimensions ?? [];
+  const expectedKeys = new Set(metric.dimensionContracts.map((dimension) => dimension.key));
+  for (const fixed of fixedDimensions) {
+    if (expectedKeys.has(fixed.key)) continue;
+    expectedKeys.add(fixed.key);
+  }
+  if (fixedDimensions.some((fixed) => !metric.dimensionContracts.some((dimension) => dimension.key === fixed.key))
+    || sample.dimensions.length !== expectedKeys.size
+    || sample.dimensions.some((dimension) => !expectedKeys.has(dimension.key))) return false;
+  return fixedDimensions.every((expected) => sample.dimensions.some((actual) => actual.key === expected.key && sameCanonicalValue(actual.value, expected.value)));
 }
 
 function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkValidationContextV1, registry: MetricRegistryV1): void {
@@ -829,9 +946,24 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
    const profileId = availableValue(env.hardwareProfileId);
    if (profileId !== undefined) semantic(profileId === document.hardwareProfileId, '$.hardwareProfileId', 'Hardware profile binding does not match the environment evidence.', 'hierarchy-invalid');
     const observedCapability = (id: string): boolean => availabilityIsObservedTrue((env.capabilities as readonly { id: CanonicalIdV1; value: AvailabilityV1<true> }[]).find((entry) => entry.id === id)?.value);
-    const runEligible = new Set<string>();
-    const expectedCellReasons = new Map<string, BenchmarkInvalidReasonV1>();
-    const eligibleWarmProcesses = new Set(document.browserProcesses
+   const runEligible = new Set<string>();
+   const expectedCellReasons = new Map<string, BenchmarkInvalidReasonV1>();
+   for (let processIndex = 0; processIndex < document.browserProcesses.length; processIndex += 1) {
+     const process = document.browserProcesses[processIndex]!;
+     semantic(process.runs.length > 0, `$.browserProcesses[${processIndex}].runs`, 'Browser process needs runs.', 'hierarchy-invalid');
+     let previousIteration = -1;
+     let previousSequencePosition = -1;
+     for (let runIndex = 0; runIndex < process.runs.length; runIndex += 1) {
+       const run = process.runs[runIndex]!;
+       semantic(run.execution.processOrdinal === processIndex, `$.browserProcesses[${processIndex}].runs[${runIndex}].execution.processOrdinal`, 'Process ordinals must match strict browser-process array order.', 'ordinal-order-invalid');
+       const ordered = run.execution.iteration > previousIteration
+         || (run.execution.iteration === previousIteration && run.execution.order.sequencePosition > previousSequencePosition);
+       semantic(runIndex === 0 || ordered, `$.browserProcesses[${processIndex}].runs[${runIndex}]`, 'Runs must be strictly ordered by execution iteration and order sequence position.', 'ordinal-order-invalid');
+       previousIteration = run.execution.iteration;
+       previousSequencePosition = run.execution.order.sequencePosition;
+     }
+   }
+   const eligibleWarmProcesses = new Set(document.browserProcesses
       .filter((process) => process.runs.some((run) => run.execution.processContainer === 'warm-measurement'
         && run.execution.phase === 'measurement'
         && run.execution.measurementEligibility === 'eligible'))
@@ -890,9 +1022,9 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
          }
        }
        const allCapabilities = new Map((env.capabilities as readonly { id: CanonicalIdV1; value: AvailabilityV1<true> }[]).map((entry) => [entry.id, entry.value]));
-        const seenIterations = new Set<number>(); const seenSampleOrdinals = new Set<number>(); const seenSampleIds = new Set<string>(); let expectedSampleOrdinal = 0;
-      for (const iteration of runValue.iterations) {
-        semantic(iteration.runId === runValue.runId && iteration.phase === phase, '$.iterations', 'Iteration parent or phase reference is inconsistent.', 'hierarchy-invalid'); semantic(!seenIterations.has(iteration.iterationOrdinal), '$.iterations', 'Duplicate iteration ordinal.', 'duplicate-ordinal'); seenIterations.add(iteration.iterationOrdinal);
+         const seenIterations = new Set<number>(); const seenSampleOrdinals = new Set<number>(); const seenSampleIds = new Set<string>(); let expectedSampleOrdinal = 0; let previousIterationOrdinal = -1;
+       for (const iteration of runValue.iterations) {
+         semantic(iteration.runId === runValue.runId && iteration.phase === phase, '$.iterations', 'Iteration parent or phase reference is inconsistent.', 'hierarchy-invalid'); semantic(iteration.iterationOrdinal > previousIterationOrdinal, '$.iterations', 'Iterations must be strictly ordered by ordinal.', 'ordinal-order-invalid'); semantic(!seenIterations.has(iteration.iterationOrdinal), '$.iterations', 'Duplicate iteration ordinal.', 'duplicate-ordinal'); seenIterations.add(iteration.iterationOrdinal); previousIterationOrdinal = iteration.iterationOrdinal;
          for (const sample of iteration.samples) {
            semantic(sample.iterationId === iteration.iterationId && sample.phase === phase, '$.iterations.samples', 'Sample parent or phase reference is inconsistent.', 'hierarchy-invalid');
            semantic(sample.ordinal === expectedSampleOrdinal, '$.iterations.samples.ordinal', 'Sample ordinals must follow one contiguous run-global array order.', 'ordinal-order-invalid'); expectedSampleOrdinal += 1;
@@ -932,38 +1064,40 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
        if (runValue.execution.validity.status === 'valid') {
          semantic(runValue.iterations.every((iteration) => iteration.samples.every((sample) => sample.result.status === 'valid')), '$.iterations.samples', 'A valid run cannot contain invalid samples.', 'sample-invalid');
        }
-       if (runValue.execution.validity.status === 'valid' && runValue.execution.measurementEligibility === 'eligible') {
-         semantic(seenSampleOrdinals.size > 0, '$.iterations.samples', 'A valid run needs at least one sample.', 'sample-missing');
+        if (runValue.execution.validity.status === 'valid' && runValue.execution.measurementEligibility === 'eligible') {
+          semantic(seenSampleOrdinals.size > 0, '$.iterations.samples', 'A valid run needs at least one sample.', 'sample-missing');
        } else if (runValue.execution.validity.status === 'invalid') {
          const reasons = runValue.execution.validity.reasons;
         const reasonKeys = reasons.map((reason) => `${reason.code}:${reason.phase}`);
          semantic(new Set(reasonKeys).size === reasonKeys.length && reasonKeys.every((key, index) => index === 0 || compareUtf16(reasonKeys[index - 1]!, key) < 0), '$.execution.validity.reasons', 'Invalid reasons must be unique and sorted.', 'reason-order-invalid');
       }
-           for (const metricContract of registryEntry.definition.metricContracts) {
-            const canonicalRef = metricContract.metricRef;
-            const metric = metricFor(canonicalRef, registry);
-            const metricAllowedForRun = metric !== undefined
-              && metric.allowedPhases.includes(runValue.execution.phase)
-              && metric.allowedContainers.includes(runValue.execution.processContainer);
-            const requiredByRun = runValue.execution.validity.status === 'valid' && runValue.execution.phase !== 'warmup' && runValue.execution.phase !== 'trace'
-                 && metricAllowedForRun
-                 && scenarioMetricRequiredByRun(runValue, metricContract, allCapabilities, registryEntry.definition);
-             if (!requiredByRun) continue;
+            for (const [scenarioMetricContractOrdinal, metricContract] of registryEntry.definition.metricContracts.entries()) {
+             const canonicalRef = metricContract.metricRef;
+             const metric = metricFor(canonicalRef, registry);
+             const producibility = metricProducibilityEntryForRun(runValue, registryEntry.definition, metricContract, scenarioMetricContractOrdinal, registry);
+             const metricAllowedForRun = metric !== undefined
+               && metric.allowedPhases.includes(runValue.execution.phase)
+               && metric.allowedContainers.includes(runValue.execution.processContainer);
+             const requiredByRun = runValue.execution.validity.status === 'valid' && runValue.execution.phase !== 'warmup' && runValue.execution.phase !== 'trace'
+                  && metricAllowedForRun
+                  && scenarioMetricRequiredByRun(runValue, metricContract, allCapabilities, registryEntry.definition)
+                  && producibility?.classification === 'emit-sample';
+              if (!requiredByRun) continue;
              const matchingSamples = runValue.iterations.flatMap((iteration) => iteration.samples)
                .filter((sample) => metric !== undefined && sample.metricRef === canonicalRef && dimensionsMatchContract(sample, metric, metricContract));
-           if (matchingSamples.length === 0) {
-             semantic(false, metricContract.dimensions === undefined ? '$.iterations.samples' : '$.iterations.samples.dimensions',
+            if (matchingSamples.length === 0) {
+              semantic(false, metricContract.dimensions === undefined ? '$.iterations.samples' : '$.iterations.samples.dimensions',
                metricContract.dimensions === undefined ? `Required metric ${canonicalRef} is missing.` : `Required dimensions for ${canonicalRef} are missing.`,
                metricContract.dimensions === undefined ? 'metric-missing' : 'metric-dimension-missing');
            }
              if (metric !== undefined) validateMetricCapabilities(metric, runValue, allCapabilities, '$.iterations.samples', registryEntry.definition);
-          if (metricContract.dimensions !== undefined) {
-            semantic(matchingSamples.length === 1, '$.iterations.samples.dimensions', `Required dimensions for ${canonicalRef} are duplicated.`, 'metric-dimension-duplicate');
-          }
+           if (metricContract.dimensions !== undefined) {
+             semantic(matchingSamples.length === 1, '$.iterations.samples.dimensions', `Required dimensions for ${canonicalRef} are duplicated.`, 'metric-dimension-duplicate');
+           }
         }
        const capabilityContracts = registryEntry.definition.capabilityContracts;
-       for (const capabilityContract of capabilityContracts) {
-         const value = allCapabilities.get(capabilityContract.id); const claimsEligibility = runValue.execution.measurementEligibility === 'eligible'; semantic(value !== undefined || !claimsEligibility, '$.environment.capabilities', 'Registry capability is missing for an eligible run.', 'required-capability-missing'); if (claimsEligibility && capabilityContract.requirement === 'must-support') semantic(availabilityIsObservedTrue(value), '$.environment.capabilities', 'Required capability lacks observed support.', 'required-capability-missing');
+          for (const capabilityContract of capabilityContracts) {
+          const value = allCapabilities.get(capabilityContract.id); const claimsEligibility = runValue.execution.measurementEligibility === 'eligible'; semantic(value !== undefined, '$.environment.capabilities', 'Registry capability is missing.', 'required-capability-missing'); if (claimsEligibility && capabilityContract.requirement === 'must-support') semantic(availabilityIsObservedTrue(value), '$.environment.capabilities', 'Required capability lacks observed support.', 'required-capability-missing');
        }
        const parameters = new Map((runValue.scenario.parameters as readonly { key: string; value: unknown }[]).map((parameterValue) => [parameterValue.key, parameterValue.value]));
       const backend = parameters.get('backend');
@@ -971,9 +1105,10 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
         if (runValue.execution.measurementEligibility === 'eligible' && backend === 'raw-webgpu') semantic(observedCapability('webgpu'), '$.environment.capabilities', 'WebGPU backend requires observed WebGPU support.', 'required-capability-missing');
         if (runValue.execution.measurementEligibility === 'eligible') {
            semantic(baseEligible, '$.environment', 'Eligible run does not satisfy observed environment evidence or runtime eligibility.', environmentEligibilityReasonCode(env) ?? 'measurement-ineligible'); semantic(runValue.execution.validity.status === 'valid', '$.execution.validity', 'Eligible run must be valid.', 'measurement-ineligible');
-       }
+           semantic(!metricUnavailableForEligibleRun(runValue, registryEntry.definition, allCapabilities, registry), '$.iterations.samples', 'An eligible run cannot claim a required metric without a canonical producer.', 'metric-not-producible');
+        }
          if ((phase === 'cold' || phase === 'measurement' || phase === 'stress') && runValue.execution.measurementEligibility === 'ineligible') {
-           const expectedReasonCode = measurementEligibilityReasonCode(env, runValue, registryEntry.definition);
+           const expectedReasonCode = measurementEligibilityReasonCode(env, runValue, registryEntry.definition, registry);
             const runReason = runValue.measurementEligibilityReasons.find((reason) => reason.code === expectedReasonCode && reason.phase === phase);
             semantic(runReason !== undefined, '$.measurementEligibilityReasons', 'Ineligible run must record its first applicable eligibility gate.', 'eligibility-reason-missing');
             const expectedCellReason = cellEligibilityReason(expectedReasonCode, phase);
@@ -1047,7 +1182,7 @@ function failure<T>(error: unknown): BenchmarkValidationResultV1<T> {
 
 export function validateMetricRegistryV1(registry: unknown = BENCHMARK_METRIC_REGISTRY_V1): BenchmarkValidationResultV1<MetricRegistryV1> {
   try {
-    const value = closed(registry, ['schemaVersion', 'protocolVersion', 'metrics', 'telemetryMappings', 'metricRegistrySha256'], '$');
+    const value = closed(registry, ['schemaVersion', 'protocolVersion', 'metrics', 'telemetryMappings', 'producibilityCrosswalk', 'metricRegistrySha256'], '$');
     schema(value.schemaVersion === 'benchmark-metric-registry-v1' && value.protocolVersion === BENCHMARK_PROTOCOL_VERSION, '$', 'Wrong metric registry version.');
     const metrics = array(value.metrics, '$.metrics');
     schema(metrics.length > 0, '$.metrics', 'Metric registry cannot be empty.');
@@ -1056,9 +1191,12 @@ export function validateMetricRegistryV1(registry: unknown = BENCHMARK_METRIC_RE
     const metricsByRef = new Map<string, JsonObject>();
     for (let index = 0; index < metrics.length; index += 1) {
       const metric = object(metrics[index], `$.metrics[${index}]`);
-      validMetricDefinition(metric, `$.metrics[${index}]`);
-      const ref = metric.metricRef as string;
-      semantic(!refs.has(ref), `$.metrics[${index}].metricRef`, 'Duplicate metric reference.', 'duplicate-id');
+       validMetricDefinition(metric, `$.metrics[${index}]`);
+       validateMetricDimensionContracts(metric, `$.metrics[${index}].dimensionContracts`);
+       const ref = metric.metricRef as string;
+       const canonicalMetric = BENCHMARK_METRIC_REGISTRY_V1.metrics.find((entry) => entry.metricRef === ref);
+       semantic(canonicalMetric !== undefined && sameCanonicalValue(metric.warmupControl, canonicalMetric.warmupControl), `$.metrics[${index}].warmupControl`, 'Metric warmup control does not match the canonical owner binding.', 'warmup-control-mismatch');
+       semantic(!refs.has(ref), `$.metrics[${index}].metricRef`, 'Duplicate metric reference.', 'duplicate-id');
       semantic(previous === '' || compareUtf16(previous, ref) < 0, `$.metrics[${index}].metricRef`, 'Metric references must be sorted.', 'order-invalid');
       previous = ref;
       refs.add(ref);
@@ -1107,11 +1245,87 @@ export function validateMetricRegistryV1(registry: unknown = BENCHMARK_METRIC_RE
       }
       semantic(localMatches === 1, `$.telemetryMappings[${globalIndex}]`, 'Each global emit mapping must have exactly one matching local metric mapping.', 'metric-mapping-mismatch');
     }
+    validateMetricProducibilityCrosswalk(value.producibilityCrosswalk, metricsByRef, '$.producibilityCrosswalk');
     validSha(value.metricRegistrySha256, '$.metricRegistrySha256');
-    const withoutDigest = { schemaVersion: value.schemaVersion, protocolVersion: value.protocolVersion, metrics: value.metrics, telemetryMappings: value.telemetryMappings };
+    const withoutDigest = { schemaVersion: value.schemaVersion, protocolVersion: value.protocolVersion, metrics: value.metrics, telemetryMappings: value.telemetryMappings, producibilityCrosswalk: value.producibilityCrosswalk };
     semantic(value.metricRegistrySha256 === sha256BytesV1(canonicalizeJsonV1(withoutDigest)), '$.metricRegistrySha256', 'Metric registry digest mismatch.', 'registry-digest-mismatch');
     return { valid: true, value: registry as MetricRegistryV1, issues: [] };
   } catch (error) { return failure(error); }
+}
+
+function validateMetricProducibilityCrosswalk(
+  value: unknown,
+  metricsByRef: ReadonlyMap<string, JsonObject>,
+  path: string,
+): void {
+  const entries = array(value, path);
+  const expectedCount = benchmarkScenarioDefinitionsV1.reduce((total, definition) => {
+    const backendCount = definition.parameterContracts.some((contract) => contract.key === 'backend') ? 2 : 1;
+    return total + definition.allowedPhases.length * backendCount * definition.metricContracts.length;
+  }, 0);
+  schema(entries.length === expectedCount, path, 'Metric producibility crosswalk is incomplete.', 'producibility-crosswalk-incomplete');
+  const seen = new Set<string>();
+  for (let index = 0; index < entries.length; index += 1) {
+    const entryPath = `${path}[${index}]`;
+    const entry = object(entries[index], entryPath);
+    const baseKeys = ['scenarioId', 'phase', 'backend', 'metricRef', 'scenarioMetricContractOrdinal', 'classification'] as const;
+    for (const key of baseKeys) schema(Object.prototype.hasOwnProperty.call(entry, key), `${entryPath}.${key}`, 'Missing crosswalk property.');
+    const base = entry;
+    const scenarioId = string(base.scenarioId, `${entryPath}.scenarioId`, true);
+    const scenario = BENCHMARK_SCENARIO_REGISTRY_V1[scenarioId as keyof typeof BENCHMARK_SCENARIO_REGISTRY_V1]?.definition;
+    semantic(scenario !== undefined, `${entryPath}.scenarioId`, 'Crosswalk references an unknown scenario.', 'producibility-crosswalk-invalid');
+    if (scenario === undefined) continue;
+    const phase = string(base.phase, `${entryPath}.phase`, true);
+    semantic(scenario.allowedPhases.includes(phase as BenchmarkSamplePhaseV1), `${entryPath}.phase`, 'Crosswalk phase is not allowed by its scenario.', 'producibility-crosswalk-invalid');
+    const backend = string(base.backend, `${entryPath}.backend`, true);
+    const hasBackend = scenario.parameterContracts.some((contract) => contract.key === 'backend');
+    semantic((hasBackend && (backend === 'raw-webgpu' || backend === 'three-webgl2')) || (!hasBackend && backend === 'not-applicable'), `${entryPath}.backend`, 'Crosswalk backend cell is invalid for its scenario.', 'producibility-crosswalk-invalid');
+    const metricRef = validMetricRef(base.metricRef, `${entryPath}.metricRef`);
+    const ordinal = safeInteger(base.scenarioMetricContractOrdinal, `${entryPath}.scenarioMetricContractOrdinal`, 0);
+    const contract = scenario.metricContracts[ordinal];
+    semantic(contract !== undefined && contract.metricRef === metricRef, `${entryPath}.scenarioMetricContractOrdinal`, 'Crosswalk metric contract ordinal is not canonical.', 'producibility-crosswalk-invalid');
+    const key = `${scenarioId}|${phase}|${backend}|${metricRef}|${ordinal}`;
+    semantic(!seen.has(key), entryPath, 'Crosswalk cells must be unique.', 'producibility-crosswalk-duplicate');
+    seen.add(key);
+    const classification = string(base.classification, `${entryPath}.classification`, true);
+    const metric = metricsByRef.get(metricRef);
+    semantic(metric !== undefined, `${entryPath}.metricRef`, 'Crosswalk references an unknown metric.', 'metric-unknown');
+    const scenarioAllowsPhase = scenario.allowedPhases.includes(phase as BenchmarkSamplePhaseV1);
+    const metricAllowedForCell = metric !== undefined
+      && (metric.allowedPhases as unknown[]).includes(phase)
+      && (metric.allowedContainers as unknown[]).includes(phase === 'warmup' || phase === 'measurement' ? 'warm-measurement' : phase);
+    const metricDefinitionAllowsSample = metricAllowedForCell
+      && (metric.sourceMapping as unknown[]).some((mappingValue) => (mappingValue as JsonObject).disposition === 'emit-sample');
+    const requiredForCell = scenarioAllowsPhase && metricAllowedForCell && contract!.requirement.kind === 'required';
+    if (classification === 'emit-sample') {
+      const emit = closed(entry, ['scenarioId', 'phase', 'backend', 'metricRef', 'scenarioMetricContractOrdinal', 'classification', 'producer'], entryPath);
+      const producer = closed(emit.producer, ['recordName', 'metricRef', 'unit'], `${entryPath}.producer`);
+      validId(producer.recordName, `${entryPath}.producer.recordName`);
+      validMetricRef(producer.metricRef, `${entryPath}.producer.metricRef`);
+      oneOf(string(producer.unit, `${entryPath}.producer.unit`), ['ms', 'bytes', 'count', 'ratio', 'revision', 'hertz', 'percent'], `${entryPath}.producer.unit`);
+      semantic(producer.metricRef === metricRef && metric !== undefined && producer.unit === metric.unit, `${entryPath}.producer`, 'Crosswalk producer does not bind the canonical metric.', 'metric-mapping-mismatch');
+      semantic(metric !== undefined && Array.isArray(metric.sourceMapping) && (metric.sourceMapping as unknown[]).some((mappingValue) => {
+        const mapping = mappingValue as JsonObject;
+        return mapping.disposition === 'emit-sample' && mapping.recordName === producer.recordName && mapping.metricRef === producer.metricRef && mapping.unit === producer.unit;
+      }), `${entryPath}.producer`, 'Crosswalk producer is not a canonical source mapping.', 'metric-mapping-mismatch');
+    } else if (classification === 'capability-bound-unavailable') {
+      const unavailable = closed(entry, ['scenarioId', 'phase', 'backend', 'metricRef', 'scenarioMetricContractOrdinal', 'classification', 'required', 'capabilityId', 'reasonCode'], entryPath);
+      const required = boolean(unavailable.required, `${entryPath}.required`);
+      semantic(required === requiredForCell, `${entryPath}.required`, 'Crosswalk required flag does not match the scenario metric contract.', 'producibility-crosswalk-invalid');
+      semantic(!scenarioAllowsPhase || !metricDefinitionAllowsSample, entryPath, 'A canonical producer cannot be marked capability-bound unavailable.', 'producibility-crosswalk-invalid');
+      validId(unavailable.capabilityId, `${entryPath}.capabilityId`);
+      oneOf(string(unavailable.reasonCode, `${entryPath}.reasonCode`), ['capability-bound', 'producer-unavailable', 'diagnostic-only'], `${entryPath}.reasonCode`);
+    } else if (classification === 'eligibility-bound-unavailable') {
+      const unavailable = closed(entry, ['scenarioId', 'phase', 'backend', 'metricRef', 'scenarioMetricContractOrdinal', 'classification', 'required', 'reasonCode'], entryPath);
+      const required = boolean(unavailable.required, `${entryPath}.required`);
+      semantic(required === requiredForCell, `${entryPath}.required`, 'Crosswalk required flag does not match the scenario metric contract.', 'producibility-crosswalk-invalid');
+      semantic(!scenarioAllowsPhase || !metricDefinitionAllowsSample, entryPath, 'A canonical producer cannot be marked eligibility-bound unavailable in an allowed cell.', 'producibility-crosswalk-invalid');
+      oneOf(string(unavailable.reasonCode, `${entryPath}.reasonCode`), ['phase-not-allowed', 'container-not-allowed', 'producer-unavailable', 'diagnostic-only'], `${entryPath}.reasonCode`);
+    } else {
+      fail('schema', 'enum-invalid', `${entryPath}.classification`, 'Unknown metric producibility classification.');
+    }
+  }
+  semantic(seen.size === expectedCount, path, 'Metric producibility crosswalk does not cover every scenario phase/backend/metric contract cell.', 'producibility-crosswalk-incomplete');
 }
 
 function validateGlobalTelemetryMapping(value: unknown, path: string): JsonObject {
@@ -1148,23 +1362,133 @@ function validateMetricMappings(value: JsonObject, path: string): void {
   }
 }
 
+function validateMetricDimensionContracts(value: JsonObject, path: string): void {
+  const dimensions = array(value.dimensionContracts, path);
+  let previous = '';
+  const seen = new Set<string>();
+  for (let index = 0; index < dimensions.length; index += 1) {
+    const dimension = closed(dimensions[index], ['key', 'domain'], `${path}[${index}]`);
+    const key = validId(dimension.key, `${path}[${index}].key`);
+    semantic(!seen.has(key) && (previous === '' || compareUtf16(previous, key) < 0), `${path}[${index}].key`, 'Metric dimension contracts must be sorted and unique.', 'metric-dimension-order-invalid');
+    const domain = closed(dimension.domain, ['kind'], `${path}[${index}].domain`);
+    oneOf(string(domain.kind, `${path}[${index}].domain.kind`), ['canonical-id', 'non-negative-safe-integer', 'sha256'], `${path}[${index}].domain.kind`);
+    const owner = BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1[key];
+    semantic(owner !== undefined, `${path}[${index}].key`, 'Metric dimension key has no explicit domain owner.', 'metric-dimension-domain-invalid');
+    if (owner !== undefined) semantic(sameCanonicalValue(domain, owner), `${path}[${index}].domain`, 'Metric dimension domain does not match its explicit owner.', 'metric-dimension-domain-invalid');
+    seen.add(key);
+    previous = key;
+  }
+  const grouping = object(value.grouping, '$.grouping');
+  const pairing = object(value.pairing, '$.pairing');
+  const hierarchy = new Set(['hardware-profile', 'phase', 'candidate', 'iteration-ordinal', 'bootstrap-cluster-id']);
+  const expected = new Set<string>();
+  for (const source of [grouping.keys, pairing.keys]) {
+    for (const key of array(source, '$.dimension-source')) {
+      const keyValue = String(key);
+      if (!hierarchy.has(keyValue)) expected.add(keyValue);
+    }
+  }
+  if (String(value.metricRef).endsWith('.sha256.match@1')) {
+    expected.add('actual-sha256');
+    expected.add('expected-sha256');
+  }
+   semantic(seen.size === expected.size && [...expected].every((key) => seen.has(key)), path, 'Metric dimension contracts must cover the exact grouping/pairing dimension set.', 'metric-dimension-contract-invalid');
+   for (const key of expected) semantic(BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1[key] !== undefined, path, 'Metric grouping or pairing contains an unknown dimension key.', 'metric-dimension-domain-invalid');
+}
+
 function validMetricDefinition(value: JsonObject, path: string): void {
   validateMetricMappings(value, path);
-  const required = ['schemaVersion', 'metricRef', 'kind', 'unit', 'numericDomain', 'eventSemantics', 'populationSemantics', 'allowedContainers', 'allowedPhases', 'capabilityRequirements', 'sourceMapping', 'grouping', 'pairing', 'direction', 'warmupControl', 'practicalEffectDelta', 'automaticDecision'];
+  if (value.warmupControl !== null && value.warmupControl !== undefined) {
+    const warmupControl = closed(value.warmupControl, ['metricRef', 'epsilon'], `${path}.warmupControl`);
+    validMetricRef(warmupControl.metricRef, `${path}.warmupControl.metricRef`);
+    positiveFinite(warmupControl.epsilon, `${path}.warmupControl.epsilon`);
+    semantic(warmupControl.metricRef === value.metricRef, `${path}.warmupControl.metricRef`, 'Metric warmup control must own its enclosing metric.', 'warmup-metric-mismatch');
+  }
+  const required = ['schemaVersion', 'metricRef', 'kind', 'unit', 'numericDomain', 'eventSemantics', 'populationSemantics', 'allowedContainers', 'allowedPhases', 'capabilityRequirements', 'sourceMapping', 'grouping', 'pairing', 'dimensionContracts', 'direction', 'warmupControl', 'practicalEffectDelta', 'automaticDecision'];
   closed(value, required, path); schema(value.schemaVersion === 'benchmark-metric-definition-v1', `${path}.schemaVersion`, 'Wrong metric schema version.'); validMetricRef(value.metricRef, `${path}.metricRef`); oneOf(string(value.kind, `${path}.kind`), ['duration', 'counter', 'memory', 'frame', 'long-task', 'gpu', 'liveness'], `${path}.kind`); oneOf(string(value.unit, `${path}.unit`), ['ms', 'bytes', 'count', 'ratio', 'revision', 'hertz', 'percent'], `${path}.unit`); const domain = closed(value.numericDomain, ['kind', 'minimum', 'maximum'], `${path}.numericDomain`); oneOf(string(domain.kind, `${path}.numericDomain.kind`), ['finite-number', 'non-negative-safe-integer', 'positive-finite-number'], `${path}.numericDomain.kind`); finite(domain.minimum, `${path}.numericDomain.minimum`, 0); if (domain.maximum !== null) finite(domain.maximum, `${path}.numericDomain.maximum`, domain.minimum as number); string(value.eventSemantics, `${path}.eventSemantics`, true); string(value.populationSemantics, `${path}.populationSemantics`, true); const containers = array(value.allowedContainers, `${path}.allowedContainers`); containers.forEach((entry, index) => oneOf(string(entry, `${path}.allowedContainers[${index}]`), ['cold', 'warm-measurement', 'stress', 'trace', 'leak'], `${path}.allowedContainers[${index}]`)); const phases = array(value.allowedPhases, `${path}.allowedPhases`); phases.forEach((entry, index) => oneOf(string(entry, `${path}.allowedPhases[${index}]`), ['cold', 'warmup', 'measurement', 'stress', 'trace', 'leak'], `${path}.allowedPhases[${index}]`)); const caps = array(value.capabilityRequirements, `${path}.capabilityRequirements`); caps.forEach((entry, index) => validId(entry, `${path}.capabilityRequirements[${index}]`)); const mappings = array(value.sourceMapping, `${path}.sourceMapping`); schema(mappings.length > 0, `${path}.sourceMapping`, 'Source mapping cannot be empty.'); mappings.forEach((entry, index) => { const mapping = object(entry, `${path}.sourceMapping[${index}]`); for (const key of Object.keys(mapping)) schema(['recordName', 'disposition', 'metricRef', 'unit'].includes(key), `${path}.sourceMapping[${index}].${key}`, 'Unknown source mapping property.'); schema(Object.prototype.hasOwnProperty.call(mapping, 'recordName') && Object.prototype.hasOwnProperty.call(mapping, 'disposition'), `${path}.sourceMapping[${index}]`, 'Source mapping requires recordName and disposition.'); validId(mapping.recordName, `${path}.sourceMapping[${index}].recordName`); oneOf(string(mapping.disposition, `${path}.sourceMapping[${index}].disposition`), ['emit-sample', 'context-only', 'diagnostic-only', 'control-only'], `${path}.sourceMapping[${index}].disposition`); if (mapping.disposition === 'emit-sample') { schema(Object.prototype.hasOwnProperty.call(mapping, 'metricRef') && Object.prototype.hasOwnProperty.call(mapping, 'unit'), `${path}.sourceMapping[${index}]`, 'Sample mappings require metricRef and unit.'); validMetricRef(mapping.metricRef, `${path}.sourceMapping[${index}].metricRef`); oneOf(string(mapping.unit, `${path}.sourceMapping[${index}].unit`), ['ms', 'bytes', 'count', 'ratio', 'revision', 'hertz', 'percent'], `${path}.sourceMapping[${index}].unit`); } else { schema(mapping.metricRef === undefined && mapping.unit === undefined, `${path}.sourceMapping[${index}]`, 'Non-sample mappings cannot bind a metric.'); } }); const grouping = closed(value.grouping, ['keys', 'population'], `${path}.grouping`); array(grouping.keys, `${path}.grouping.keys`).forEach((entry, index) => validId(entry, `${path}.grouping.keys[${index}]`)); string(grouping.population, `${path}.grouping.population`, true); const pairing = closed(value.pairing, ['keys', 'level'], `${path}.pairing`); array(pairing.keys, `${path}.pairing.keys`).forEach((entry, index) => validId(entry, `${path}.pairing.keys[${index}]`)); oneOf(string(pairing.level, `${path}.pairing.level`), ['run', 'iteration', 'event', 'time-block', 'window', 'burst'], `${path}.pairing.level`); oneOf(string(value.direction, `${path}.direction`), ['lower', 'higher', 'context-dependent'], `${path}.direction`); if (value.warmupControl !== null) { const warmup = closed(value.warmupControl, ['metricRef', 'epsilon'], `${path}.warmupControl`); validMetricRef(warmup.metricRef, `${path}.warmupControl.metricRef`); finite(warmup.epsilon, `${path}.warmupControl.epsilon`, 0); } schema(value.practicalEffectDelta === null || typeof value.practicalEffectDelta === 'number', `${path}.practicalEffectDelta`, 'Effect delta must be numeric or null.'); if (value.practicalEffectDelta !== null) finite(value.practicalEffectDelta, `${path}.practicalEffectDelta`, 0); schema(value.automaticDecision === 'forbidden', `${path}.automaticDecision`, 'Automatic decisions are forbidden.');
+}
+
+type BenchmarkTelemetryDerivationEvidenceWithoutDigestV1 = Omit<BenchmarkTelemetryDerivationEvidenceV1, 'evidenceSha256'>;
+
+export function calculateBenchmarkDerivedRawSamplesCanonicalSha256V1(
+  samples: readonly BenchmarkRawSampleV1[],
+): Sha256DigestV1 {
+  return sha256BytesV1(canonicalizeJsonV1(samples));
+}
+
+export function calculateBenchmarkTelemetryAdapterResultsCanonicalSha256V1(
+  results: readonly BenchmarkTelemetryAdapterResultProjectionV1[],
+): Sha256DigestV1 {
+  return sha256BytesV1(canonicalizeJsonV1(results));
+}
+
+export function calculateBenchmarkTelemetryDerivationEvidenceSha256V1(
+  evidence: BenchmarkTelemetryDerivationEvidenceWithoutDigestV1,
+): Sha256DigestV1 {
+  return sha256BytesV1(canonicalizeJsonV1(evidence));
+}
+
+function buildTelemetryDerivationEvidenceV1(
+  input: BenchmarkValidationReceiptInputV1,
+  telemetry: JsonObject,
+  targetRun: BenchmarkRunV1,
+  metricRegistry: MetricRegistryV1,
+  telemetryExportRawByteSha256: Sha256DigestV1,
+): BenchmarkTelemetryDerivationEvidenceV1 {
+  const samples = targetRun.iterations.flatMap((iteration) => iteration.samples);
+  if (samples.length === 0) throw new Error('Cannot mint a receipt for a target run without derived samples.');
+  const adapterResults: BenchmarkTelemetryAdapterResultProjectionV1[] = [];
+  for (const iteration of targetRun.iterations) {
+    const adapted = input.telemetryAdapter.adapt(telemetry, {
+      hardwareCellId: targetRun.hardwareCellId,
+      slotId: targetRun.ids.slotId,
+      browserProcessId: targetRun.browserProcessId,
+      runId: targetRun.runId,
+      iterationId: iteration.iterationId,
+      phase: iteration.phase,
+      runBindingSha256: targetRun.runBindingSha256,
+    }, metricRegistry);
+    if (adapted === null || typeof adapted !== 'object' || !Array.isArray(adapted.samples) || !Array.isArray(adapted.invalidReasons)) {
+      throw new Error('BR02 telemetry adapter returned an invalid derivation result.');
+    }
+    for (const [index, reason] of adapted.invalidReasons.entries()) validateReason(reason, `$.telemetryAdapter.invalidReasons[${index}]`);
+    if (adapted.invalidReasons.length !== 0) throw new Error('Cannot mint a receipt for an invalid telemetry derivation.');
+    if (!sameCanonicalValue(adapted.samples, iteration.samples)) throw new Error('BR02 telemetry derivation does not match the validated target-run samples.');
+    adapterResults.push({
+      iterationId: iteration.iterationId,
+      iterationOrdinal: iteration.iterationOrdinal,
+      runId: iteration.runId,
+      phase: iteration.phase,
+      samples: adapted.samples,
+      invalidReasons: adapted.invalidReasons,
+    });
+  }
+  const withoutDigest: BenchmarkTelemetryDerivationEvidenceWithoutDigestV1 = {
+    schemaVersion: 'benchmark-telemetry-derivation-evidence-v1',
+    adapterContractId: BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1,
+    adapterContractVersion: BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1,
+    metricRegistrySha256: metricRegistry.metricRegistrySha256,
+    targetRunId: targetRun.runId,
+    targetRunBindingSha256: targetRun.runBindingSha256,
+    telemetryExportRawByteSha256,
+    adapterResultsCanonicalSha256: calculateBenchmarkTelemetryAdapterResultsCanonicalSha256V1(adapterResults),
+    derivedRawSamplesCanonicalSha256: calculateBenchmarkDerivedRawSamplesCanonicalSha256V1(samples),
+    derivedSampleCount: samples.length as BenchmarkTelemetryDerivationEvidenceV1['derivedSampleCount'],
+  };
+  return { ...withoutDigest, evidenceSha256: calculateBenchmarkTelemetryDerivationEvidenceSha256V1(withoutDigest) };
 }
 
 export function createBenchmarkValidationReceiptV1(input: BenchmarkValidationReceiptInputV1): BenchmarkValidationReceiptV1 {
   validGitSha(input.validatorSourceCommitSha, '$.validatorSourceCommitSha');
   if (input.planId !== input.validationContext.runPlan.id) throw new Error('Receipt plan does not match the validation context.');
-  if (sha256BytesV1(input.schemaSetBytes) !== BENCHMARK_SCHEMA_SET_SHA256_V1) throw new Error('Receipt schema bytes do not match the production schema set.');
+  if (!timingSafeEqualSha256V1(sha256BytesV1(input.schemaSetBytes), BENCHMARK_SCHEMA_SET_SHA256_V1)) throw new Error('Receipt schema bytes do not match the production schema set.');
   const registryValidation = validateMetricRegistryV1(input.metricRegistry);
   if (!registryValidation.valid) throw new Error(`Cannot mint a receipt for an invalid metric registry: ${registryValidation.code}.`);
-  if (registryValidation.value.metricRegistrySha256 !== BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256) throw new Error('Cannot mint a receipt for a non-canonical metric registry.');
+   if (!timingSafeEqualSha256V1(registryValidation.value.metricRegistrySha256, BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256)) throw new Error('Cannot mint a receipt for a non-canonical metric registry.');
   const schemaSetSha256 = BENCHMARK_SCHEMA_SET_SHA256_V1;
   const metricRegistrySha256 = registryValidation.value.metricRegistrySha256;
-  if (input.validationContext.schemaSetSha256 !== schemaSetSha256) throw new Error('Schema-set digest does not match the validation context.');
-  if (input.validationContext.metricRegistrySha256 !== metricRegistrySha256) throw new Error('Metric-registry digest does not match the validation context.');
+   if (!timingSafeEqualSha256V1(input.validationContext.schemaSetSha256, schemaSetSha256)) throw new Error('Schema-set digest does not match the validation context.');
+   if (!timingSafeEqualSha256V1(input.validationContext.metricRegistrySha256, metricRegistrySha256)) throw new Error('Metric-registry digest does not match the validation context.');
   const parsed = parseCanonicalJsonV1(input.benchmarkRunRawBytes);
   const canonicalRunBytes = canonicalizeJsonV1(parsed);
   if (input.benchmarkRunCanonicalBytes !== undefined && !sameBytes(input.benchmarkRunCanonicalBytes, canonicalRunBytes)) throw new Error('Canonical run bytes do not match the raw run.');
@@ -1174,10 +1498,15 @@ export function createBenchmarkValidationReceiptV1(input: BenchmarkValidationRec
   if (!validation.valid) throw new Error(`Cannot mint a receipt for an invalid run: ${validation.code}.`);
   const targetRuns = structure.value.browserProcesses.flatMap((process) => process.runs).filter((candidate) => candidate.runId === input.runId);
   if (targetRuns.length !== 1) throw new Error('Receipt run context does not identify exactly one run.');
-  const targetRun = targetRuns[0]!;
-  if (targetRun.execution.validity.status !== 'valid') throw new Error('Cannot mint a receipt for an execution-invalid target run.');
-  if (targetRun.ids.slotId !== input.slotId || targetRun.execution.runPlanId !== input.planId || targetRun.execution.runPlanSha256 !== input.validationContext.runPlan.sha256) throw new Error('Receipt plan, slot, or run context does not match the validated run.');
-  const receiptWithoutId: Omit<BenchmarkValidationReceiptV1, 'receiptId'> = {
+   const targetRun = targetRuns[0]!;
+   if (targetRun.execution.validity.status !== 'valid') throw new Error('Cannot mint a receipt for an execution-invalid target run.');
+   if (targetRun.ids.slotId !== input.slotId || targetRun.execution.runPlanId !== input.planId
+     || !timingSafeEqualSha256V1(targetRun.execution.runPlanSha256, input.validationContext.runPlan.sha256)) throw new Error('Receipt plan, slot, or run context does not match the validated run.');
+   const telemetry = parseCanonicalJsonV1(input.telemetryExportRawBytes);
+   if (!isObject(telemetry)) throw new Error('Telemetry export must be a JSON object.');
+   const telemetryExportRawByteSha256 = sha256BytesV1(input.telemetryExportRawBytes);
+   const telemetryDerivationEvidence = buildTelemetryDerivationEvidenceV1(input, telemetry, targetRun, registryValidation.value, telemetryExportRawByteSha256);
+   const receiptWithoutId: Omit<BenchmarkValidationReceiptV1, 'receiptId'> = {
     schemaVersion: 'benchmark-validation-receipt-v1',
     protocolVersion: BENCHMARK_PROTOCOL_VERSION,
     status: 'schema-and-integrity-valid',
@@ -1185,15 +1514,17 @@ export function createBenchmarkValidationReceiptV1(input: BenchmarkValidationRec
     slotId: input.slotId,
     runId: targetRun.runId,
     planDigest: input.validationContext.runPlan.sha256,
-    telemetryExportRawByteSha256: sha256BytesV1(input.telemetryExportRawBytes),
+     telemetryExportRawByteSha256,
     benchmarkRunRawByteSha256: sha256BytesV1(input.benchmarkRunRawBytes),
     benchmarkRunCanonicalSha256: sha256BytesV1(canonicalRunBytes),
     runBindingSha256: targetRun.runBindingSha256,
-    schemaSetSha256,
-    metricRegistrySha256,
-    validator: { id: 'br01-validator-v1', sourceCommitSha: input.validatorSourceCommitSha, sourceFileSetSha256: digestFileSetV1(input.validatorSourceFiles) },
-  };
-  if (receiptWithoutId.telemetryExportRawByteSha256 === receiptWithoutId.benchmarkRunRawByteSha256) throw new Error('Telemetry and run raw digests must remain separate.');
+     schemaSetSha256,
+     metricRegistrySha256,
+     telemetryDerivationEvidence,
+     telemetryDerivationEvidenceSha256: telemetryDerivationEvidence.evidenceSha256,
+     validator: { id: 'br01-validator-v1', sourceCommitSha: input.validatorSourceCommitSha, sourceFileSetSha256: digestFileSetV1(input.validatorSourceFiles) },
+   };
+   if (timingSafeEqualSha256V1(receiptWithoutId.telemetryExportRawByteSha256, receiptWithoutId.benchmarkRunRawByteSha256)) throw new Error('Telemetry and run raw digests must remain separate.');
   return { ...receiptWithoutId, receiptId: sha256BytesV1(canonicalizeJsonV1(receiptWithoutId)) };
 }
 
@@ -1201,9 +1532,55 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 
+function validateTelemetryDerivationEvidence(value: unknown, path: string): BenchmarkTelemetryDerivationEvidenceV1 {
+  const evidence = closed(value, [
+    'schemaVersion', 'adapterContractId', 'adapterContractVersion', 'metricRegistrySha256', 'targetRunId', 'targetRunBindingSha256',
+    'telemetryExportRawByteSha256', 'adapterResultsCanonicalSha256', 'derivedRawSamplesCanonicalSha256', 'derivedSampleCount', 'evidenceSha256',
+  ], path);
+  schema(evidence.schemaVersion === 'benchmark-telemetry-derivation-evidence-v1', `${path}.schemaVersion`, 'Wrong telemetry derivation evidence schema version.');
+  schema(evidence.adapterContractId === BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1, `${path}.adapterContractId`, 'Wrong accepted BR02 adapter contract.');
+  schema(evidence.adapterContractVersion === BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1, `${path}.adapterContractVersion`, 'Wrong accepted BR02 adapter contract version.');
+  for (const key of ['metricRegistrySha256', 'targetRunBindingSha256', 'telemetryExportRawByteSha256', 'adapterResultsCanonicalSha256', 'derivedRawSamplesCanonicalSha256', 'evidenceSha256']) {
+    validSha(evidence[key], `${path}.${key}`);
+  }
+  validId(evidence.targetRunId, `${path}.targetRunId`);
+  safeInteger(evidence.derivedSampleCount, `${path}.derivedSampleCount`, 1);
+  const withoutDigest = { ...evidence };
+  delete withoutDigest.evidenceSha256;
+  semantic(timingSafeEqualSha256V1(evidence.evidenceSha256, calculateBenchmarkTelemetryDerivationEvidenceSha256V1(withoutDigest as BenchmarkTelemetryDerivationEvidenceWithoutDigestV1)), `${path}.evidenceSha256`, 'Telemetry derivation evidence digest mismatch.', 'derivation-evidence-digest-mismatch');
+  return evidence as unknown as BenchmarkTelemetryDerivationEvidenceV1;
+}
+
 export function validateBenchmarkValidationReceiptV1(value: unknown): BenchmarkValidationResultV1<BenchmarkValidationReceiptV1> {
   try {
-    const receipt = closed(value, ['schemaVersion', 'protocolVersion', 'status', 'receiptId', 'planId', 'slotId', 'runId', 'planDigest', 'telemetryExportRawByteSha256', 'benchmarkRunRawByteSha256', 'benchmarkRunCanonicalSha256', 'runBindingSha256', 'schemaSetSha256', 'metricRegistrySha256', 'validator'], '$'); schema(receipt.schemaVersion === 'benchmark-validation-receipt-v1' && receipt.protocolVersion === BENCHMARK_PROTOCOL_VERSION && receipt.status === 'schema-and-integrity-valid', '$', 'Receipt literals are invalid.'); validSha(receipt.receiptId, '$.receiptId'); validId(receipt.planId, '$.planId'); validId(receipt.slotId, '$.slotId'); validId(receipt.runId, '$.runId'); for (const key of ['planDigest', 'telemetryExportRawByteSha256', 'benchmarkRunRawByteSha256', 'benchmarkRunCanonicalSha256', 'runBindingSha256', 'schemaSetSha256', 'metricRegistrySha256']) validSha(receipt[key], `$.${key}`); semantic(receipt.schemaSetSha256 === BENCHMARK_SCHEMA_SET_SHA256_V1, '$.schemaSetSha256', 'Receipt schema-set digest does not match the canonical schema set.', 'schema-set-digest-mismatch'); semantic(receipt.metricRegistrySha256 === BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256, '$.metricRegistrySha256', 'Receipt metric-registry digest does not match the canonical metric registry.', 'registry-digest-mismatch'); const validator = closed(receipt.validator, ['id', 'sourceCommitSha', 'sourceFileSetSha256'], '$.validator'); schema(validator.id === 'br01-validator-v1', '$.validator.id', 'Wrong validator ID.'); validGitSha(validator.sourceCommitSha, '$.validator.sourceCommitSha'); validSha(validator.sourceFileSetSha256, '$.validator.sourceFileSetSha256'); const withoutId = { ...receipt }; delete withoutId.receiptId; semantic(receipt.receiptId === sha256BytesV1(canonicalizeJsonV1(withoutId)), '$.receiptId', 'Receipt ID is not self-excluding.', 'receipt-digest-mismatch'); semantic(receipt.telemetryExportRawByteSha256 !== receipt.benchmarkRunRawByteSha256, '$.benchmarkRunRawByteSha256', 'Telemetry and run raw digests must remain separate.', 'receipt-binding-invalid'); return { valid: true, value: value as BenchmarkValidationReceiptV1, issues: [] };
+    const receipt = closed(value, [
+      'schemaVersion', 'protocolVersion', 'status', 'receiptId', 'planId', 'slotId', 'runId', 'planDigest',
+      'telemetryExportRawByteSha256', 'benchmarkRunRawByteSha256', 'benchmarkRunCanonicalSha256', 'runBindingSha256',
+      'schemaSetSha256', 'metricRegistrySha256', 'telemetryDerivationEvidence', 'telemetryDerivationEvidenceSha256', 'validator',
+    ], '$');
+    schema(receipt.schemaVersion === 'benchmark-validation-receipt-v1' && receipt.protocolVersion === BENCHMARK_PROTOCOL_VERSION && receipt.status === 'schema-and-integrity-valid', '$', 'Receipt literals are invalid.');
+    validSha(receipt.receiptId, '$.receiptId');
+    validId(receipt.planId, '$.planId');
+    validId(receipt.slotId, '$.slotId');
+    validId(receipt.runId, '$.runId');
+    for (const key of ['planDigest', 'telemetryExportRawByteSha256', 'benchmarkRunRawByteSha256', 'benchmarkRunCanonicalSha256', 'runBindingSha256', 'schemaSetSha256', 'metricRegistrySha256', 'telemetryDerivationEvidenceSha256']) validSha(receipt[key], `$.${key}`);
+    semantic(timingSafeEqualSha256V1(receipt.schemaSetSha256, BENCHMARK_SCHEMA_SET_SHA256_V1), '$.schemaSetSha256', 'Receipt schema-set digest does not match the canonical schema set.', 'schema-set-digest-mismatch');
+    semantic(timingSafeEqualSha256V1(receipt.metricRegistrySha256, BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256), '$.metricRegistrySha256', 'Receipt metric-registry digest does not match the canonical metric registry.', 'registry-digest-mismatch');
+    const evidence = validateTelemetryDerivationEvidence(receipt.telemetryDerivationEvidence, '$.telemetryDerivationEvidence');
+    semantic(timingSafeEqualSha256V1(receipt.telemetryDerivationEvidenceSha256, evidence.evidenceSha256), '$.telemetryDerivationEvidenceSha256', 'Receipt derivation evidence binding does not match the embedded evidence.', 'receipt-binding-invalid');
+    semantic(receipt.runId === evidence.targetRunId, '$.runId', 'Receipt run ID does not match derivation evidence.', 'receipt-binding-invalid');
+    semantic(timingSafeEqualSha256V1(receipt.runBindingSha256, evidence.targetRunBindingSha256), '$.runBindingSha256', 'Receipt run binding does not match derivation evidence.', 'receipt-binding-invalid');
+    semantic(timingSafeEqualSha256V1(receipt.telemetryExportRawByteSha256, evidence.telemetryExportRawByteSha256), '$.telemetryExportRawByteSha256', 'Receipt telemetry binding does not match derivation evidence.', 'receipt-binding-invalid');
+    semantic(timingSafeEqualSha256V1(receipt.metricRegistrySha256, evidence.metricRegistrySha256), '$.metricRegistrySha256', 'Receipt registry binding does not match derivation evidence.', 'receipt-binding-invalid');
+    const validator = closed(receipt.validator, ['id', 'sourceCommitSha', 'sourceFileSetSha256'], '$.validator');
+    schema(validator.id === 'br01-validator-v1', '$.validator.id', 'Wrong validator ID.');
+    validGitSha(validator.sourceCommitSha, '$.validator.sourceCommitSha');
+    validSha(validator.sourceFileSetSha256, '$.validator.sourceFileSetSha256');
+    const withoutId = { ...receipt };
+    delete withoutId.receiptId;
+    semantic(timingSafeEqualSha256V1(receipt.receiptId, sha256BytesV1(canonicalizeJsonV1(withoutId))), '$.receiptId', 'Receipt ID is not self-excluding.', 'receipt-digest-mismatch');
+    semantic(!timingSafeEqualSha256V1(receipt.telemetryExportRawByteSha256, receipt.benchmarkRunRawByteSha256), '$.benchmarkRunRawByteSha256', 'Telemetry and run raw digests must remain separate.', 'receipt-binding-invalid');
+    return { valid: true, value: value as BenchmarkValidationReceiptV1, issues: [] };
   } catch (error) { return failure(error); }
 }
 

@@ -9,13 +9,13 @@ export const BENCHMARK_SCENARIO_IDS_V1 = [
 ] as const;
 
 export const BENCHMARK_SCENARIO_DEFINITION_DIGESTS_V1 = {
-  'mesh-golden-world-v1': 'sha256:dcad15580873fde5f320d07c79551cfc239752cb5fc349ba78e43d300895cb60',
-  'mesh-density-sweep-v1': 'sha256:60d186056c36b2856605a0946bdfa87f96aba811ec96d9551f1dd4e4b6a86b15',
-  'scheduler-steady-v1': 'sha256:c72eab34e7bd5096814d73fa5265acf00a6d8f4ec14f56973e4d6b6c6c8b8414',
-  'scheduler-burst-v1': 'sha256:292074e871da67b1c2ebb1a5afd33eeea5b589f9e759e582e56a17ce798d9818',
-  'brush-stress-v1': 'sha256:9dde69ef8e6135290dfb3425ec548f953330f29f3f9a61c668e01f9e4946cf20',
-  'navigation-leak-v1': 'sha256:972c9ca6886f027e0c6614c93234c28e24ba50e109adee18a0c861eeba578ff6',
-  'backend-fixture-v1': 'sha256:ae142329c74c5c3713b1069ed982d4d35fd23f7aaef7378f9528db692adc92dc',
+  'mesh-golden-world-v1': 'sha256:534f20b53a436f92ffc134f28dce398f2e586069dea69d92055660a664b385eb',
+  'mesh-density-sweep-v1': 'sha256:7fa812d4a6b2a3eab8e42a7ab3596453520546d4ffbb5e01e57ef6b4efe5a128',
+  'scheduler-steady-v1': 'sha256:5a95cf466bfd780a457fd8d8154701a1e20c7302b4ec6aec1e5b6af351a2171f',
+  'scheduler-burst-v1': 'sha256:e2dda8bf5a264277fc30f61fa10858efb3e7702fe3dfaceb3947a427cfff2242',
+  'brush-stress-v1': 'sha256:f101c131a4e50df3f67f64d1dee88f0ff41bea04a9c315e2f815da66cac18e72',
+  'navigation-leak-v1': 'sha256:f1a5611516eee57b4c2e18f13fd2dc8142bbc7c97e7beea67da4ac2d1a50b58a',
+  'backend-fixture-v1': 'sha256:d7c77ae97fc787db9185ccd363276dc0c41a1763e0a57117f9bafa367a72ec84',
 } as const;
 
 export const BENCHMARK_WP04_SEMANTIC_SHA256_GOLDEN_V1 = 'sha256:6481f4b81631c6bbed5560970f92aa82e51de77a233ec40d919dbbf765f99b44';
@@ -149,7 +149,7 @@ export const BENCHMARK_METRIC_REGISTRY_GOLDENS_V1 = {
    'image.contract.sha256.match@1': { kind: 'liveness', unit: 'count', sourceMapping: [diagnostic('telemetry.invalidation')], groupingKeys: [], population: 'unavailable: no concrete BR04 grouping is specified for this crosswalk metric', pairingKeys: [], pairingLevel: 'run', direction: 'higher', practicalEffectDelta: null },
 } as const;
 
-export const BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 = 'sha256:4c505640ce82ffd739298b07055535a3173947b80523cb3d34cddd1e5e830f82' as const;
+export const BENCHMARK_METRIC_REGISTRY_SHA256_GOLDEN_V1 = 'sha256:6057af054a9987f5b89b52762220ca48bb5e96cef400395cbec4f9b46b1fafb2' as const;
 
 export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'adoption.cpu.ms@1': {
@@ -160,7 +160,7 @@ export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'chunk.mesh.cpu.ms@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'positive-finite-number', minimum: 0, maximum: null },
     eventSemantics: 'Pure mesher CPU duration for one identified chunk.', populationSemantics: 'One chunk operation population per iteration and chunk.',
-    allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress'], capabilityRequirements: [], warmupControl: null, automaticDecision: 'forbidden',
+    allowedContainers: ['cold', 'warm-measurement', 'stress'], allowedPhases: ['cold', 'measurement', 'stress', 'warmup'], capabilityRequirements: [], warmupControl: { metricRef: 'chunk.mesh.cpu.ms@1', epsilon: 0.001 }, automaticDecision: 'forbidden',
   },
   'coverage.sha256.match@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'non-negative-safe-integer', minimum: 0, maximum: 9007199254740991 },
@@ -180,7 +180,7 @@ export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'draw.submit.cpu.ms@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'positive-finite-number', minimum: 0, maximum: null },
     eventSemantics: 'CPU duration submitting one draw workload.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.',
-    allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement'], capabilityRequirements: [], warmupControl: null, automaticDecision: 'forbidden',
+    allowedContainers: ['cold', 'warm-measurement'], allowedPhases: ['cold', 'measurement', 'warmup'], capabilityRequirements: [], warmupControl: { metricRef: 'draw.submit.cpu.ms@1', epsilon: 0.001 }, automaticDecision: 'forbidden',
   },
   'event.listener.count@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'non-negative-safe-integer', minimum: 0, maximum: 9007199254740991 },
@@ -215,7 +215,7 @@ export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'input.revision.submit.ms@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'positive-finite-number', minimum: 0, maximum: null },
     eventSemantics: 'Trusted input start until draw submit of the expected world revision.', populationSemantics: 'One input and revision population per input ordinal and expected world revision.',
-    allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], warmupControl: null, automaticDecision: 'forbidden',
+    allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress', 'warmup'], capabilityRequirements: [], warmupControl: { metricRef: 'input.revision.submit.ms@1', epsilon: 0.001 }, automaticDecision: 'forbidden',
   },
   'longtask.count@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'non-negative-safe-integer', minimum: 0, maximum: 9007199254740991 },
@@ -260,7 +260,7 @@ export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
   'scheduler.queue.depth.count@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'non-negative-safe-integer', minimum: 0, maximum: 9007199254740991 },
     eventSemantics: 'Scheduler queue depth at a declared sampling point.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.',
-    allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], warmupControl: null, automaticDecision: 'forbidden',
+    allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress', 'warmup'], capabilityRequirements: [], warmupControl: { metricRef: 'scheduler.queue.depth.count@1', epsilon: 1 }, automaticDecision: 'forbidden',
   },
   'scheduler.queue.wait.ms@1': {
     schemaVersion: 'benchmark-metric-definition-v1', numericDomain: { kind: 'positive-finite-number', minimum: 0, maximum: null },
@@ -297,6 +297,38 @@ export const BENCHMARK_METRIC_REGISTRY_CONTRACT_GOLDENS_V1 = {
     eventSemantics: 'Binary world digest equality assertion.', populationSemantics: 'Unavailable in the accepted BR04 registry; retained as a diagnostic crosswalk population.',
     allowedContainers: ['warm-measurement', 'stress'], allowedPhases: ['measurement', 'stress'], capabilityRequirements: [], warmupControl: null, automaticDecision: 'forbidden',
   },
+} as const;
+
+export const BENCHMARK_METRIC_DIMENSION_CONTRACT_GOLDENS_V1 = {
+  'adoption.cpu.ms@1': [{ key: 'operation-ordinal', domain: { kind: 'non-negative-safe-integer' } }, { key: 'operation-semantic-key', domain: { kind: 'canonical-id' } }],
+  'chunk.mesh.cpu.ms@1': [{ key: 'chunk-key', domain: { kind: 'canonical-id' } }],
+  'coverage.sha256.match@1': [{ key: 'actual-sha256', domain: { kind: 'sha256' } }, { key: 'expected-sha256', domain: { kind: 'sha256' } }],
+  'dom.document.count@1': [],
+  'dom.node.count@1': [],
+  'draw.submit.cpu.ms@1': [],
+  'event.listener.count@1': [],
+  'geometry.bytes@1': [],
+  'gpu.resource.count@1': [],
+  'gpu.time.ms@1': [{ key: 'frame-block-ordinal', domain: { kind: 'non-negative-safe-integer' } }, { key: 'render-pass-id', domain: { kind: 'canonical-id' } }],
+  'heartbeat.gap.ms@1': [],
+  'image.contract.sha256.match@1': [{ key: 'actual-sha256', domain: { kind: 'sha256' } }, { key: 'expected-sha256', domain: { kind: 'sha256' } }],
+  'input.revision.submit.ms@1': [{ key: 'expected-world-revision', domain: { kind: 'non-negative-safe-integer' } }, { key: 'input-ordinal', domain: { kind: 'non-negative-safe-integer' } }],
+  'longtask.count@1': [{ key: 'observation-window-id', domain: { kind: 'canonical-id' } }],
+  'longtask.duration.ms@1': [{ key: 'time-block-ordinal', domain: { kind: 'non-negative-safe-integer' } }],
+  'memory.bytes@1': [{ key: 'checkpoint-id', domain: { kind: 'canonical-id' } }, { key: 'memory-kind', domain: { kind: 'canonical-id' } }],
+  'mesh.quads.count@1': [],
+  'raf.interval.ms@1': [{ key: 'time-block-ordinal', domain: { kind: 'non-negative-safe-integer' } }],
+  'revision.latest.visible@1': [],
+  'scheduler.drain.ms@1': [{ key: 'burst-ordinal', domain: { kind: 'non-negative-safe-integer' } }],
+  'scheduler.drop.count@1': [{ key: 'drop-kind', domain: { kind: 'canonical-id' } }, { key: 'observation-window-id', domain: { kind: 'canonical-id' } }],
+  'scheduler.queue.depth.count@1': [],
+  'scheduler.queue.wait.ms@1': [{ key: 'operation-ordinal', domain: { kind: 'non-negative-safe-integer' } }, { key: 'operation-semantic-key', domain: { kind: 'canonical-id' } }],
+  'scheduler.stale.count@1': [{ key: 'observation-window-id', domain: { kind: 'canonical-id' } }, { key: 'stale-reason', domain: { kind: 'canonical-id' } }],
+  'snapshot.halo.build.ms@1': [{ key: 'chunk-key', domain: { kind: 'canonical-id' } }],
+  'worker.active.count@1': [],
+  'worker.total.ms@1': [{ key: 'operation-ordinal', domain: { kind: 'non-negative-safe-integer' } }, { key: 'operation-semantic-key', domain: { kind: 'canonical-id' } }],
+  'world.mesh.total.ms@1': [],
+  'world.sha256.match@1': [{ key: 'actual-sha256', domain: { kind: 'sha256' } }, { key: 'expected-sha256', domain: { kind: 'sha256' } }],
 } as const;
 
 export const BENCHMARK_TELEMETRY_MAPPING_GOLDENS_V1 = [

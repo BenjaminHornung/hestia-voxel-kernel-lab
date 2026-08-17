@@ -20,13 +20,16 @@
       "required": ["path", "role", "mediaType", "serialization", "byteLength", "sha256", "runIds"],
       "properties": {
         "path": { "$ref": "#/$defs/path" },
-        "role": { "enum": ["raw-run-json", "summary-json", "summary-markdown", "screenshot", "trace", "failure-log", "heap-snapshot", "gpu-capture"] },
+        "role": { "enum": ["raw-run-json", "telemetry-export-json", "validation-receipt-json", "summary-json", "summary-markdown", "screenshot", "trace", "failure-log"] },
         "mediaType": { "$ref": "#/$defs/nonEmpty" },
         "serialization": { "enum": ["jcs-rfc8785", "utf8-lf-final-newline", "binary-exact"] },
         "byteLength": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
         "sha256": { "$ref": "#/$defs/sha256" },
         "runIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
-      }
+      },
+      "allOf": [
+        { "if": { "properties": { "role": { "enum": ["telemetry-export-json", "validation-receipt-json"] } } }, "then": { "properties": { "runIds": { "type": "array", "maxItems": 1 } } } }
+      ]
     }
   }
 }

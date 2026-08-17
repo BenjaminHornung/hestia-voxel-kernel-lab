@@ -1,30 +1,40 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { canonicalizeJsonV1 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
+import { repositoryRelativePathV1 } from '../../../../src/benchmark/provenance/canonicalPathV1';
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { BENCHMARK_SCHEMA_SET_BYTES_V1 as PRODUCTION_SCHEMA_SET_BYTES_V1 } from '../../../../src/benchmark/contracts/schemaSetV1';
-import { BENCHMARK_SCHEMA_SET_BYTES_V1, createBenchmarkCaseDocumentV1, createBenchmarkValidationContextV1, createTwoIterationBenchmarkCaseDocumentV1 } from './benchmark-case-fixtures-v1';
+import { BENCHMARK_SCHEMA_SET_BYTES_V1, createBenchmarkCaseDocumentV1, createBenchmarkTelemetryAdapterV1, createBenchmarkTelemetryExportV1, createBenchmarkValidationContextV1, createTwoIterationBenchmarkCaseDocumentV1 } from './benchmark-case-fixtures-v1';
 import {
   calculateRunBindingSha256V1,
   createBenchmarkValidationReceiptV1,
   validateBenchmarkValidationReceiptV1,
 } from '../../../../src/benchmark/contracts/validateV1';
 
-function input() {
-  const document = createBenchmarkCaseDocumentV1({ samples: true });
+const TWO_ITERATION_ADAPTER_RESULTS_SHA256 = 'sha256:9b1111060f8bfa00918c1495586c26cc8f6588b161c8d8432edf70ded7b22146';
+const TWO_ITERATION_SAMPLES_SHA256 = 'sha256:31dd729e7f261a064e57e02778423b15c095da9af8e111f8d688be7435a66137';
+
+function independentCanonicalSha256(value: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalizeJsonV1(value)).digest('hex')}`;
+}
+
+function input(document = createBenchmarkCaseDocumentV1({ samples: true })) {
   const raw = canonicalizeJsonV1(document);
   const context = createBenchmarkValidationContextV1();
+  const telemetry = canonicalizeJsonV1(createBenchmarkTelemetryExportV1(document));
   return {
     planId: 'plan-v1' as never,
     slotId: 'slot-measurement' as never,
     runId: 'measurement-run' as never,
-    telemetryExportRawBytes: new Uint8Array([7, 8]),
+    telemetryExportRawBytes: telemetry,
     benchmarkRunRawBytes: raw,
     benchmarkRunCanonicalBytes: raw,
     schemaSetBytes: BENCHMARK_SCHEMA_SET_BYTES_V1,
     metricRegistry: BENCHMARK_METRIC_REGISTRY_V1,
+    telemetryAdapter: createBenchmarkTelemetryAdapterV1(),
     validatorSourceCommitSha: 'a'.repeat(40) as never,
-    validatorSourceFiles: [{ path: 'validator-v1.ts', bytes: new TextEncoder().encode('validator') }],
+    validatorSourceFiles: [{ path: repositoryRelativePathV1('validator-v1.ts'), bytes: new TextEncoder().encode('validator') }],
     validationContext: context,
   };
 }
@@ -36,6 +46,89 @@ describe('BR01 validation receipts', () => {
     expect(validateBenchmarkValidationReceiptV1(receipt)).toMatchObject({ valid: true });
     expect(receipt.benchmarkRunRawByteSha256).toBe(sha256BytesV1(value.benchmarkRunRawBytes));
     expect(receipt.telemetryExportRawByteSha256).not.toBe(receipt.benchmarkRunRawByteSha256);
+  });
+  it('rejects unrelated telemetry even when the target run is otherwise valid', () => {
+    const value = input();
+    value.telemetryExportRawBytes = canonicalizeJsonV1({ runId: 'another-run', records: [] });
+    expect(() => createBenchmarkValidationReceiptV1(value)).toThrow('does not match');
+  });
+  it('rejects an adapter result that claims an invalid derivation', () => {
+    const value = input();
+    value.telemetryAdapter = { ...value.telemetryAdapter, adapt: () => ({ samples: [], invalidReasons: [{ code: 'sample-invalid', detail: 'invalid adapter result', phase: 'measurement' }] as never }) };
+    expect(() => createBenchmarkValidationReceiptV1(value)).toThrow('invalid telemetry derivation');
+  });
+  it('binds the accepted adapter contract and complete result chain', () => {
+    const value = input(createTwoIterationBenchmarkCaseDocumentV1());
+    const receipt = createBenchmarkValidationReceiptV1(value);
+    const document = JSON.parse(new TextDecoder().decode(value.benchmarkRunRawBytes)) as any;
+    const telemetry = JSON.parse(new TextDecoder().decode(value.telemetryExportRawBytes)) as any;
+    const targetRun = document.browserProcesses[0].runs.find((run: any) => run.runId === 'measurement-run');
+    const adapterResults = telemetry.records.map((record: any) => ({
+      iterationId: record.iterationId,
+      iterationOrdinal: record.iterationOrdinal,
+      runId: record.runId,
+      phase: record.phase,
+      samples: record.samples,
+      invalidReasons: [],
+    }));
+    const samples = targetRun.iterations.flatMap((iteration: any) => iteration.samples);
+    expect(receipt.telemetryDerivationEvidence.adapterContractId).toBe('br02-telemetry-export-v1-to-benchmark-raw-sample-v1');
+    expect(receipt.telemetryDerivationEvidence.adapterContractVersion).toBe(1);
+    expect(independentCanonicalSha256(adapterResults)).toBe(TWO_ITERATION_ADAPTER_RESULTS_SHA256);
+    expect(independentCanonicalSha256(samples)).toBe(TWO_ITERATION_SAMPLES_SHA256);
+    expect(receipt.telemetryDerivationEvidence.adapterResultsCanonicalSha256).toBe(TWO_ITERATION_ADAPTER_RESULTS_SHA256);
+    expect(receipt.telemetryDerivationEvidence.derivedRawSamplesCanonicalSha256).toBe(TWO_ITERATION_SAMPLES_SHA256);
+    expect(independentCanonicalSha256([...adapterResults].reverse())).not.toBe(TWO_ITERATION_ADAPTER_RESULTS_SHA256);
+    const changedSamples = JSON.parse(JSON.stringify(samples));
+    changedSamples[0].result.value += 1;
+    expect(independentCanonicalSha256(changedSamples)).not.toBe(TWO_ITERATION_SAMPLES_SHA256);
+    expect(receipt.telemetryDerivationEvidence.adapterResultsCanonicalSha256).not.toBe(receipt.telemetryDerivationEvidence.derivedRawSamplesCanonicalSha256);
+    expect(receipt.telemetryDerivationEvidence.derivedSampleCount).toBeGreaterThan(0);
+    expect(validateBenchmarkValidationReceiptV1(receipt)).toMatchObject({ valid: true });
+    const alteredEvidence = JSON.parse(JSON.stringify(receipt)) as Record<string, any>;
+    alteredEvidence.telemetryDerivationEvidence.adapterResultsCanonicalSha256 = `sha256:${'b'.repeat(64)}`;
+    expect(validateBenchmarkValidationReceiptV1(alteredEvidence)).toMatchObject({ valid: false, code: 'derivation-evidence-digest-mismatch' });
+  });
+  it('does not carry caller-provided adapter source provenance', () => {
+    const receipt = createBenchmarkValidationReceiptV1(input());
+    expect(receipt.telemetryDerivationEvidence).not.toHaveProperty('adapterSourceCommitSha');
+    expect(receipt.telemetryDerivationEvidence).not.toHaveProperty('adapterSourceFileSetSha256');
+    expect(input().telemetryAdapter).not.toHaveProperty('contractId');
+    expect(input().telemetryAdapter).not.toHaveProperty('sourceFiles');
+  });
+  it('rejects telemetry sample-value and identity mutations before minting', () => {
+    for (const mutate of [
+      (telemetry: any) => { telemetry.records[0].samples[0].result.value += 1; },
+      (telemetry: any) => { telemetry.records[0].runId = 'other-run'; },
+      (telemetry: any) => { telemetry.records[0].iterationId = 'other-iteration'; },
+    ]) {
+      const value = input();
+      const telemetry = JSON.parse(new TextDecoder().decode(value.telemetryExportRawBytes));
+      mutate(telemetry);
+      value.telemetryExportRawBytes = canonicalizeJsonV1(telemetry);
+      expect(() => createBenchmarkValidationReceiptV1(value)).toThrow();
+    }
+  });
+  it('rejects reordered telemetry iteration records', () => {
+    const value = input(createTwoIterationBenchmarkCaseDocumentV1());
+    const telemetry = JSON.parse(new TextDecoder().decode(value.telemetryExportRawBytes));
+    telemetry.records.reverse();
+    value.telemetryExportRawBytes = canonicalizeJsonV1(telemetry);
+    expect(() => createBenchmarkValidationReceiptV1(value)).toThrow();
+  });
+  it('rejects a mutated adapter result even when telemetry is unchanged', () => {
+    const value = input();
+    const adapt = value.telemetryAdapter.adapt;
+    value.telemetryAdapter = {
+      adapt: (telemetry, context, registry) => {
+        const result = adapt(telemetry, context, registry);
+        return { ...result, samples: result.samples.slice(0, -1) };
+      },
+    };
+    expect(() => createBenchmarkValidationReceiptV1(value)).toThrow('does not match');
+  });
+  it('rejects minting a receipt for a zero-sample target run', () => {
+    expect(() => createBenchmarkValidationReceiptV1(input(createBenchmarkCaseDocumentV1({ samples: false })))).toThrow();
   });
   it('does not mint a receipt for the existing invalid-run fixture', () => {
     const value = input();

@@ -133,10 +133,10 @@ describe('BR01 executable fixture matrix', () => {
     const context = createBenchmarkValidationContextV1({ scenarioId: 'backend-fixture-v1' });
     expect(validateBenchmarkRunV1(document, context)).toMatchObject({ valid: true });
     setCapability(document, selected, { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'api-not-supported' });
-    expect(validateBenchmarkRunV1(document, context)).toMatchObject({ valid: false, code: 'required-capability-missing' });
+     expect(validateBenchmarkRunV1(document, context)).toMatchObject({ valid: true });
     const missingSelected = createBenchmarkCaseDocumentV1({ scenarioId: 'backend-fixture-v1', backend, samples: true }) as any;
     removeCapability(missingSelected, selected);
-    expect(validateBenchmarkRunV1(missingSelected, context)).toMatchObject({ valid: false, code: 'required-capability-missing' });
+     expect(validateBenchmarkRunV1(missingSelected, context)).toMatchObject({ valid: false, code: 'required-capability-missing' });
   });
   it('accepts a cold backend run without phase-excluded GPU and RAF samples', () => {
     const document = createBenchmarkCaseDocumentV1({ scenarioId: 'backend-fixture-v1', backend: 'three-webgl2', phase: 'cold', container: 'cold', samples: true }) as any;

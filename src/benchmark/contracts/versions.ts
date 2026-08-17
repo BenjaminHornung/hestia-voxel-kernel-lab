@@ -1,5 +1,9 @@
 export const BENCHMARK_PROTOCOL_VERSION = 'benchmark-protocol-v1' as const;
 
+export const BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1 =
+  'br02-telemetry-export-v1-to-benchmark-raw-sample-v1' as const;
+export const BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1 = 1 as const;
+
 export const BENCHMARK_SCHEMA_VERSIONS = {
   sourceProvenance: 'benchmark-source-provenance-v1',
   environmentManifest: 'benchmark-environment-manifest-v1',
@@ -21,6 +25,15 @@ export const BENCHMARK_DIGEST_DOMAINS = {
   build: 'hestia-benchmark-build-sha256-v1\0',
   fileset: 'hestia-benchmark-fileset-sha256-v1\0',
 } as const;
+
+export const BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1 = Object.freeze({
+  gitCommandTimeoutMs: 5_000,
+  commandOutputMaxBytes: 1_048_576,
+  maxFiles: 4_096,
+  maxFileBytes: 64 * 1_024 * 1_024,
+  maxAggregateBytes: 512 * 1_024 * 1_024,
+  digestChunkBytes: 64 * 1_024,
+} as const);
 
 export const BENCHMARK_STATUS_COMMAND =
   'git status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none' as const;
@@ -49,3 +62,4 @@ export type BenchmarkProtocolVersion = typeof BENCHMARK_PROTOCOL_VERSION;
 export type BenchmarkSchemaVersionV1 =
   (typeof BENCHMARK_SCHEMA_VERSIONS)[keyof typeof BENCHMARK_SCHEMA_VERSIONS];
 export type BenchmarkDigestDomainV1 = (typeof BENCHMARK_DIGEST_DOMAINS)[keyof typeof BENCHMARK_DIGEST_DOMAINS];
+export type BenchmarkProvenanceResourceLimitsV1 = typeof BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1;

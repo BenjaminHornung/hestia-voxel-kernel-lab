@@ -3,7 +3,7 @@
   "$id": "https://hestia.invalid/schemas/benchmark-validation-receipt-v1.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "protocolVersion", "status", "receiptId", "planId", "slotId", "runId", "planDigest", "telemetryExportRawByteSha256", "benchmarkRunRawByteSha256", "benchmarkRunCanonicalSha256", "runBindingSha256", "schemaSetSha256", "metricRegistrySha256", "validator"],
+  "required": ["schemaVersion", "protocolVersion", "status", "receiptId", "planId", "slotId", "runId", "planDigest", "telemetryExportRawByteSha256", "benchmarkRunRawByteSha256", "benchmarkRunCanonicalSha256", "runBindingSha256", "schemaSetSha256", "metricRegistrySha256", "telemetryDerivationEvidence", "telemetryDerivationEvidenceSha256", "validator"],
   "properties": {
     "schemaVersion": { "const": "benchmark-validation-receipt-v1" },
     "protocolVersion": { "const": "benchmark-protocol-v1" },
@@ -19,11 +19,31 @@
     "runBindingSha256": { "$ref": "#/$defs/sha256" },
     "schemaSetSha256": { "$ref": "#/$defs/sha256" },
     "metricRegistrySha256": { "$ref": "#/$defs/sha256" },
+    "telemetryDerivationEvidence": { "$ref": "#/$defs/telemetryDerivationEvidence" },
+    "telemetryDerivationEvidenceSha256": { "$ref": "#/$defs/sha256" },
     "validator": { "type": "object", "additionalProperties": false, "required": ["id", "sourceCommitSha", "sourceFileSetSha256"], "properties": { "id": { "const": "br01-validator-v1" }, "sourceCommitSha": { "$ref": "#/$defs/gitSha" }, "sourceFileSetSha256": { "$ref": "#/$defs/sha256" } } }
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
     "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "telemetryDerivationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "adapterContractId", "adapterContractVersion", "metricRegistrySha256", "targetRunId", "targetRunBindingSha256", "telemetryExportRawByteSha256", "adapterResultsCanonicalSha256", "derivedRawSamplesCanonicalSha256", "derivedSampleCount", "evidenceSha256"],
+      "properties": {
+        "schemaVersion": { "const": "benchmark-telemetry-derivation-evidence-v1" },
+        "adapterContractId": { "const": "br02-telemetry-export-v1-to-benchmark-raw-sample-v1" },
+        "adapterContractVersion": { "const": 1 },
+        "metricRegistrySha256": { "$ref": "#/$defs/sha256" },
+        "targetRunId": { "$ref": "#/$defs/id" },
+        "targetRunBindingSha256": { "$ref": "#/$defs/sha256" },
+        "telemetryExportRawByteSha256": { "$ref": "#/$defs/sha256" },
+        "adapterResultsCanonicalSha256": { "$ref": "#/$defs/sha256" },
+        "derivedRawSamplesCanonicalSha256": { "$ref": "#/$defs/sha256" },
+        "derivedSampleCount": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "evidenceSha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
   }
 }
