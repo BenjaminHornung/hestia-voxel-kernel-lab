@@ -31,6 +31,7 @@ function eligibilityDocument(
   cellReason: 'correct' | 'mismatch' | 'empty' = 'correct',
 ): { readonly document: any; readonly context: any } {
   const document = createBenchmarkCaseDocumentV1({ ...phaseConfig, samples: true }) as any;
+  const expectedReasonCode = phaseConfig.scenarioId === 'scheduler-steady-v1' ? 'fixture-contract-mismatch' : gate.reasonCode;
   const environments = [document.environment, document.browserProcesses[0].environment, ...document.browserProcesses[0].runs.map((run: any) => run.environment)];
   for (const environment of environments) {
     if (gate.kind === 'capability') {
@@ -46,7 +47,7 @@ function eligibilityDocument(
   targetRun.execution.measurementEligibility = 'ineligible';
   targetRun.measurementEligible = false;
   targetRun.measurementEligibilityReasons = includeRunReason
-    ? [{ code: gate.reasonCode, detail: 'eligibility gate', phase: phaseConfig.phase }]
+    ? [{ code: expectedReasonCode, detail: 'eligibility gate', phase: phaseConfig.phase }]
     : [];
   for (const run of document.browserProcesses[0].runs) {
     if (gate.kind === 'visibility') run.execution.pageState.visibility = gate.value;
@@ -56,7 +57,7 @@ function eligibilityDocument(
     for (const iteration of run.iterations) for (const sample of iteration.samples) sample.runBindingSha256 = run.runBindingSha256;
   }
   document.measurementEligibilityReasons = cellReason === 'correct' && includeRunReason
-    ? [{ code: gate.reasonCode, detail: 'eligibility gate', phase: phaseConfig.phase }]
+    ? [{ code: expectedReasonCode, detail: 'eligibility gate', phase: phaseConfig.phase }]
     : cellReason === 'mismatch'
       ? [{ code: 'document-unfocused', detail: 'wrong cell reason', phase: phaseConfig.phase }]
       : [];

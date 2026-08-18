@@ -8,6 +8,7 @@ import {
   BENCHMARK_FUTURE_METRIC_PRODUCER_CONTRACTS_V1,
   BENCHMARK_SCENARIO_REGISTRY_V1,
   BENCHMARK_METRIC_DIMENSION_DOMAIN_OWNERS_V1,
+  BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1,
   benchmarkScenarioDefinitionsV1,
   resolveScenarioMetricCapabilitySelectionV1,
 } from './scenarioRegistryV1';
@@ -758,6 +759,32 @@ function sameCanonicalValue(left: unknown, right: unknown): boolean {
   return leftBytes.byteLength === rightBytes.byteLength && leftBytes.every((byte, index) => byte === rightBytes[index]);
 }
 
+function observedValue(value: unknown): unknown {
+  return isObserved(value) ? (value as JsonObject).value : undefined;
+}
+
+function fixtureBindingEligibilityReasonCode(runValue: BenchmarkRunV1): BenchmarkInvalidReason | undefined {
+  const fixture = runValue.source.fixture;
+  const binding = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[fixture.id as keyof typeof BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1];
+  if (binding === undefined
+    || !isObserved(binding.sourceCommitSha)
+    || !isObserved(binding.sourcePaths)
+    || !isObserved(binding.sourceFileSetSha256)
+    || !isObserved(fixture.semanticSha256)
+    || !isObserved(fixture.sourceCommitSha)
+    || !isObserved(fixture.sourcePaths)
+    || !isObserved(fixture.sourceFileSetSha256)) {
+    return 'fixture-contract-mismatch';
+  }
+  return fixture.id === binding.id
+    && fixture.version === binding.version
+    && sameCanonicalValue(observedValue(fixture.sourceCommitSha), observedValue(binding.sourceCommitSha))
+    && sameCanonicalValue(observedValue(fixture.sourcePaths), observedValue(binding.sourcePaths))
+    && sameCanonicalValue(observedValue(fixture.sourceFileSetSha256), observedValue(binding.sourceFileSetSha256))
+    ? undefined
+    : 'fixture-contract-mismatch';
+}
+
 function validateDigestMatchDimensions(sample: BenchmarkRawSampleV1, path: string, requireEqual: boolean): void {
   const dimensions = sample.dimensions;
   const keys = dimensions.map((dimension) => String(dimension.key));
@@ -816,6 +843,8 @@ function measurementEligibilityReasonCode(
   definition: BenchmarkScenarioDefinitionV1,
   registry: MetricRegistryV1,
 ): BenchmarkInvalidReason {
+  const fixtureReason = fixtureBindingEligibilityReasonCode(runValue);
+  if (fixtureReason !== undefined) return fixtureReason;
   const environmentReason = environmentEligibilityReasonCode(environment);
   if (environmentReason !== undefined) return environmentReason;
 
@@ -1005,6 +1034,7 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
       semantic(runValue.ids.browserProcessId === processValue.browserProcessId, '$.browserProcesses.ids.browserProcessId', 'Run browser process ID reference is inconsistent.', 'hierarchy-invalid');
        const previousPairOrdinal = pairCells.get(runValue.ids.pairCellId); if (previousPairOrdinal !== undefined) semantic(previousPairOrdinal === runValue.ids.pairOrdinal, '$.browserProcesses', 'Pair ordinal is inconsistent.', 'pairing-invalid'); else pairCells.set(runValue.ids.pairCellId, runValue.ids.pairOrdinal);
       const registryEntry = BENCHMARK_SCENARIO_REGISTRY_V1[runValue.scenario.id];
+      const fixtureReason = fixtureBindingEligibilityReasonCode(runValue);
       semantic(runValue.scenario.definitionSha256 === registryEntry.definitionSha256, '$.scenario.definitionSha256', 'Scenario definition digest does not match registry.', 'scenario-contract-mismatch');
       validateScenarioParameters(runValue.scenario as unknown as JsonObject, registryEntry.definition, '$.scenario.parameters');
       semantic(registryEntry.definition.allowedPhases.includes(runValue.execution.phase), '$.execution.phase', 'Scenario does not allow this phase.', 'phase-invalid');
@@ -1117,6 +1147,7 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
         if (runValue.execution.measurementEligibility === 'eligible' && backend === 'three-webgl2') semantic(observedCapability('webgl2'), '$.environment.capabilities', 'WebGL2 backend requires observed WebGL2 support.', 'required-capability-missing');
         if (runValue.execution.measurementEligibility === 'eligible' && backend === 'raw-webgpu') semantic(observedCapability('webgpu'), '$.environment.capabilities', 'WebGPU backend requires observed WebGPU support.', 'required-capability-missing');
         if (runValue.execution.measurementEligibility === 'eligible') {
+           semantic(fixtureReason === undefined, '$.source.fixture', 'Eligible run requires an observed canonical fixture binding.', 'fixture-contract-mismatch');
            semantic(baseEligible, '$.environment', 'Eligible run does not satisfy observed environment evidence or runtime eligibility.', environmentEligibilityReasonCode(env) ?? 'measurement-ineligible'); semantic(runValue.execution.validity.status === 'valid', '$.execution.validity', 'Eligible run must be valid.', 'measurement-ineligible');
            semantic(!metricUnavailableForEligibleRun(runValue, registryEntry.definition, allCapabilities, registry), '$.iterations.samples', 'An eligible run cannot claim a required metric without a canonical producer.', 'metric-not-producible');
         }
@@ -1129,7 +1160,7 @@ function semanticDocument(document: BenchmarkRunDocumentV1, context: BenchmarkVa
               expectedCellReasons.set(reasonKey(expectedCellReason), expectedCellReason);
             }
          }
-         const derivedRunEligible = runValue.execution.measurementEligibility === 'eligible' && baseEligible && runValue.execution.phase !== 'warmup' && runValue.execution.phase !== 'trace' && runValue.execution.phase !== 'leak' && runValue.execution.validity.status === 'valid';
+         const derivedRunEligible = runValue.execution.measurementEligibility === 'eligible' && fixtureReason === undefined && baseEligible && runValue.execution.phase !== 'warmup' && runValue.execution.phase !== 'trace' && runValue.execution.phase !== 'leak' && runValue.execution.validity.status === 'valid';
         semantic(runValue.measurementEligible === derivedRunEligible, '$.measurementEligible', 'Run measurement eligibility is not fail-closed.', 'measurement-ineligible');
         if (derivedRunEligible) runEligible.add(runValue.runId);
     }

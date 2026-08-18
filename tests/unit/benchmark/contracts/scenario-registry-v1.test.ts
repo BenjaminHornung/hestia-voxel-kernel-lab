@@ -274,7 +274,7 @@ describe('BR01 registries', () => {
     expect(wp04).toMatchObject({ id: 'wp04-golden-world-v1', version: 1, sourceCommitSha: { status: 'observed', value: 'c64aeef1f51dd0ed2d8431411cf3ba1e84195b9d' } });
     expect(wp04.sourcePaths.value).toEqual(['evidence/wp04/manifest.json', 'tests/contracts/wp02FixtureGolden.ts', 'tests/contracts/wp03GreedyGolden.ts', 'tests/contracts/wp04AoGolden.ts']);
     expect(wp04.sourceFileSetSha256.value).toBe('sha256:5a89e11f59c2fbe1d35eaa782aed039505edbc45282302698ad4009fb04900e0');
-    for (const key of ['scheduler-edit-stream-v1', 'brush-command-stream-v1', 'navigation-route-sequence-v1', 'backend-parity-world-v1'] as const) {
+    for (const key of ['density-volume-suite-v1', 'scheduler-edit-stream-v1', 'brush-command-stream-v1', 'navigation-route-sequence-v1', 'backend-parity-world-v1'] as const) {
       expect(BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[key]).toMatchObject({ sourceCommitSha: { status: 'unknown', value: null }, sourcePaths: { status: 'unknown', value: null }, sourceFileSetSha256: { status: 'unknown', value: null } });
     }
   });

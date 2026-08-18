@@ -80,7 +80,7 @@ describe('BR01 executable fixture matrix', () => {
     ['scheduler-burst-v1', { phase: 'stress', container: 'stress' }, ['scheduler.queue-depth', 'scheduler.drain', 'scheduler.evicted', 'result.stale-dropped', 'revision.latest-visible', 'worker.heartbeat-gap']],
     ['brush-stress-v1', { phase: 'stress', container: 'stress' }, ['input-to-revision-submit', 'revision.latest-visible', 'world.sha256-match', 'scheduler.queue-depth', 'scheduler.drain']],
     ['backend-fixture-v1', { backend: 'three-webgl2' }, ['draw-submit.cpu', 'gpu.time', 'browser.raf-interval', 'memory.bytes', 'image.contract-sha256-match']],
-  ] as const)('keeps future producer reachability fail-closed before records and eligible after valid records: %s', (scenarioId, options, records) => {
+  ] as const)('keeps future producer reachability fail-closed behind the fixture gate: %s', (scenarioId, options, records) => {
     const before = createBenchmarkCaseDocumentV1({ scenarioId, ...options, samples: true }) as any;
     applySyntheticFutureProducerRecordsV1(before, []);
     const beforeValidation = validateBenchmarkRunV1(before, createBenchmarkValidationContextV1({ scenarioId }));
@@ -90,19 +90,22 @@ describe('BR01 executable fixture matrix', () => {
     const after = createBenchmarkCaseDocumentV1({ scenarioId, ...options, samples: true }) as any;
     applySyntheticFutureProducerRecordsV1(after, records);
     expect(validateBenchmarkRunV1(after, createBenchmarkValidationContextV1({ scenarioId }))).toMatchObject({ valid: true });
-    expect(after.measurementEligible).toBe(true);
+    expect(after.measurementEligible).toBe(scenarioId === 'mesh-golden-world-v1');
+    if (scenarioId !== 'mesh-golden-world-v1') {
+      expect(after.measurementEligibilityReasons).toEqual([{ code: 'fixture-contract-mismatch', detail: 'eligibility gate', phase: after.browserProcesses[0].runs.at(-1).execution.phase }]);
+    }
   });
   it.each([
     ['warmup', 'mesh-golden-world-v1', 'warm-measurement', ['worker.mesh-cpu']],
     ['trace', 'navigation-leak-v1', 'trace', ['browser.dom-document-count']],
     ['leak', 'navigation-leak-v1', 'leak', ['memory.bytes']],
-  ] as const)('keeps %s samples structurally producible but measurement-ineligible by contract', (phase, scenarioId, container, records) => {
+  ] as const)('keeps %s samples structurally producible but fixture-ineligible without an owner binding', (phase, scenarioId, container, records) => {
     const document = createBenchmarkCaseDocumentV1({ scenarioId, phase, container, samples: true }) as any;
     applySyntheticFutureProducerRecordsV1(document, records);
     const run = document.browserProcesses[0].runs.at(-1);
-    expect(run.execution.measurementEligibility).toBe('eligible');
+    expect(run.execution.measurementEligibility).toBe(phase === 'warmup' ? 'eligible' : 'ineligible');
     expect(run.iterations.some((iteration: any) => iteration.samples.length > 0)).toBe(true);
-    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId }))).toMatchObject({ valid: false, code: 'measurement-ineligible' });
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId }))).toMatchObject(phase === 'warmup' ? { valid: false, code: 'measurement-ineligible' } : { valid: true });
   });
   it.each([
     ['three-webgl2', 'webgl-disjoint-timer-query'],
@@ -111,7 +114,7 @@ describe('BR01 executable fixture matrix', () => {
     const document = createBenchmarkCaseDocumentV1({ scenarioId: 'backend-fixture-v1', backend, samples: true }) as any;
     applySyntheticFutureProducerRecordsV1(document, ['draw-submit.cpu', 'gpu.time', 'browser.raf-interval', 'memory.bytes', 'image.contract-sha256-match']);
     setCapability(document, selected, { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'api-not-supported' });
-    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'backend-fixture-v1' }))).toMatchObject({ valid: false, code: 'required-capability-missing' });
+    expect(validateBenchmarkRunV1(document, createBenchmarkValidationContextV1({ scenarioId: 'backend-fixture-v1' }))).toMatchObject({ valid: true });
   });
   it('rejects a globally known metric that is absent from the bound scenario', () => {
     const document = createBenchmarkCaseDocumentV1({ samples: true }) as any;

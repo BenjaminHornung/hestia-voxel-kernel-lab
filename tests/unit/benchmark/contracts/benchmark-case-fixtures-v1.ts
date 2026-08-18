@@ -2,7 +2,7 @@ import { calculateRunBindingSha256V1 } from '../../../../src/benchmark/contracts
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance/fileSetDigestV1';
 import { compareUtf16 } from '../../../../src/benchmark/provenance/canonicalJsonV1';
 import type { BenchmarkValidationContextV1, BenchmarkValidationReceiptInputV1 } from '../../../../src/benchmark/contracts/typesV1';
-import { BENCHMARK_METRIC_REACHABILITY_MATRIX_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
+import { BENCHMARK_METRIC_REACHABILITY_MATRIX_V1, BENCHMARK_METRIC_REGISTRY_V1, BENCHMARK_SCENARIO_REGISTRY_V1, BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1 } from '../../../../src/benchmark/contracts/scenarioRegistryV1';
 import { BENCHMARK_SCHEMA_SET_SHA256_V1 } from '../../../../src/benchmark/contracts/schemaSetV1';
 import {
   BENCHMARK_TEST_METRIC_FIXTURES_V1,
@@ -47,14 +47,51 @@ function declared<T>(value: T, sourceRef = 'plan-v1'): JsonRecord {
   return { status: 'declared', value, sourceRef, stability: 'run-config' };
 }
 
-const fixture = (id: string) => ({
-  id,
-  version: 1,
-  semanticSha256: observed(DIGEST),
-  sourceCommitSha: declared(GIT_SHA),
-  sourceFileSetSha256: observed(DIGEST),
-  sourcePaths: observed(SOURCE_PATHS),
-});
+const fixture = (id: string) => {
+  const binding = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[id as keyof typeof BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1] as any;
+  if (binding !== undefined
+    && binding.sourceCommitSha.status === 'observed'
+    && binding.sourcePaths.status === 'observed'
+    && binding.sourceFileSetSha256.status === 'observed') {
+    return {
+      id,
+      version: binding.version,
+      semanticSha256: observed(DIGEST),
+      sourceCommitSha: observed(binding.sourceCommitSha.value),
+      sourceFileSetSha256: observed(binding.sourceFileSetSha256.value),
+      sourcePaths: observed(binding.sourcePaths.value),
+    };
+  }
+  return {
+    id,
+    version: 1,
+    semanticSha256: observed(DIGEST),
+    sourceCommitSha: declared(GIT_SHA),
+    sourceFileSetSha256: observed(DIGEST),
+    sourcePaths: observed(SOURCE_PATHS),
+  };
+};
+
+function fixtureHasCanonicalObservedBinding(value: JsonRecord): boolean {
+  const binding = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[value.id as keyof typeof BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1] as any;
+  const semanticSha256 = value.semanticSha256 as JsonRecord | undefined;
+  const sourceCommitSha = value.sourceCommitSha as JsonRecord | undefined;
+  const sourcePaths = value.sourcePaths as JsonRecord | undefined;
+  const sourceFileSetSha256 = value.sourceFileSetSha256 as JsonRecord | undefined;
+  return binding !== undefined
+    && binding.id === value.id
+    && binding.version === value.version
+    && binding.sourceCommitSha.status === 'observed'
+    && binding.sourcePaths.status === 'observed'
+    && binding.sourceFileSetSha256.status === 'observed'
+    && semanticSha256?.status === 'observed'
+    && sourceCommitSha?.status === 'observed'
+    && sourcePaths?.status === 'observed'
+    && sourceFileSetSha256?.status === 'observed'
+    && JSON.stringify(sourceCommitSha.value) === JSON.stringify(binding.sourceCommitSha.value)
+    && JSON.stringify(sourcePaths.value) === JSON.stringify(binding.sourcePaths.value)
+    && JSON.stringify(sourceFileSetSha256.value) === JSON.stringify(binding.sourceFileSetSha256.value);
+}
 
 const baseSource = {
   schemaVersion: 'benchmark-source-provenance-v1',
@@ -282,11 +319,11 @@ function run(
     ),
     runBindingSha256: DIGEST,
     measurementEligible: measurementEligibility === 'eligible',
-      measurementEligibilityReasons: options.invalid
-        ? [{ code: 'sample-invalid', detail: 'fixture invalidation', phase }]
-       : measurementEligibility === 'ineligible' && (phase === 'measurement' || phase === 'cold' || phase === 'stress')
-           ? [{ code: options.samples === true ? 'environment-incomplete' : 'metric-not-producible', detail: 'eligibility gate', phase }]
-          : [],
+       measurementEligibilityReasons: options.invalid
+         ? [{ code: 'sample-invalid', detail: 'fixture invalidation', phase }]
+        : measurementEligibility === 'ineligible' && (phase === 'measurement' || phase === 'cold' || phase === 'stress')
+             ? [{ code: fixtureHasCanonicalObservedBinding(sourceFor(definition.fixtureContractId).fixture as JsonRecord) ? (options.samples === true ? 'environment-incomplete' : 'metric-not-producible') : 'fixture-contract-mismatch', detail: 'eligibility gate', phase }]
+           : [],
      iterations: options.samples ? Array.from({ length: options.iterationCount ?? 1 }, (_, iterationOrdinal) => ({ schemaVersion: 'benchmark-iteration-v1', iterationId: `iteration-${iterationOrdinal}`, iterationOrdinal, runId, phase, samples: [] })) : [],
   };
   const binding = calculateRunBindingSha256V1(runValue as never);
@@ -363,16 +400,19 @@ export function applySyntheticFutureProducerRecordsV1(document: any, recordNames
       if (capability !== undefined) capability.value = { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'synthetic-record-omitted' };
     }
   }
-  const hasRecords = recordNames.length > 0;
-  run.execution.measurementEligibility = hasRecords ? 'eligible' : 'ineligible';
-  run.measurementEligible = hasRecords;
-  run.measurementEligibilityReasons = hasRecords ? [] : [{ code: 'metric-not-producible', detail: 'eligibility gate', phase: run.execution.phase }];
+   const hasRecords = recordNames.length > 0;
+   const eligible = hasRecords && fixtureHasCanonicalObservedBinding(run.source.fixture);
+   const requiresEligibilityReason = run.execution.phase === 'cold' || run.execution.phase === 'measurement' || run.execution.phase === 'stress';
+   const reason = fixtureHasCanonicalObservedBinding(run.source.fixture) ? 'metric-not-producible' : 'fixture-contract-mismatch';
+   run.execution.measurementEligibility = eligible ? 'eligible' : 'ineligible';
+   run.measurementEligible = eligible;
+   run.measurementEligibilityReasons = eligible || !requiresEligibilityReason ? [] : [{ code: reason, detail: 'eligibility gate', phase: run.execution.phase }];
   for (const candidate of process.runs) {
     candidate.runBindingSha256 = calculateRunBindingSha256V1(candidate);
     for (const iteration of candidate.iterations) for (const sample of iteration.samples) sample.runBindingSha256 = candidate.runBindingSha256;
   }
-  document.measurementEligible = hasRecords;
-  document.measurementEligibilityReasons = hasRecords ? [] : [{ code: 'metric-not-producible', detail: 'eligibility gate', phase: run.execution.phase }];
+   document.measurementEligible = eligible;
+   document.measurementEligibilityReasons = eligible || !requiresEligibilityReason ? [] : [{ code: reason, detail: 'eligibility gate', phase: run.execution.phase }];
 }
 
 export function createTwoIterationBenchmarkCaseDocumentV1(): any {

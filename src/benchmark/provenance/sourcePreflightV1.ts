@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readdirSync, realpathSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import type {
   AvailabilityV1,
@@ -21,7 +22,6 @@ import {
   BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1,
   BENCHMARK_REPOSITORY_URL,
   BENCHMARK_STATUS_COMMAND,
-  BR01_ACCEPTED_WP04_SHA,
   EMPTY_STATUS_SHA256,
 } from '../contracts/versions';
 import {
@@ -36,6 +36,7 @@ import {
   sha256BytesV1,
   timingSafeEqualSha256V1,
   type FileSetPathInputV1,
+  type FileSetReaderEntryInputV1,
 } from './fileSetDigestV1';
 import { compareRepositoryRelativePathsV1, repositoryRelativePathV1 } from './canonicalPathV1';
 import { parseCanonicalJsonV1 } from './canonicalJsonV1';
@@ -279,19 +280,7 @@ function sourcePathsAreCanonical(paths: readonly RepositoryRelativePathV1[]): bo
 }
 
 function metadataPaths(value: unknown, label: string, code: BenchmarkSourcePreflightFailureCodeV1): NonEmptyReadonlyArray<RepositoryRelativePathV1> {
-  return metadataBinding(value, label, code, (rawPaths) => {
-    if (!Array.isArray(rawPaths) || rawPaths.length === 0) throw new SourcePreflightContractError(code, `${label} must be a non-empty path list.`);
-    const result = rawPaths.map((path, index) => {
-      if (typeof path !== 'string') throw new SourcePreflightContractError(code, `${label}[${index}] must be a path.`);
-      try {
-        return repositoryRelativePathV1(path);
-      } catch {
-        throw new SourcePreflightContractError(code, `${label}[${index}] is not canonical.`);
-      }
-    });
-    if (!sourcePathsAreCanonical(result)) throw new SourcePreflightContractError(code, `${label} must be strictly sorted and unique.`);
-    return result as unknown as NonEmptyReadonlyArray<RepositoryRelativePathV1>;
-  });
+  return metadataBinding(value, label, code, (rawPaths) => canonicalPathList(rawPaths, label, code));
 }
 
 function validateFixtureMetadata(value: unknown): {
@@ -386,20 +375,36 @@ function samePaths(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
-function observedRegistryValue(value: unknown, label: string): unknown {
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || (value as { readonly status?: unknown }).status !== 'observed') {
-    throw new SourcePreflightContractError('fixture-contract-mismatch', `${label} is not an observed owner binding.`);
-  }
-  return (value as { readonly value: unknown }).value;
+interface RegisteredFixtureBindingV1 {
+  readonly id: CanonicalIdV1;
+  readonly version: SafePositiveIntegerV1;
+  readonly sourceCommitSha: GitShaV1;
+  readonly sourcePaths: NonEmptyReadonlyArray<RepositoryRelativePathV1>;
+  readonly sourceFileSetSha256: Sha256DigestV1;
 }
 
-function readAcceptedHeadBlob(
-  path: RepositoryRelativePathV1,
-  rootPath: string,
-  runner: SourcePreflightCommandRunnerV1,
-): Uint8Array {
-  const result = commandResult(runner, 'git', ['cat-file', 'blob', `${BR01_ACCEPTED_WP04_SHA}:${path}`], rootPath);
-  return new Uint8Array(result.stdout);
+function registryObservedBinding<T>(
+  value: unknown,
+  label: string,
+  validateValue: (value: unknown) => T,
+): T {
+  const binding = metadataAvailabilityShape(value, label, 'fixture-contract-mismatch', validateValue);
+  if (binding.status !== 'observed') throw new SourcePreflightContractError('fixture-contract-mismatch', `${label} is not an observed registry binding.`);
+  return binding.value;
+}
+
+function canonicalPathList(value: unknown, label: string, code: BenchmarkSourcePreflightFailureCodeV1): NonEmptyReadonlyArray<RepositoryRelativePathV1> {
+  if (!Array.isArray(value) || value.length === 0) throw new SourcePreflightContractError(code, `${label} must be a non-empty path list.`);
+  const result = value.map((path, index) => {
+    if (typeof path !== 'string') throw new SourcePreflightContractError(code, `${label}[${index}] must be a path.`);
+    try {
+      return repositoryRelativePathV1(path);
+    } catch {
+      throw new SourcePreflightContractError(code, `${label}[${index}] is not canonical.`);
+    }
+  });
+  if (!sourcePathsAreCanonical(result)) throw new SourcePreflightContractError(code, `${label} must be strictly sorted and unique.`);
+  return result as unknown as NonEmptyReadonlyArray<RepositoryRelativePathV1>;
 }
 
 function readCurrentHeadBlobOid(
@@ -463,37 +468,187 @@ function verifyCurrentHeadCandidatePaths(
   return paths.map((path, index) => verifyCurrentHeadCandidatePath(path, rootPath, treeSha, runner, expectedBlobOids?.[index]));
 }
 
-function verifyWp04OwnerBinding(
+function fixtureCommandResult(
+  runner: SourcePreflightCommandRunnerV1,
+  args: readonly string[],
+  rootPath: string,
+): SourcePreflightCommandResultV1 {
+  try {
+    return commandResult(runner, 'git', ['--no-replace-objects', ...args], rootPath);
+  } catch (error) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', error instanceof Error ? error.message : 'Historical Git command failed.');
+  }
+}
+
+function registryBlobOid(
+  path: RepositoryRelativePathV1,
+  registryCommit: GitShaV1,
+  rootPath: string,
+  runner: SourcePreflightCommandRunnerV1,
+): string {
+  const result = fixtureCommandResult(runner, ['ls-tree', '-z', '--full-tree', registryCommit, '--', path], rootPath);
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(result.stdout);
+  } catch {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git tree metadata is not UTF-8: ${path}.`);
+  }
+  const firstNul = text.indexOf('\0');
+  if (firstNul < 1 || firstNul !== text.length - 1 || text.indexOf('\0', firstNul + 1) !== -1) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git tree metadata must contain exactly one NUL record: ${path}.`);
+  }
+  const record = text.slice(0, firstNul);
+  const tab = record.indexOf('\t');
+  if (tab < 1 || record.indexOf('\t', tab + 1) !== -1) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git tree metadata is malformed: ${path}.`);
+  }
+  const fields = record.slice(0, tab).split(' ');
+  const returnedPath = record.slice(tab + 1);
+  if (fields.length !== 3
+    || (fields[0] !== '100644' && fields[0] !== '100755')
+    || fields[1] !== 'blob'
+    || !/^[0-9a-f]{40}$/.test(fields[2]!)
+    || returnedPath !== path) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git tree binding is not an exact regular blob: ${path}.`);
+  }
+  return fields[2]!;
+}
+
+function registryBlobSize(
+  path: RepositoryRelativePathV1,
+  blobOid: string,
+  rootPath: string,
+  runner: SourcePreflightCommandRunnerV1,
+): number {
+  const type = commandText(fixtureCommandResult(runner, ['cat-file', '-t', blobOid], rootPath));
+  if (type !== 'blob') throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git object is not a blob: ${path}.`);
+  const sizeText = commandText(fixtureCommandResult(runner, ['cat-file', '-s', blobOid], rootPath));
+  if (sizeText === undefined || !/^(0|[1-9][0-9]*)$/.test(sizeText)) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob size is malformed: ${path}.`);
+  }
+  const size = Number(sizeText);
+  if (!Number.isSafeInteger(size) || size < 0 || size > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxFileBytes) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob exceeds the v1 per-file limit: ${path}.`);
+  }
+  return size;
+}
+
+function materializeDefaultRegistryBlob(
+  path: RepositoryRelativePathV1,
+  registryCommit: GitShaV1,
+  expectedSize: number,
+  rootPath: string,
+  tempRoot: string,
+  index: number,
+): string {
+  const targetPath = join(tempRoot, `blob-${String(index)}.bin`);
+  let result: ReturnType<typeof spawnSync> | undefined;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(targetPath, 'w');
+    try {
+      result = spawnSync('git', ['--no-replace-objects', 'cat-file', 'blob', `${registryCommit}:${path}`], {
+        cwd: rootPath,
+        encoding: 'buffer',
+        shell: false,
+        windowsHide: true,
+        timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
+        maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
+        stdio: ['ignore', descriptor, 'pipe'],
+      });
+    } finally {
+      closeSync(descriptor);
+      descriptor = undefined;
+    }
+  } catch (error) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', error instanceof Error ? error.message : `Historical Git blob read failed: ${path}.`);
+  }
+  if (result === undefined) throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob read returned no result: ${path}.`);
+  if ((result.stdout !== null && result.stdout !== undefined && !(result.stdout instanceof Uint8Array))
+    || (result.stderr !== null && result.stderr !== undefined && !(result.stderr instanceof Uint8Array))) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob command returned invalid control output: ${path}.`);
+  }
+  const stderr = result.stderr instanceof Uint8Array ? result.stderr : new Uint8Array();
+  const stdout = result.stdout instanceof Uint8Array ? result.stdout : new Uint8Array();
+  if (stdout.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
+    || stderr.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
+    || stdout.byteLength + stderr.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
+    || stdout.byteLength !== 0
+    || result.error !== undefined
+    || (result.signal !== undefined && result.signal !== null)
+    || result.status !== 0
+    || stderr.byteLength !== 0) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob command failed: ${path}.`);
+  }
+  let stat;
+  try {
+    stat = lstatSync(targetPath, { bigint: false, throwIfNoEntry: true });
+  } catch {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob was not materialized: ${path}.`);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== expectedSize) {
+    throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob size changed while materializing: ${path}.`);
+  }
+  return targetPath;
+}
+
+function verifyRegisteredFixtureBinding(
   rootPath: string,
   fixtureMetadata: ReturnType<typeof validateFixtureMetadata>,
   runner: SourcePreflightCommandRunnerV1,
-): void {
+): RegisteredFixtureBindingV1 | undefined {
   const binding = BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1[fixtureMetadata.id as keyof typeof BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1];
   if (binding === undefined) {
     if (fixtureMetadata.sourceCommitSha.status === 'observed') throw new SourcePreflightContractError('fixture-contract-mismatch', 'Synthetic fixture source commit is not Git-verified.');
-    return;
+    return undefined;
   }
-  if (fixtureMetadata.id !== 'wp04-golden-world-v1') {
-    if (binding.sourceCommitSha.status !== 'observed' || binding.sourcePaths.status !== 'observed' || binding.sourceFileSetSha256.status !== 'observed') {
-      throw new SourcePreflightContractError('fixture-contract-mismatch', 'Known fixture owner binding is unavailable.');
+  const bindingId = metadataId(binding.id, 'Registry fixture ID', 'fixture-contract-mismatch');
+  const bindingVersion = metadataVersion(binding.version, 'Registry fixture version', 'fixture-contract-mismatch');
+  const bindingCommit = registryObservedBinding(binding.sourceCommitSha, 'Registry fixture source commit', (value) => metadataGitSha(value, 'Registry fixture source commit', 'fixture-contract-mismatch'));
+  const bindingObjectType = commandText(fixtureCommandResult(runner, ['cat-file', '-t', bindingCommit], rootPath));
+  if (bindingObjectType !== 'commit') throw new SourcePreflightContractError('fixture-contract-mismatch', 'Registry fixture source commit is not a Git commit object.');
+  const bindingPaths = registryObservedBinding(binding.sourcePaths, 'Registry fixture source paths', (value) => canonicalPathList(value, 'Registry fixture source paths', 'fixture-contract-mismatch'));
+  const bindingDigest = registryObservedBinding(binding.sourceFileSetSha256, 'Registry fixture source fileset digest', (value) => metadataDigest(value, 'Registry fixture source fileset digest', 'fixture-contract-mismatch'));
+  if (fixtureMetadata.id !== bindingId || fixtureMetadata.version !== bindingVersion) throw new SourcePreflightContractError('fixture-contract-mismatch', 'Fixture ID or version does not match the registered binding.');
+  if (fixtureMetadata.sourceCommitSha.value !== bindingCommit) throw new SourcePreflightContractError('fixture-contract-mismatch', 'Fixture source commit does not match the registered binding.');
+  if (!samePaths(fixtureMetadata.sourcePaths, bindingPaths)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'Fixture source paths do not exactly match the registered binding.');
+  if (!timingSafeEqualSha256V1(fixtureMetadata.sourceFileSetSha256, bindingDigest)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'Fixture source fileset digest does not match the registered binding.');
+
+  if (bindingPaths.length > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxFiles) throw new SourcePreflightContractError('fixture-contract-mismatch', 'Registered fixture file count exceeds the v1 limit.');
+  const tempRoot = runner === defaultRunner ? mkdtempSync(join(tmpdir(), 'br01-registered-fixture-')) : undefined;
+  try {
+    const pathEntries: FileSetPathInputV1[] = [];
+    const readerEntries: FileSetReaderEntryInputV1[] = [];
+    let aggregateBytes = 0;
+    for (const [index, path] of bindingPaths.entries()) {
+      const blobOid = registryBlobOid(path, bindingCommit, rootPath, runner);
+      const expectedSize = registryBlobSize(path, blobOid, rootPath, runner);
+      aggregateBytes += expectedSize;
+      if (aggregateBytes > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxAggregateBytes) {
+        throw new SourcePreflightContractError('fixture-contract-mismatch', 'Registered fixture aggregate bytes exceed the v1 limit.');
+      }
+      if (tempRoot !== undefined) {
+        pathEntries.push({ path, absolutePath: materializeDefaultRegistryBlob(path, bindingCommit, expectedSize, rootPath, tempRoot, index) });
+      } else {
+        const result = fixtureCommandResult(runner, ['cat-file', 'blob', `${bindingCommit}:${path}`], rootPath);
+        if (result.stdout.byteLength !== expectedSize) throw new SourcePreflightContractError('fixture-contract-mismatch', `Historical Git blob size does not match cat-file metadata: ${path}.`);
+        const bytes = new Uint8Array(result.stdout);
+        readerEntries.push({ path, read: () => new Uint8Array(bytes) });
+      }
     }
-    if (fixtureMetadata.sourceCommitSha.status === 'observed') throw new SourcePreflightContractError('fixture-contract-mismatch', 'Fixture source commit is not Git-verified by this preflight.');
-    return;
+    const actual = tempRoot === undefined
+      ? digestFileSetReadersV1(readerEntries, 'fileset')
+      : digestFileSetPathsV1(pathEntries, 'fileset');
+    if (actual.fileCount !== bindingPaths.length || actual.totalBytes !== aggregateBytes || !timingSafeEqualSha256V1(actual.digest, bindingDigest)) {
+      throw new SourcePreflightContractError('fixture-contract-mismatch', 'Historical Git blob fileset digest does not match the registered binding.');
+    }
+  } catch (error) {
+    if (error instanceof SourcePreflightContractError) throw error;
+    throw new SourcePreflightContractError('fixture-contract-mismatch', error instanceof Error ? error.message : 'Historical Git blob fileset could not be verified.');
+  } finally {
+    if (tempRoot !== undefined) rmSync(tempRoot, { recursive: true, force: true });
   }
-  const bindingId = binding.id;
-  const bindingVersion = binding.version;
-  const bindingCommit = observedRegistryValue(binding.sourceCommitSha, 'WP04 source commit') as string;
-  const bindingPaths = observedRegistryValue(binding.sourcePaths, 'WP04 source paths') as readonly string[];
-  const bindingDigest = observedRegistryValue(binding.sourceFileSetSha256, 'WP04 source fileset digest') as string;
-  if (fixtureMetadata.id !== bindingId || fixtureMetadata.version !== bindingVersion) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 fixture ID or version is not owner-bound.');
-  if ((fixtureMetadata.sourceCommitSha.status !== 'observed' && fixtureMetadata.sourceCommitSha.status !== 'declared') || fixtureMetadata.sourceCommitSha.value !== bindingCommit) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 fixture source commit does not match the historical owner binding.');
-  if (!samePaths(fixtureMetadata.sourcePaths, bindingPaths)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 source paths do not exactly match the owner binding.');
-  if (!timingSafeEqualSha256V1(fixtureMetadata.sourceFileSetSha256, bindingDigest)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 source fileset digest does not match the owner binding.');
-  const actualDigest = digestFileSetReadersV1(bindingPaths.map((path) => {
-    const repositoryPath = repositoryRelativePathV1(path);
-    return { path: repositoryPath, read: () => readAcceptedHeadBlob(repositoryPath, rootPath, runner) };
-  })).digest;
-  if (!timingSafeEqualSha256V1(actualDigest, bindingDigest)) throw new SourcePreflightContractError('fixture-contract-mismatch', 'WP04 Git blob fileset digest does not match the owner binding.');
+  return { id: bindingId, version: bindingVersion, sourceCommitSha: bindingCommit, sourcePaths: bindingPaths, sourceFileSetSha256: bindingDigest };
 }
 
 function hasGitlink(rootPath: string, runner: SourcePreflightCommandRunnerV1): boolean {
@@ -592,8 +747,8 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     if (isWp04Semantic && fixtureMetadata.id !== 'wp04-golden-world-v1') return reject('fixture-contract-mismatch', 'WP04 semantic bytes require the WP04 fixture ID.');
     if (fixtureMetadata.id === 'wp04-golden-world-v1' && !isWp04Semantic) return reject('fixture-contract-mismatch', 'WP04 fixture semantic bytes do not match the authoritative contract.');
     const expectedBuild = validateBuildMetadata(input.build);
-    verifyWp04OwnerBinding(verifiedRootPath, fixtureMetadata, runner);
-    if (fixtureMetadata.id !== 'wp04-golden-world-v1') {
+    const registeredFixture = verifyRegisteredFixtureBinding(verifiedRootPath, fixtureMetadata, runner);
+    if (registeredFixture === undefined) {
       const fixtureEntries: FileSetPathInputV1[] = fixtureMetadata.sourcePaths.map((path) => ({ path, absolutePath: verifiedSourceFilePath(verifiedRootPath, path, 'fixture-contract-mismatch') }));
       let actualFixture;
       try {
@@ -661,18 +816,16 @@ export function sourcePreflightV1(input: SourcePreflightInputV1): SourcePrefligh
     if (afterTree !== tree) return reject('source-tree-mismatch', 'Commit tree changed during preflight.');
     const buildVerification = verifyBuildHandoffV1(buildHandoff);
     if (buildVerification.status === 'rejected') return reject(buildVerification.code, buildVerification.detail);
-    const sourceCommitSha = fixtureMetadata.sourceCommitSha.status === 'observed' || fixtureMetadata.sourceCommitSha.status === 'declared'
-      ? fixtureMetadata.id === 'wp04-golden-world-v1'
-        ? observedBinding(fixtureMetadata.sourceCommitSha.value)
-        : fixtureMetadata.sourceCommitSha
-      : fixtureMetadata.sourceCommitSha;
+    const sourceCommitSha = registeredFixture === undefined
+      ? fixtureMetadata.sourceCommitSha
+      : observedBinding(registeredFixture.sourceCommitSha);
     const verifiedFixture: BenchmarkFixtureContractBindingV1 = {
       id: fixtureMetadata.id,
       version: fixtureMetadata.version,
       semanticSha256: observedBinding(fixtureSemanticDigest),
       sourceCommitSha,
-      sourceFileSetSha256: observedBinding(fixtureMetadata.sourceFileSetSha256),
-      sourcePaths: observedBinding(fixtureMetadata.sourcePaths),
+      sourceFileSetSha256: observedBinding(registeredFixture?.sourceFileSetSha256 ?? fixtureMetadata.sourceFileSetSha256),
+      sourcePaths: observedBinding(registeredFixture?.sourcePaths ?? fixtureMetadata.sourcePaths),
     };
     const verifiedCandidate: BenchmarkCandidateBindingV1 = {
       id: candidateMetadata.id,

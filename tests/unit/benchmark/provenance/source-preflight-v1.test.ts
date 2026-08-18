@@ -52,11 +52,35 @@ function loadWp04SourceBlobs(): ReadonlyMap<string, Uint8Array> {
 }
 
 const WP04_SOURCE_BLOBS = loadWp04SourceBlobs();
+const WP04_SOURCE_BLOB_OIDS = new Map<string, string>([
+  ['evidence/wp04/manifest.json', '370ee64a843b0f138c59f4a11c4b36807dac91d4'],
+  ['tests/contracts/wp02FixtureGolden.ts', 'bfb4e465efc2e5bafe6132979f4a486ff3431413'],
+  ['tests/contracts/wp03GreedyGolden.ts', 'b790fdbdca4d270c655ab1d82b7a89facd58cccd'],
+  ['tests/contracts/wp04AoGolden.ts', '41e9381169fed9ba3799931f53989786c9c95f27'],
+]);
 
 function acceptedWp04Blob(path: string): Uint8Array {
   const bytes = WP04_SOURCE_BLOBS.get(path as typeof WP04_SOURCE_PATHS[number]);
   if (bytes === undefined) throw new Error(`Unknown WP04 source path: ${path}`);
   return new Uint8Array(bytes);
+}
+
+function wp04HistoricalCommand(rawArgs: readonly string[]): SourcePreflightCommandResultV1 | undefined {
+  const args = rawArgs[0] === '--no-replace-objects' ? rawArgs.slice(1) : rawArgs;
+  if (args[0] === 'cat-file' && args[1] === '-t' && args[2] === BR01_ACCEPTED_WP04_SHA) return result('commit');
+  const path = args[0] === 'cat-file' && (args[1] === '-t' || args[1] === '-s')
+    ? [...WP04_SOURCE_BLOB_OIDS.entries()].find(([, oid]) => oid === args[2])?.[0]
+    : args[0] === 'cat-file' && args[1] === 'blob' && args[2]?.startsWith(`${BR01_ACCEPTED_WP04_SHA}:`)
+      ? args[2].slice(`${BR01_ACCEPTED_WP04_SHA}:`.length)
+    : args[args.length - 1];
+  if (path === undefined || !WP04_SOURCE_BLOBS.has(path)) return undefined;
+  const bytes = acceptedWp04Blob(path);
+  const oid = WP04_SOURCE_BLOB_OIDS.get(path)!;
+  if (args[0] === 'ls-tree' && args[3] === BR01_ACCEPTED_WP04_SHA) return { status: 0, stdout: new TextEncoder().encode(`100644 blob ${oid}\t${path}\0`), stderr: empty };
+  if (args[0] === 'cat-file' && args[1] === '-t') return result('blob');
+  if (args[0] === 'cat-file' && args[1] === '-s') return result(String(bytes.byteLength));
+  if (args[0] === 'cat-file' && args[1] === 'blob' && args[2] === `${BR01_ACCEPTED_WP04_SHA}:${path}`) return { status: 0, stdout: bytes, stderr: empty };
+  return undefined;
 }
 
 function runWp04Preflight(options: {
@@ -95,7 +119,8 @@ function runWp04Preflight(options: {
       if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(currentSourceCommitSha);
       if (args[0] === 'rev-parse' && args[2]?.endsWith('^{tree}')) return result('a'.repeat(40));
       if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
-      if (args[0] === 'cat-file' && args[1] === 'blob') return { status: 0, stdout: acceptedWp04Blob(args[2]!.slice(`${BR01_ACCEPTED_WP04_SHA}:`.length)), stderr: empty };
+      const historical = wp04HistoricalCommand(args);
+      if (historical !== undefined) return historical;
       const candidate = candidateCommandResult(args);
       if (candidate !== undefined) return candidate;
       return emptyResult();
@@ -707,10 +732,11 @@ describe('BR01 source preflight', () => {
       const response = (_command: string, args: readonly string[]): SourcePreflightCommandResultV1 => {
         if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return result(root);
         if (args[0] === 'rev-parse' && args[2] === 'HEAD^{commit}') return result(BR01_ACCEPTED_WP04_SHA);
-        if (args[0] === 'rev-parse' && args[2]?.endsWith('^{tree}')) return result('a'.repeat(40));
-        if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
-         if (args[0] === 'cat-file' && args[1] === 'blob') return { status: 0, stdout: acceptedWp04Blob(args[2]!.slice(`${BR01_ACCEPTED_WP04_SHA}:`.length)), stderr: empty };
-        const candidate = candidateCommandResult(args);
+         if (args[0] === 'rev-parse' && args[2]?.endsWith('^{tree}')) return result('a'.repeat(40));
+         if (args[0] === 'status' || args[0] === 'ls-files') return emptyResult();
+         const historical = wp04HistoricalCommand(args);
+         if (historical !== undefined) return historical;
+         const candidate = candidateCommandResult(args);
         if (candidate !== undefined) return candidate;
         return emptyResult();
       };
