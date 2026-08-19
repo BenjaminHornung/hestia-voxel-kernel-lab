@@ -251,7 +251,7 @@ export type TelemetryRecordDraftV1 =
   | (TelemetryDraftBaseV1 & { readonly kind: 'sample'; readonly name: 'browser.raf-interval'; readonly iterationId: CanonicalIdV1; readonly fields: TelemetryRafIntervalFieldsV1 })
   | (TelemetryDraftBaseV1 & { readonly kind: 'context'; readonly name: 'document.visibility'; readonly fields: TelemetryVisibilityFieldsV1 })
   | (TelemetryDraftBaseV1 & { readonly kind: 'context'; readonly name: 'document.focus'; readonly fields: TelemetryFocusFieldsV1 })
-  | (TelemetryDraftBaseV1 & { readonly kind: 'diagnostic'; readonly name: 'browser.event-timing'; readonly fields: TelemetryEventTimingFieldsV1 })
+  | (TelemetryDraftBaseV1 & { readonly kind: 'diagnostic'; readonly name: 'browser.event-timing'; readonly iterationId: CanonicalIdV1; readonly fields: TelemetryEventTimingFieldsV1 })
   | (TelemetryDraftBaseV1 & { readonly kind: 'control'; readonly name: 'telemetry.invalidation'; readonly fields: TelemetryInvalidationFieldsV1 });
 
 interface TelemetryRecordBaseV1 extends TelemetryDraftBaseV1 {
@@ -273,7 +273,7 @@ export type TelemetryRecordV1 =
   | (TelemetryRecordBaseV1 & { readonly kind: 'sample'; readonly name: 'browser.raf-interval'; readonly iterationId: CanonicalIdV1; readonly fields: TelemetryRafIntervalFieldsV1 })
   | (TelemetryRecordBaseV1 & { readonly kind: 'context'; readonly name: 'document.visibility'; readonly fields: TelemetryVisibilityFieldsV1 })
   | (TelemetryRecordBaseV1 & { readonly kind: 'context'; readonly name: 'document.focus'; readonly fields: TelemetryFocusFieldsV1 })
-  | (TelemetryRecordBaseV1 & { readonly kind: 'diagnostic'; readonly name: 'browser.event-timing'; readonly fields: TelemetryEventTimingFieldsV1 })
+  | (TelemetryRecordBaseV1 & { readonly kind: 'diagnostic'; readonly name: 'browser.event-timing'; readonly iterationId: CanonicalIdV1; readonly fields: TelemetryEventTimingFieldsV1 })
   | (TelemetryRecordBaseV1 & { readonly kind: 'control'; readonly name: 'telemetry.invalidation'; readonly fields: TelemetryInvalidationFieldsV1 });
 
 export type TelemetryValidityV1 =
@@ -598,6 +598,20 @@ function validateRecordFields(kind: TelemetryRecordKindV1, name: TelemetryRecord
   validateInvalidationFields(fields, path);
 }
 
+export function hasTelemetryTemporalBindingV1(
+  record: TelemetryRecordV1 | TelemetryRecordDraftV1,
+  iterationOrdinals: ReadonlyMap<string, number>,
+): boolean {
+  if (record.name !== 'browser.raf-interval' && record.name !== 'browser.long-task' && record.name !== 'browser.event-timing') return true;
+  if (record.iterationId === null) return false;
+  const iterationOrdinal = iterationOrdinals.get(record.iterationId);
+  if (iterationOrdinal === undefined) return false;
+  if (record.name === 'browser.event-timing') return record.fields.timeBlockOrdinal === iterationOrdinal;
+  return record.fields.dimensions.length === 1
+    && record.fields.dimensions[0]?.key === 'time-block-ordinal'
+    && record.fields.dimensions[0]?.value === iterationOrdinal;
+}
+
 interface RecordValidationContextV1 {
   readonly runId: CanonicalIdV1;
   readonly realmIds: ReadonlySet<string>;
@@ -618,7 +632,7 @@ function validateRecord(value: unknown, path: string, context: RecordValidationC
   const kind = record.kind; oneOf(kind, ['sample', 'context', 'diagnostic', 'control'], `${path}.kind`);
   const name = record.name; oneOf(name, ['run.total', 'worker.mesh-cpu', 'mesh.quads', 'mesh.output-bytes', 'coverage.sha256-match', 'browser.long-task', 'draw-submit.cpu', 'browser.raf-interval', 'document.visibility', 'document.focus', 'browser.event-timing', 'telemetry.invalidation'], `${path}.name`);
   const sample = ['run.total', 'worker.mesh-cpu', 'mesh.quads', 'mesh.output-bytes', 'coverage.sha256-match', 'browser.long-task', 'draw-submit.cpu', 'browser.raf-interval'].includes(name as string);
-  if (record.iterationId === null) { if (sample) fail(`${path}.iterationId`, 'iteration-reference-invalid', 'Sample records need an iteration.'); }
+  if (record.iterationId === null) { if (sample || name === 'browser.event-timing') fail(`${path}.iterationId`, 'iteration-reference-invalid', 'Record needs an iteration.'); }
   else if (!context.iterationIds.has(canonicalId(record.iterationId, `${path}.iterationId`))) fail(`${path}.iterationId`, 'iteration-reference-invalid', 'Record iteration is not registered.');
   const expectedKind = sample ? 'sample' : name === 'telemetry.invalidation' ? 'control' : name === 'browser.event-timing' ? 'diagnostic' : 'context';
   equal(kind, expectedKind, `${path}.kind`);
@@ -829,6 +843,7 @@ function assertTelemetryExport(value: unknown): Br02TelemetryExportV1 {
   let previousSampleIterationOrdinal: number | undefined;
   const validatedRecords = records.map((record, index) => {
     const validated = validateRecord(record, `$.records[${index}]`, { runId, realmIds, iterationIds, telemetryMode }, index, realmSequences);
+    if (!hasTelemetryTemporalBindingV1(validated, iterationOrdinals)) fail(`$.records[${index}]`, 'temporal-binding-invalid', 'Temporal record binding does not match its iteration.');
     if (validated.kind === 'sample') {
       const iterationOrdinal = iterationOrdinals.get(validated.iterationId);
       if (iterationOrdinal === undefined) fail(`$.records[${index}].iterationId`, 'iteration-reference-invalid', 'Record iteration is not registered.');

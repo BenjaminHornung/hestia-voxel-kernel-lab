@@ -434,7 +434,11 @@ export class BrowserTelemetryHandoffV1 {
   }
 
   public dispose(): void {
-    this.#collector?.dispose();
+    try {
+      this.#collector?.dispose();
+    } finally {
+      this.#sync();
+    }
   }
 
   #createElements(): HandoffElementsV1 {

@@ -247,6 +247,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   #sealedExport: Br02TelemetryExportV1 | null = null;
   #downloadAttempted = false;
   #disposed = false;
+  #disposing = false;
 
   public constructor(options: BrowserTelemetryCollectorOptionsV1) {
     this.#environment = options.environment ?? defaultEnvironment();
@@ -296,11 +297,11 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public get canStartCurrentIteration(): boolean {
-    return this.#state === 'ready' && !this.#completed.has(this.#currentOrdinal);
+    return !this.#disposing && !this.#disposed && this.#state === 'ready' && !this.#completed.has(this.#currentOrdinal);
   }
 
   public get canCompleteCurrentIteration(): boolean {
-    return this.#state === 'running' && this.#binding !== null;
+    return !this.#disposing && !this.#disposed && this.#state === 'running' && this.#binding !== null;
   }
 
   public get canCompleteAndSealCurrentIteration(): boolean {
@@ -308,17 +309,17 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public get canAdvanceToNextIteration(): boolean {
-    return this.#state === 'ready'
+    return !this.#disposing && !this.#disposed && this.#state === 'ready'
       && this.#completed.has(this.#currentOrdinal)
       && !this.#isFinalIteration();
   }
 
   public get canSeal(): boolean {
-    return this.#state === 'ready' && this.#completed.has(this.#currentOrdinal) && this.#isFinalIteration();
+    return !this.#disposing && !this.#disposed && this.#state === 'ready' && this.#completed.has(this.#currentOrdinal) && this.#isFinalIteration();
   }
 
   public get canExport(): boolean {
-    return this.#state === 'sealed' && this.#sealedExport !== null && !this.#downloadAttempted;
+    return !this.#disposing && !this.#disposed && this.#state === 'sealed' && this.#sealedExport !== null && !this.#downloadAttempted;
   }
 
   public get rendererSink(): RendererTelemetrySinkV1 {
@@ -326,14 +327,14 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public markReady(): boolean {
-    if (this.#state !== 'initializing' || this.#disposed || this.#webglContext === null) return false;
+    if (this.#state !== 'initializing' || this.#disposing || this.#disposed || this.#webglContext === null) return false;
     this.#state = 'ready';
     this.#notifyState();
     return true;
   }
 
   public startCurrentIteration(): boolean {
-    if (this.#state !== 'ready' || this.#disposed || this.#completed.has(this.#currentOrdinal)) return false;
+    if (this.#state !== 'ready' || this.#disposing || this.#disposed || this.#completed.has(this.#currentOrdinal)) return false;
     if (this.#visibility === 'hidden') {
       this.#invalidate('document-hidden', 'br02-document-hidden');
       return false;
@@ -354,7 +355,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public completeCurrentIteration(): boolean {
-    if (this.#state !== 'running' || this.#binding === null) return false;
+    if (this.#disposing || this.#disposed || this.#state !== 'running' || this.#binding === null) return false;
     this.#drainObserverQueues();
     if (this.#state !== 'running') return false;
     this.#completed.add(this.#currentOrdinal);
@@ -367,7 +368,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public completeAndSealCurrentIteration(): boolean {
-    if (this.#state !== 'running' || this.#binding === null || !this.#isFinalIteration()) return false;
+    if (this.#disposing || this.#disposed || this.#state !== 'running' || this.#binding === null || !this.#isFinalIteration()) return false;
     this.#drainObserverQueues();
     if (this.#state !== 'running') return false;
     this.#completed.add(this.#currentOrdinal);
@@ -378,7 +379,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public advanceToNextIteration(): boolean {
-    if (this.#state !== 'ready' || !this.#completed.has(this.#currentOrdinal)) return false;
+    if (this.#disposing || this.#disposed || this.#state !== 'ready' || !this.#completed.has(this.#currentOrdinal)) return false;
     if (this.#currentOrdinal + 1 >= this.#bootstrap.iterations.length) return false;
     this.#currentOrdinal += 1;
     this.#notifyState();
@@ -386,7 +387,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public seal(): boolean {
-    if (this.#state !== 'ready' || !this.#completed.has(this.#currentOrdinal) || !this.#isFinalIteration()) return false;
+    if (this.#disposing || this.#disposed || this.#state !== 'ready' || !this.#completed.has(this.#currentOrdinal) || !this.#isFinalIteration()) return false;
     return this.#sealInternal();
   }
 
@@ -395,10 +396,11 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public scheduleExportDownload(environment: BrowserTelemetryDownloadEnvironmentV1): boolean {
-    if (this.#state !== 'sealed' || this.#sealedExport === null || this.#downloadAttempted) return false;
+    if (this.#disposing || this.#disposed || this.#state !== 'sealed' || this.#sealedExport === null || this.#downloadAttempted) return false;
     this.#downloadAttempted = true;
     try {
       environment.setTimeout(() => {
+        if (this.#disposing || this.#disposed) return;
         let url: string | null = null;
         const revokeUrl = (): void => {
           if (url === null) return;
@@ -431,7 +433,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public onAnimationFrame(timestamp: number): void {
-    if (this.#state !== 'running' || this.#binding === null || !hasExactReachability(this.#bootstrap, 'browser.raf-interval')) return;
+    if (this.#disposing || this.#disposed || this.#state !== 'running' || this.#binding === null || !hasExactReachability(this.#bootstrap, 'browser.raf-interval')) return;
     let sourceTimestamp: number;
     try {
       sourceTimestamp = this.#clock.sourceTimestamp(timestamp);
@@ -466,7 +468,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public beforeDraw(): void {
-    if (this.#state !== 'running' || this.#binding === null || this.#drawStart !== null || !hasExactReachability(this.#bootstrap, 'draw-submit.cpu')) return;
+    if (this.#disposing || this.#disposed || this.#state !== 'running' || this.#binding === null || this.#drawStart !== null || !hasExactReachability(this.#bootstrap, 'draw-submit.cpu')) return;
     try {
       this.#drawStart = this.#clock.marker().absoluteMonotonicMs;
     } catch {
@@ -475,6 +477,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public afterDraw(): void {
+    if (this.#disposing || this.#disposed) return;
     const startMs = this.#drawStart;
     this.#drawStart = null;
     if (startMs === null || this.#state !== 'running' || this.#binding === null) return;
@@ -500,17 +503,17 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public onWebglContextLost(): void {
-    if (this.#state === 'sealed' || this.#state === 'invalid') return;
+    if (this.#disposing || this.#disposed || this.#state === 'sealed' || this.#state === 'invalid') return;
     this.#invalidate('webgl-context-loss', 'br02-webgl-context-loss');
   }
 
   public onWebgpuDeviceLost(): void {
-    if (this.#state === 'sealed' || this.#state === 'invalid') return;
+    if (this.#disposing || this.#disposed || this.#state === 'sealed' || this.#state === 'invalid') return;
     this.#invalidate('webgpu-device-loss', 'br02-webgpu-device-loss');
   }
 
   public markRendererFailed(): void {
-    if (this.#state === 'sealed' || this.#state === 'invalid' || this.#disposed) return;
+    if (this.#state === 'sealed' || this.#state === 'invalid' || this.#disposing || this.#disposed) return;
     this.#state = 'invalid';
     this.#reason = 'renderer-failure';
     this.#binding = null;
@@ -524,6 +527,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordRunTotal(startMs: number, value: number): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'run.total')) return false;
     return this.#appendSample({
@@ -537,6 +541,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordWorkerMeshCpu(startMs: number, value: number, chunkKey: string): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'worker.mesh-cpu')) return false;
     let canonicalChunkKey: CanonicalIdV1;
@@ -564,6 +569,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordMeshQuads(startMs: number, value: number): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'mesh.quads')) return false;
     return this.#appendSample({
@@ -577,6 +583,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordMeshOutputBytes(startMs: number, value: number): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'mesh.output-bytes')) return false;
     return this.#appendSample({
@@ -590,6 +597,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordCoverage(startMs: number, digest: `sha256:${string}`): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'coverage.sha256-match')) return false;
     return this.#appendSample({
@@ -612,11 +620,13 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordLongTask(startMs: number, value: number): boolean {
+    if (this.#disposing || this.#disposed) return false;
     if (this.#state !== 'running' || this.#bootstrap.telemetryMode !== 'telemetry-enabled-full' || !hasExactReachability(this.#bootstrap, 'browser.long-task')) return false;
     return this.#appendLongTask(startMs, value);
   }
 
   public recordDrawSubmit(startMs: number, value: number): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'draw-submit.cpu')) return false;
     return this.#appendSample({
@@ -630,6 +640,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public recordRafInterval(startMs: number, value: number): boolean {
+    if (this.#disposing || this.#disposed) return false;
     const iterationId = this.#binding;
     if (iterationId === null || !hasExactReachability(this.#bootstrap, 'browser.raf-interval')) return false;
     return this.#appendSample({
@@ -649,12 +660,30 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   public dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    this.#environment.document.removeEventListener('visibilitychange', this.#visibilityChanged);
-    this.#environment.window.removeEventListener('focus', this.#focusChanged);
-    this.#environment.window.removeEventListener('blur', this.#focusChanged);
-    this.#disconnectObservers();
+    if (this.#disposed || this.#disposing) return;
+    this.#disposing = true;
+    try {
+      try { this.#environment.document.removeEventListener('visibilitychange', this.#visibilityChanged); } catch { /* Teardown must continue. */ }
+      try { this.#environment.window.removeEventListener('focus', this.#focusChanged); } catch { /* Teardown must continue. */ }
+      try { this.#environment.window.removeEventListener('blur', this.#focusChanged); } catch { /* Teardown must continue. */ }
+      try {
+        if (this.#state === 'running' && this.#binding !== null) this.#drainObserverQueues();
+      } catch {
+        try { this.#invalidate('export-invalid', 'br02-record-invalid'); } catch { /* Cleanup must not rethrow callbacks. */ }
+      } finally {
+        try {
+          this.#disconnectObservers(false);
+        } catch {
+          try { this.#invalidate('export-invalid', 'br02-context-invalid'); } catch { /* Cleanup must not rethrow callbacks. */ }
+        }
+      }
+    } finally {
+      this.#binding = null;
+      this.#rafBaseline = null;
+      this.#drawStart = null;
+      this.#disposed = true;
+      this.#disposing = false;
+    }
   }
 
   #probeWebgl2(): WebGL2RenderingContext | null {
@@ -778,19 +807,21 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   #recordVisibility(value: 'visible' | 'hidden'): void {
+    if (this.#disposing || this.#disposed) return;
     this.#visibility = value;
     this.#recordContext('document.visibility', { value });
     if (value === 'hidden' && this.#state === 'running') this.#invalidate('document-hidden', 'br02-document-hidden');
   }
 
   #recordFocus(value: 'focused' | 'unfocused'): void {
+    if (this.#disposing || this.#disposed) return;
     this.#focus = value;
     this.#recordContext('document.focus', { value });
     if (value === 'unfocused' && this.#state === 'running') this.#invalidate('document-unfocused', 'br02-document-unfocused');
   }
 
   #recordContext(name: 'document.visibility' | 'document.focus', fields: { readonly value: 'visible' | 'hidden' | 'focused' | 'unfocused' }): void {
-    if (this.#state === 'invalid' || this.#state === 'sealed') return;
+    if (this.#disposing || this.#disposed || this.#state === 'invalid' || this.#state === 'sealed') return;
     try {
       const marker = this.#clock.marker();
       if (name === 'document.visibility') {
@@ -822,7 +853,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
     list: PerformanceObserverEntryListV1,
     options?: PerformanceObserverCallbackOptionsV1 | number,
   ): void {
-    if (this.#state !== 'running' || this.#binding === null) return;
+    if (this.#disposing || this.#disposed || this.#state !== 'running' || this.#binding === null) return;
     const state = this.#observers[entryType];
     if (this.#requiresObserverAccounting(state)) {
       const dropped = typeof options === 'number' ? options : options?.droppedEntriesCount;
@@ -851,7 +882,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
 
   #appendLongTask(startMs: number, value: number): boolean {
     const iterationId = this.#binding;
-    if (this.#state !== 'running' || this.#bootstrap.telemetryMode !== 'telemetry-enabled-full' || iterationId === null || !hasExactReachability(this.#bootstrap, 'browser.long-task')) return false;
+    if (this.#disposed || this.#state !== 'running' || this.#bootstrap.telemetryMode !== 'telemetry-enabled-full' || iterationId === null || !hasExactReachability(this.#bootstrap, 'browser.long-task')) return false;
     return this.#appendSample({
       realmId: MAIN_REALM_ID,
       startMs,
@@ -869,7 +900,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   #appendEventTiming(startMs: number, durationMs: number): boolean {
-    if (this.#bootstrap.telemetryMode !== 'telemetry-enabled-full' || this.#state !== 'running' || this.#binding === null) return false;
+    if (this.#disposed || this.#bootstrap.telemetryMode !== 'telemetry-enabled-full' || this.#state !== 'running' || this.#binding === null) return false;
     return this.#appendDraft({
       realmId: MAIN_REALM_ID,
       startMs,
@@ -881,7 +912,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
   }
 
   #appendSample(draft: TelemetryRecordDraftV1): boolean {
-    if (draft.kind !== 'sample' || !SAMPLE_NAMES.has(draft.name) || this.#state !== 'running' || this.#binding === null) return false;
+    if (this.#disposed || draft.kind !== 'sample' || !SAMPLE_NAMES.has(draft.name) || this.#state !== 'running' || this.#binding === null) return false;
     if (!hasExactReachability(this.#bootstrap, draft.name)) return false;
     return this.#appendDraft(draft);
   }
@@ -937,40 +968,60 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
       try {
         records = state.observer.takeRecords();
       } catch {
-        this.#invalidate('export-invalid', 'br02-context-invalid');
+        try { this.#invalidate('export-invalid', 'br02-context-invalid'); } catch { /* Cleanup must continue. */ }
         continue;
       }
-      if (processRecords) this.#processObserverEntries(entryType, records);
+      if (processRecords) {
+        try { this.#processObserverEntries(entryType, records); } catch {
+          try { this.#invalidate('export-invalid', 'br02-record-invalid'); } catch { /* Cleanup must continue. */ }
+        }
+      }
     }
   }
 
   #processObserverEntries(entryType: TelemetryObserverDropEntryTypeV1, records: readonly PerformanceEntryV1[]): void {
     if (entryType === 'longtask' && !hasExactReachability(this.#bootstrap, 'browser.long-task')) return;
-    for (const entry of records) {
-      if (entryType === 'longtask') this.#appendLongTask(entry.startTime, entry.duration);
-      else this.#appendEventTiming(entry.startTime, entry.duration);
-      if (this.#state !== 'running' || this.#binding === null) return;
+    try {
+      for (const entry of records) {
+        if (entryType === 'longtask') this.#appendLongTask(entry.startTime, entry.duration);
+        else this.#appendEventTiming(entry.startTime, entry.duration);
+        if (this.#state !== 'running' || this.#binding === null) return;
+      }
+    } catch {
+      try { this.#invalidate('export-invalid', 'br02-record-invalid'); } catch { /* Cleanup must continue. */ }
     }
   }
 
   #disconnectObservers(drainBeforeDisconnect = true): void {
     for (const state of Object.values(this.#observers)) {
-      if (state.observer === null) continue;
-      if (drainBeforeDisconnect) {
-        try {
-          const records = state.observer.takeRecords();
-          if (this.#state === 'running' && this.#binding !== null) this.#processObserverEntries(state.entryType, records);
-        } catch {
-          if (!this.#disposed && this.#state !== 'sealed') this.#invalidate('export-invalid', 'br02-context-invalid');
-        }
-      }
+      const observer = state.observer;
+      if (observer === null) continue;
       try {
-        state.observer.disconnect();
-      } catch {
-        if (!this.#disposed && this.#state !== 'sealed') this.#invalidate('export-invalid', 'br02-context-invalid');
+        if (drainBeforeDisconnect) {
+          try {
+            const records = observer.takeRecords();
+            if (this.#state === 'running' && this.#binding !== null) {
+              try { this.#processObserverEntries(state.entryType, records); } catch {
+                try { this.#invalidate('export-invalid', 'br02-record-invalid'); } catch { /* Cleanup must continue. */ }
+              }
+            }
+          } catch {
+            if (!this.#disposed && this.#state !== 'sealed') {
+              try { this.#invalidate('export-invalid', 'br02-context-invalid'); } catch { /* Cleanup must continue. */ }
+            }
+          }
+        }
+        try {
+          observer.disconnect();
+        } catch {
+          if (!this.#disposed && this.#state !== 'sealed') {
+            try { this.#invalidate('export-invalid', 'br02-context-invalid'); } catch { /* Cleanup must continue. */ }
+          }
+        }
+      } finally {
+        state.observer = null;
+        state.active = false;
       }
-      state.observer = null;
-      state.active = false;
     }
   }
 

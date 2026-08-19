@@ -27,6 +27,7 @@ import {
   TelemetryRealmV1,
   chargeRecordV1,
   compareReasonsV1,
+  hasTelemetryTemporalBindingV1,
   reasonForDetailCodeV1,
   serializeSealedTelemetryExportV1,
   validateTelemetryExportV1,
@@ -103,6 +104,7 @@ export class TelemetryBufferV1 implements TelemetryBufferV1Api {
   readonly #capabilities: readonly TelemetryCapabilityV1[];
   readonly #realmIds: ReadonlySet<string>;
   readonly #iterationIds: ReadonlySet<string>;
+  readonly #iterationOrdinals: ReadonlyMap<string, number>;
   readonly #segments: TelemetryRecordV1[][] = [];
   readonly #realmSequences = new Map<string, number>();
   readonly #openSpans = new Set<string>();
@@ -179,11 +181,15 @@ export class TelemetryBufferV1 implements TelemetryBufferV1Api {
     deepFreeze(this.#iterations);
     deepFreeze(this.#realms);
     deepFreeze(this.#capabilities);
+    this.#iterationOrdinals = new Map(this.#iterations.map((iteration) => [iteration.iterationId, iteration.iterationOrdinal]));
   }
 
   public append(draft: TelemetryRecordDraftV1): TelemetryAppendResultV1 {
     if (this.#sealed) return { status: 'rejected', reason: 'sealed' };
-    if (!validateTelemetryRecordDraftV1(draft) || !this.#realmIds.has(draft.realmId) || (draft.iterationId !== null && !this.#iterationIds.has(draft.iterationId))) {
+    if (!validateTelemetryRecordDraftV1(draft)
+      || !this.#realmIds.has(draft.realmId)
+      || (draft.iterationId !== null && !this.#iterationIds.has(draft.iterationId))
+      || !hasTelemetryTemporalBindingV1(draft, this.#iterationOrdinals)) {
       this.#dataRecordsDropped += 1;
       this.#rememberIssue('br02-record-invalid');
       this.#appendInvalidation('export-invalid', 'br02-record-invalid');

@@ -16,7 +16,11 @@ import type {
   TelemetryExportV1,
 } from '../../../../src/benchmark/contracts/browserV1';
 import { adaptTelemetryExportV1 } from '../../../../src/benchmark/adapters';
-import { deriveTelemetryCapabilityIdsV1 } from '../../../../src/diagnostics/telemetry/contractV1';
+import {
+  deriveTelemetryCapabilityIdsV1,
+  isTelemetryExportV1,
+  validateTelemetryExportV1,
+} from '../../../../src/diagnostics/telemetry/contractV1';
 import { createTelemetryBufferV1 } from '../../../../src/diagnostics/telemetry/bufferV1';
 import { applySyntheticFutureProducerRecordsV1, createBenchmarkCaseDocumentV1, createBenchmarkValidationContextV1 } from '../contracts/benchmark-case-fixtures-v1';
 import type {
@@ -61,6 +65,7 @@ function sampleDraft(
   realmId = 'main-realm',
   value = 1,
   startMs = 1,
+  timeBlockOrdinal = 0,
 ): TelemetryRecordDraftV1 {
   const base = { realmId: id(realmId), startMs, kind: 'sample' as const, name, iterationId: id(iterationId) };
   if (name === 'run.total') return { ...base, fields: { sampleKind: 'duration', sourceUnit: 'ms', value, operationId: id('operation'), spanId: id('span') } } as TelemetryRecordDraftV1;
@@ -68,9 +73,9 @@ function sampleDraft(
   if (name === 'mesh.quads') return { ...base, fields: { sampleKind: 'counter', sourceUnit: 'count', value, operationId: id('operation') } } as TelemetryRecordDraftV1;
   if (name === 'mesh.output-bytes') return { ...base, fields: { sampleKind: 'memory', sourceUnit: 'byte', value, operationId: id('operation') } } as TelemetryRecordDraftV1;
   if (name === 'coverage.sha256-match') return { ...base, fields: { sampleKind: 'liveness', sourceUnit: 'count', value: value as 1, operationId: id('operation'), dimensions: [{ key: 'actual-sha256', value: digest }, { key: 'expected-sha256', value: digest }] } } as TelemetryRecordDraftV1;
-  if (name === 'browser.long-task') return { ...base, fields: { sampleKind: 'long-task', sourceUnit: 'ms', value, operationId: id('operation'), dimensions: [{ key: 'time-block-ordinal', value: 0 }] } } as TelemetryRecordDraftV1;
+  if (name === 'browser.long-task') return { ...base, fields: { sampleKind: 'long-task', sourceUnit: 'ms', value, operationId: id('operation'), dimensions: [{ key: 'time-block-ordinal', value: timeBlockOrdinal }] } } as TelemetryRecordDraftV1;
   if (name === 'draw-submit.cpu') return { ...base, fields: { sampleKind: 'duration', sourceUnit: 'ms', value, operationId: id('operation'), spanId: id('span') } } as TelemetryRecordDraftV1;
-  return { ...base, fields: { sampleKind: 'frame', sourceUnit: 'ms', value, operationId: id('operation'), dimensions: [{ key: 'time-block-ordinal', value: 0 }] } } as TelemetryRecordDraftV1;
+  return { ...base, fields: { sampleKind: 'frame', sourceUnit: 'ms', value, operationId: id('operation'), dimensions: [{ key: 'time-block-ordinal', value: timeBlockOrdinal }] } } as TelemetryRecordDraftV1;
 }
 
 function contextFor(value: Br02TelemetryExportV1, iterationId = value.iterations[0]!.iterationId, phase: TestPhase = value.phase): TelemetryAdapterContextV1 {
@@ -189,7 +194,7 @@ describe('BR02 telemetry export adapter', () => {
 
   it('keeps context, diagnostic, and control records out of samples', () => {
     const contextExport = makeExport({ drafts: [{ realmId: id('main-realm'), startMs: 1, kind: 'context', name: 'document.visibility', iterationId: null, fields: { value: 'visible' } }] });
-    const diagnosticExport = makeExport({ telemetryMode: 'telemetry-enabled-full', drafts: [{ realmId: id('main-realm'), startMs: 2, kind: 'diagnostic', name: 'browser.event-timing', iterationId: null, fields: { durationMs: 2, timeBlockOrdinal: 0 } }] });
+    const diagnosticExport = makeExport({ telemetryMode: 'telemetry-enabled-full', drafts: [{ realmId: id('main-realm'), startMs: 2, kind: 'diagnostic', name: 'browser.event-timing', iterationId: id('iteration-0'), fields: { durationMs: 2, timeBlockOrdinal: 0 } }] });
     const controlExport = makeExport({ drafts: [{ realmId: id('main-realm'), startMs: 3, kind: 'control', name: 'telemetry.invalidation', iterationId: null, fields: { source: 'clock-anomaly', reasonCode: 'clock-invalid', detailCode: 'br02-clock-invalid' } }] });
     expect(adapt(contextExport, contextFor(contextExport))).toMatchObject({ samples: [], invalidReasons: [] });
     expect(adapt(diagnosticExport, contextFor(diagnosticExport))).toMatchObject({ samples: [], invalidReasons: [] });
@@ -398,6 +403,17 @@ describe('BR02 telemetry export adapter', () => {
     expectReason(adapt(value, contextFor(value, id('iteration-a'))), 'sample-invalid', 'br02-iteration-invalid');
   });
 
+  it('rejects a mutated temporal binding before adapter projection', () => {
+    const value = clone(makeExport({
+      scenarioId: 'backend-fixture-v1',
+      drafts: [sampleDraft('browser.raf-interval')],
+    })) as any;
+    value.records[0].fields.dimensions[0].value = 1;
+    expect(validateTelemetryExportV1(value).valid).toBe(false);
+    expect(isTelemetryExportV1(value)).toBe(false);
+    expectReason(adapt(value, contextFor(value)), 'sample-invalid', 'br02-export-invalid');
+  });
+
   it('returns only BR01 fields and preserves fractional values without rounding or aggregation', () => {
     const value = makeExport({ drafts: [sampleDraft('run.total', 'iteration-0', 'main-realm', 1.23456789, 12.3456789)] });
     const result = adapt(value, contextFor(value));
@@ -442,7 +458,7 @@ describe('BR02 telemetry export adapter', () => {
     }));
     const drafts = targetRun.iterations.flatMap((iteration: any) => [
       sampleDraft('draw-submit.cpu', iteration.iterationId, 'main-realm', 1, 1),
-      sampleDraft('browser.raf-interval', iteration.iterationId, 'main-realm', 2, 2),
+      sampleDraft('browser.raf-interval', iteration.iterationId, 'main-realm', 2, 2, iteration.iterationOrdinal),
     ]);
     const exportValue = makeExport({
       runId: targetRun.runId,

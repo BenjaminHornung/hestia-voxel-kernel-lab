@@ -180,3 +180,10 @@ Later BR03 work may add observation/control orchestration, runner-owned
 iteration scheduling, browser-process identity, and external authority
 bindings. Those controls are deliberately absent from this BR02 startup UI
 and collector.
+
+## Temporal binding and disposal
+
+- Every `browser.raf-interval` and `browser.long-task` time-block ordinal equals the declared ordinal of its registered iteration.
+- Every `browser.event-timing` record is bound to a non-null registered iteration and its time-block ordinal equals that iteration's declared ordinal.
+- Disposal drains active observer queues while the collector is still bound and running, then disconnects observers before latching disposal.
+- After disposal, lifecycle and export actions are blocked while a pre-sealed snapshot and its canonical bytes remain unchanged.

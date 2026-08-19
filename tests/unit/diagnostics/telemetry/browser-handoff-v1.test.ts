@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BenchmarkBackendCellV1, BenchmarkSamplePhaseV1, CanonicalIdV1 } from '../../../../src/benchmark/contracts/browserV1';
 import {
   BR02_BROWSER_HANDOFF_CONTRACT_ID,
@@ -41,6 +41,7 @@ class FakeElement {
   textContent = '';
   disabled = false;
   className = '';
+  readonly listeners = new Map<string, (...args: any[]) => void>();
   readonly tagName: string;
 
   public constructor(tagName: string) {
@@ -64,7 +65,9 @@ class FakeElement {
     this.children.splice(index < 0 ? this.children.length : index, 0, child);
   }
 
-  public addEventListener(_type: string, _listener: (...args: any[]) => void): void {}
+  public addEventListener(type: string, listener: (...args: any[]) => void): void { this.listeners.set(type, listener); }
+
+  public click(): void { this.listeners.get('click')?.(new Event('click')); }
 
   public querySelector<T extends FakeElement>(selector: string): T | null {
     const testId = selector.match(/\[data-testid="([^"]+)"\]/)?.[1];
@@ -202,6 +205,83 @@ describe('BR02 browser handoff v1', () => {
     expect(handoff.collector?.completeCurrentIteration()).toBe(true);
     expect(handoff.collector?.advanceToNextIteration()).toBe(true);
     expect(root.querySelector<FakeElement>('[data-testid="telemetry-current-iteration"]')?.textContent).toBe('id=iteration-1; ordinal=1');
+  });
+
+  it('disables every existing control and ignores clicks after handoff disposal', () => {
+    const root = handoffRoot();
+    const environment = handoffEnvironment();
+    const handoff = new BrowserTelemetryHandoffV1(root as unknown as HTMLElement, {
+      document: { createElement: (tag: string) => new FakeElement(tag) } as unknown as Document,
+      window: environment.window as unknown as Window,
+      collectorEnvironment: {
+        document: environment.document as any,
+        window: environment.window as any,
+        performance: environment.window.performance as { timeOrigin: number; now(): number },
+      },
+    });
+    expect(handoff.markRendererReady()).toBe(true);
+    expect(handoff.collector?.startCurrentIteration()).toBe(true);
+    const collector = handoff.collector!;
+
+    handoff.dispose();
+
+    const controls = [
+      'telemetry-start-current-iteration',
+      'telemetry-complete-current-iteration',
+      'telemetry-advance-next-iteration',
+      'telemetry-seal',
+      'telemetry-export',
+    ];
+    for (const testId of controls) {
+      const button = root.querySelector<FakeElement>(`[data-testid="${testId}"]`)!;
+      expect(button.disabled).toBe(true);
+      button.click();
+    }
+    expect(collector.state).toBe('running');
+    expect(collector.snapshot()).toBeNull();
+    expect(collector.canExport).toBe(false);
+    handoff.dispose();
+    expect(collector.snapshot()).toBeNull();
+  });
+
+  it('reprojects controls in finally when collector disposal throws', () => {
+    const root = handoffRoot();
+    const environment = handoffEnvironment();
+    const handoff = new BrowserTelemetryHandoffV1(root as unknown as HTMLElement, {
+      document: { createElement: (tag: string) => new FakeElement(tag) } as unknown as Document,
+      window: environment.window as unknown as Window,
+      collectorEnvironment: {
+        document: environment.document as any,
+        window: environment.window as any,
+        performance: environment.window.performance as { timeOrigin: number; now(): number },
+      },
+    });
+    expect(handoff.markRendererReady()).toBe(true);
+    const collector = handoff.collector!;
+    const start = root.querySelector<FakeElement>('[data-testid="telemetry-start-current-iteration"]')!;
+    expect(start.disabled).toBe(false);
+    const canStart = vi.spyOn(collector, 'canStartCurrentIteration', 'get');
+    const dispose = vi.spyOn(collector, 'dispose').mockImplementation(() => {
+      canStart.mockReturnValue(false);
+      throw new Error('dispose failed');
+    });
+
+    try {
+      expect(() => handoff.dispose()).toThrow('dispose failed');
+      expect(start.disabled).toBe(true);
+      for (const testId of [
+        'telemetry-start-current-iteration',
+        'telemetry-complete-current-iteration',
+        'telemetry-advance-next-iteration',
+        'telemetry-seal',
+        'telemetry-export',
+      ]) {
+        expect(root.querySelector<FakeElement>(`[data-testid="${testId}"]`)?.disabled).toBe(true);
+      }
+    } finally {
+      dispose.mockRestore();
+      canStart.mockRestore();
+    }
   });
 
   it('attributes renderer failure without context loss, preserves sealed state, and uses fixed initialization failure', () => {

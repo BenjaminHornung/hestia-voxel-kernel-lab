@@ -16,6 +16,8 @@ import {
   deriveTelemetryCapabilityIdsV1,
   isTelemetryExportV1,
   serializeSealedTelemetryExportV1,
+  validateTelemetryRecordDraftV1,
+  validateTelemetryRecordV1,
   validateTelemetryExportV1,
 } from '../../../../src/diagnostics/telemetry/contractV1';
 import { createTelemetryBufferV1 as createBuffer } from '../../../../src/diagnostics/telemetry/bufferV1';
@@ -143,6 +145,52 @@ describe('BR02 telemetry contract v1', () => {
     value.records[0].iterationId = 'iteration-1';
     value.records[1].iterationId = 'iteration-0';
     expect(validateTelemetryExportV1(value).valid).toBe(false);
+  });
+
+  it('binds RAF, long-task, and event-timing records to their declared iteration ordinals', () => {
+    const iterations = [
+      { iterationId: id('iteration-0'), iterationOrdinal: 0 },
+      { iterationId: id('iteration-1'), iterationOrdinal: 1 },
+    ] as const;
+    const temporalDrafts: TelemetryRecordDraftV1[] = [
+      { realmId: id('main'), startMs: 1, kind: 'sample', name: 'browser.raf-interval', iterationId: id('iteration-0'), fields: { sampleKind: 'frame', sourceUnit: 'ms', value: 1, operationId: id('op'), dimensions: [{ key: 'time-block-ordinal', value: 0 }] } },
+      { realmId: id('main'), startMs: 2, kind: 'sample', name: 'browser.long-task', iterationId: id('iteration-0'), fields: { sampleKind: 'long-task', sourceUnit: 'ms', value: 1, operationId: id('op'), dimensions: [{ key: 'time-block-ordinal', value: 0 }] } },
+      { realmId: id('main'), startMs: 3, kind: 'diagnostic', name: 'browser.event-timing', iterationId: id('iteration-0'), fields: { durationMs: 1, timeBlockOrdinal: 0 } },
+      { realmId: id('main'), startMs: 4, kind: 'sample', name: 'browser.raf-interval', iterationId: id('iteration-1'), fields: { sampleKind: 'frame', sourceUnit: 'ms', value: 1, operationId: id('op'), dimensions: [{ key: 'time-block-ordinal', value: 1 }] } },
+      { realmId: id('main'), startMs: 5, kind: 'sample', name: 'browser.long-task', iterationId: id('iteration-1'), fields: { sampleKind: 'long-task', sourceUnit: 'ms', value: 1, operationId: id('op'), dimensions: [{ key: 'time-block-ordinal', value: 1 }] } },
+      { realmId: id('main'), startMs: 6, kind: 'diagnostic', name: 'browser.event-timing', iterationId: id('iteration-1'), fields: { durationMs: 1, timeBlockOrdinal: 1 } },
+    ];
+    const input = { ...baseInput, telemetryMode: 'telemetry-enabled-full' as const, iterations };
+    const buffer = createBuffer(input);
+    for (const draft of temporalDrafts) expect(buffer.append(draft).status).toBe('accepted');
+    const value = buffer.seal();
+    expect(validateTelemetryExportV1(value).valid).toBe(true);
+
+    for (const draft of temporalDrafts.filter((candidate) => candidate.iterationId === id('iteration-1'))) {
+      const mismatched = clone(draft) as any;
+      if (mismatched.name === 'browser.event-timing') mismatched.fields.timeBlockOrdinal = 0;
+      else mismatched.fields.dimensions[0].value = 0;
+      const rejected = createBuffer(input).append(mismatched);
+      expect(rejected.status).toBe('rejected');
+      const mutated = clone(value) as any;
+      const record = mutated.records.find((candidate: any) => candidate.name === draft.name && candidate.iterationId === draft.iterationId);
+      if (record.name === 'browser.event-timing') record.fields.timeBlockOrdinal = 0;
+      else record.fields.dimensions[0].value = 0;
+      expect(validateTelemetryExportV1(mutated).valid).toBe(false);
+      expect(isTelemetryExportV1(mutated)).toBe(false);
+    }
+
+    const eventRecord = clone(value.records.find((record) => record.name === 'browser.event-timing')!);
+    (eventRecord as any).fields.timeBlockOrdinal = 99;
+    expect(validateTelemetryRecordV1(eventRecord)).toBe(true);
+    const eventDraft = { ...eventRecord } as any;
+    delete eventDraft.schemaVersion;
+    delete eventDraft.runId;
+    delete eventDraft.recordId;
+    delete eventDraft.realmSequence;
+    delete eventDraft.ingestSequence;
+    expect(validateTelemetryRecordDraftV1(eventDraft)).toBe(true);
+    expect(validateTelemetryRecordDraftV1({ ...eventDraft, iterationId: null })).toBe(false);
   });
 
   it('enforces each closed record variant and rejects privacy or unit substitutions', () => {

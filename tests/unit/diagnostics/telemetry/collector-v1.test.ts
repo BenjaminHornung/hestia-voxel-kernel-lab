@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CanonicalIdV1 } from '../../../../src/benchmark/contracts/browserV1';
+import { serializeSealedTelemetryExportV1 } from '../../../../src/diagnostics/telemetry/contractV1';
 import {
   BrowserTelemetryCollectorV1,
   type BrowserTelemetryCollectorEnvironmentV1,
 } from '../../../../src/diagnostics/telemetry/collectorV1';
+import { TelemetryBufferV1 } from '../../../../src/diagnostics/telemetry/bufferV1';
 import type { BrowserTelemetryHandoffEnvelopeV1 } from '../../../../src/diagnostics/telemetry/browserHandoffV1';
 import { rethrowRendererFailureV1 } from '../../../../src/render-three/threeVoxelRenderer';
 
@@ -39,6 +41,8 @@ interface FakeDom {
     removeEventListener(type: string, listener: (event: Event) => void): void;
   };
   readonly performance: { timeOrigin: number; now(): number };
+  readonly removedDocumentListeners: string[];
+  readonly removedWindowListeners: string[];
   fireDocument(type: string): void;
   fireWindow(type: string): void;
 }
@@ -49,19 +53,23 @@ function fakeDom(): FakeDom {
   let now = 0;
   const documentListeners = new Map<string, (event: Event) => void>();
   const windowListeners = new Map<string, (event: Event) => void>();
+  const removedDocumentListeners: string[] = [];
+  const removedWindowListeners: string[] = [];
   const value: FakeDom = {
     document: {
       get visibilityState() { return visibility; },
       hasFocus: () => focused,
       addEventListener: (type, listener) => { documentListeners.set(type, listener); },
-      removeEventListener: (type) => { documentListeners.delete(type); },
+      removeEventListener: (type) => { removedDocumentListeners.push(type); documentListeners.delete(type); },
     },
     window: {
       requestAnimationFrame: () => 1,
       Worker: function Worker() {},
       addEventListener: (type, listener) => { windowListeners.set(type, listener); },
-      removeEventListener: (type) => { windowListeners.delete(type); },
+      removeEventListener: (type) => { removedWindowListeners.push(type); windowListeners.delete(type); },
     },
+    removedDocumentListeners,
+    removedWindowListeners,
     performance: {
       timeOrigin: 1000,
       now: () => now,
@@ -410,6 +418,321 @@ describe('BR02 browser collector v1', () => {
     expect(eventObserver.disconnected).toBe(true);
     expect(collector.snapshot()!.records.filter((record) => record.name === 'browser.event-timing')).toHaveLength(1);
     expect(collector.snapshot()!.validity).toEqual({ status: 'valid', reasons: [] });
+  });
+
+  it('drains and processes active observer queues before latching disposal', () => {
+    const callbacks: Array<(list: any, observer: any, options?: any) => void> = [];
+    const observers: Array<{ readonly queue: any[]; takeCount: number; disconnectCount: number }> = [];
+    const appendSpy = vi.spyOn(TelemetryBufferV1.prototype, 'append');
+    let entryReads = 0;
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ['longtask', 'event'];
+      readonly queue: any[] = [];
+      takeCount = 0;
+      disconnectCount = 0;
+      constructor(callback: (list: any, observer: any, options?: any) => void) { callbacks.push(callback); observers.push(this); }
+      observe(): void {}
+      takeRecords(): readonly any[] { this.takeCount += 1; const result = [...this.queue]; this.queue.length = 0; return result; }
+      disconnect(): void { this.disconnectCount += 1; expect(this.queue).toEqual([]); }
+    }
+    try {
+      const dom = fakeDom();
+      const collector = new BrowserTelemetryCollectorV1({
+        bootstrap: envelope({ telemetryMode: 'telemetry-enabled-full' }),
+        canvas: canvas(),
+        environment: environment(dom, FakePerformanceObserver),
+      });
+      collector.markReady();
+      collector.startCurrentIteration();
+      callbacks[0]?.({ getEntries: () => [] }, {}, { droppedEntriesCount: 0 });
+      callbacks[1]?.({ getEntries: () => [] }, {}, { droppedEntriesCount: 0 });
+      const eventObserver = observers[1]!;
+      eventObserver.queue.push({
+        get startTime() { entryReads += 1; return 40; },
+        get duration() { entryReads += 1; return 2; },
+      });
+
+      collector.dispose();
+
+      expect(entryReads).toBe(2);
+      expect(observers.map((observer) => observer.takeCount)).toEqual([2, 2]);
+      expect(appendSpy.mock.calls.some(([draft]) => draft.kind === 'diagnostic' && draft.name === 'browser.event-timing')).toBe(true);
+      expect(eventObserver.disconnectCount).toBe(1);
+      expect(observers[0]!.disconnectCount).toBe(1);
+      expect(dom.removedDocumentListeners).toEqual(['visibilitychange']);
+      expect(dom.removedWindowListeners).toEqual(['focus', 'blur']);
+      expect(collector.snapshot()).toBeNull();
+      expect(collector.canStartCurrentIteration).toBe(false);
+      expect(collector.canCompleteCurrentIteration).toBe(false);
+      expect(collector.canCompleteAndSealCurrentIteration).toBe(false);
+      expect(collector.canAdvanceToNextIteration).toBe(false);
+      expect(collector.canSeal).toBe(false);
+      expect(collector.canExport).toBe(false);
+      collector.dispose();
+      expect(eventObserver.disconnectCount).toBe(1);
+      expect(dom.removedDocumentListeners).toEqual(['visibilitychange']);
+      expect(dom.removedWindowListeners).toEqual(['focus', 'blur']);
+    } finally {
+      appendSpy.mockRestore();
+    }
+  });
+
+  it('fails closed and completes disposal when a queued getter and state callback throw', () => {
+    const callbacks: Array<(list: any, observer: any, options?: any) => void> = [];
+    const observers: Array<{ readonly queue: any[]; takeCount: number; disconnectCount: number }> = [];
+    let collector: BrowserTelemetryCollectorV1 | null = null;
+    let callbackCalls = 0;
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ['longtask', 'event'];
+      readonly queue: any[] = [];
+      takeCount = 0;
+      disconnectCount = 0;
+      constructor(callback: (list: any, observer: any, options?: any) => void) { callbacks.push(callback); observers.push(this); }
+      observe(): void {}
+      takeRecords(): readonly any[] { this.takeCount += 1; const result = [...this.queue]; this.queue.length = 0; return result; }
+      disconnect(): void { this.disconnectCount += 1; expect(this.queue).toEqual([]); }
+    }
+    collector = new BrowserTelemetryCollectorV1({
+      bootstrap: envelope({ telemetryMode: 'telemetry-enabled-full' }),
+      canvas: canvas(),
+      environment: environment(fakeDom(), FakePerformanceObserver),
+      onStateChange: (_state, reason) => {
+        if (reason !== 'br02-record-invalid') return;
+        callbackCalls += 1;
+        collector?.dispose();
+        throw new Error('state callback failed');
+      },
+    });
+    collector.markReady();
+    collector.startCurrentIteration();
+    callbacks[0]?.({ getEntries: () => [] }, {}, { droppedEntriesCount: 0 });
+    callbacks[1]?.({ getEntries: () => [] }, {}, { droppedEntriesCount: 0 });
+    const eventObserver = observers[1]!;
+    eventObserver.queue.push({
+      get startTime() { throw new Error('entry getter failed'); },
+      duration: 2,
+    });
+
+    expect(() => collector!.dispose()).not.toThrow();
+
+    expect(callbackCalls).toBe(1);
+    expect(collector.state).toBe('invalid');
+    expect(collector.reason).toBe('br02-record-invalid');
+    expect(observers.map((observer) => observer.takeCount)).toEqual([2, 2]);
+    expect(observers.map((observer) => observer.disconnectCount)).toEqual([1, 1]);
+    expect(collector.snapshot()).toBeNull();
+    expect(collector.canStartCurrentIteration).toBe(false);
+    expect(collector.canCompleteCurrentIteration).toBe(false);
+    expect(collector.canCompleteAndSealCurrentIteration).toBe(false);
+    expect(collector.canAdvanceToNextIteration).toBe(false);
+    expect(collector.canSeal).toBe(false);
+    expect(collector.canExport).toBe(false);
+    expect(collector.startCurrentIteration()).toBe(false);
+    expect(collector.completeCurrentIteration()).toBe(false);
+    expect(collector.completeAndSealCurrentIteration()).toBe(false);
+    expect(collector.advanceToNextIteration()).toBe(false);
+    expect(collector.seal()).toBe(false);
+    expect(collector.recordMeshQuads(1, 1)).toBe(false);
+    collector.onAnimationFrame(26);
+    collector.beforeDraw();
+    collector.afterDraw();
+    collector.dispose();
+    expect(observers.map((observer) => observer.disconnectCount)).toEqual([1, 1]);
+  });
+
+  it('fails closed when takeRecords throws and still disconnects every observer once', () => {
+    const observers: Array<{ takeCount: number; disconnectCount: number }> = [];
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ['longtask', 'event'];
+      takeCount = 0;
+      disconnectCount = 0;
+      constructor(_callback: (list: any, observer: any, options?: any) => void) { observers.push(this); }
+      observe(): void {}
+      takeRecords(): readonly any[] {
+        this.takeCount += 1;
+        if (this.takeCount === 2) throw new Error('takeRecords failed');
+        return [];
+      }
+      disconnect(): void { this.disconnectCount += 1; }
+    }
+    const collector = new BrowserTelemetryCollectorV1({
+      bootstrap: envelope({ telemetryMode: 'telemetry-enabled-full' }),
+      canvas: canvas(),
+      environment: environment(fakeDom(), FakePerformanceObserver),
+    });
+    collector.markReady();
+    collector.startCurrentIteration();
+
+    expect(() => collector.dispose()).not.toThrow();
+
+    expect(observers.map((observer) => observer.takeCount)).toEqual([2, 2]);
+    expect(observers.map((observer) => observer.disconnectCount)).toEqual([1, 1]);
+    expect(collector.state).toBe('invalid');
+    expect(collector.reason).toBe('br02-context-invalid');
+    expect(collector.snapshot()).toBeNull();
+    expect(collector.canCompleteCurrentIteration).toBe(false);
+    collector.dispose();
+    expect(observers.map((observer) => observer.disconnectCount)).toEqual([1, 1]);
+  });
+
+  it('fails closed when disconnect throws after disposal drain', () => {
+    const observers: Array<{ takeCount: number; disconnectCount: number }> = [];
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ['longtask', 'event'];
+      takeCount = 0;
+      disconnectCount = 0;
+      constructor(_callback: (list: any, observer: any, options?: any) => void) { observers.push(this); }
+      observe(): void {}
+      takeRecords(): readonly any[] { this.takeCount += 1; return []; }
+      disconnect(): void { this.disconnectCount += 1; throw new Error('disconnect failed'); }
+    }
+    const collector = new BrowserTelemetryCollectorV1({
+      bootstrap: envelope({ telemetryMode: 'telemetry-enabled-full' }),
+      canvas: canvas(),
+      environment: environment(fakeDom(), FakePerformanceObserver),
+    });
+    collector.markReady();
+    collector.startCurrentIteration();
+
+    expect(() => collector.dispose()).not.toThrow();
+
+    expect(observers.map((observer) => observer.takeCount)).toEqual([2, 2]);
+    expect(observers.map((observer) => observer.disconnectCount)).toEqual([1, 1]);
+    expect(collector.state).toBe('invalid');
+    expect(collector.reason).toBe('br02-context-invalid');
+    expect(collector.snapshot()).toBeNull();
+    expect(collector.canCompleteCurrentIteration).toBe(false);
+  });
+
+  it('uses the existing invalid-record path for an invalid queued observer entry during disposal', () => {
+    const callbacks: Array<(list: any, observer: any, options?: any) => void> = [];
+    let queue: any[] = [];
+    let disconnectCount = 0;
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ['event'];
+      constructor(callback: (list: any, observer: any, options?: any) => void) { callbacks.push(callback); }
+      observe(): void {}
+      takeRecords(): readonly any[] { const result = queue; queue = []; return result; }
+      disconnect(): void { disconnectCount += 1; expect(queue).toEqual([]); }
+    }
+    const dom = fakeDom();
+    const collector = new BrowserTelemetryCollectorV1({
+      bootstrap: envelope({ telemetryMode: 'telemetry-enabled-full' }),
+      canvas: canvas(),
+      environment: environment(dom, FakePerformanceObserver),
+    });
+    collector.markReady();
+    collector.startCurrentIteration();
+    callbacks[0]?.({ getEntries: () => [] }, {}, { droppedEntriesCount: 0 });
+    queue = [{ startTime: 40, duration: 0 }];
+
+    collector.dispose();
+
+    expect(collector.state).toBe('invalid');
+    expect(collector.reason).toBe('br02-record-invalid');
+    expect(disconnectCount).toBe(1);
+    expect(collector.snapshot()).toBeNull();
+  });
+
+  it('blocks every collector action and marker path after running disposal', () => {
+    const collector = new BrowserTelemetryCollectorV1({ bootstrap: envelope(), canvas: canvas(), environment: environment(fakeDom()) });
+    collector.markReady();
+    collector.startCurrentIteration();
+    collector.onAnimationFrame(10);
+    collector.beforeDraw();
+    collector.dispose();
+
+    expect(collector.markReady()).toBe(false);
+    expect(collector.startCurrentIteration()).toBe(false);
+    expect(collector.completeCurrentIteration()).toBe(false);
+    expect(collector.completeAndSealCurrentIteration()).toBe(false);
+    expect(collector.advanceToNextIteration()).toBe(false);
+    expect(collector.seal()).toBe(false);
+    expect(collector.recordMeshQuads(1, 1)).toBe(false);
+    collector.onAnimationFrame(26);
+    collector.beforeDraw();
+    collector.afterDraw();
+    expect(collector.scheduleExportDownload({
+      document: { createElement: () => ({ click: () => {} } as unknown as HTMLAnchorElement) },
+      url: { createObjectURL: () => 'blob:unused', revokeObjectURL: () => {} },
+      setTimeout: () => 1,
+    })).toBe(false);
+    expect(collector.snapshot()).toBeNull();
+  });
+
+  it('blocks ready disposal actions without creating a snapshot', () => {
+    const collector = new BrowserTelemetryCollectorV1({
+      bootstrap: envelope({ iterations: [
+        { iterationId: id('iteration-0'), iterationOrdinal: 0 },
+        { iterationId: id('iteration-1'), iterationOrdinal: 1 },
+      ] }),
+      canvas: canvas(),
+      environment: environment(fakeDom()),
+    });
+    collector.markReady();
+    collector.startCurrentIteration();
+    collector.completeCurrentIteration();
+    collector.dispose();
+
+    expect(collector.startCurrentIteration()).toBe(false);
+    expect(collector.advanceToNextIteration()).toBe(false);
+    expect(collector.seal()).toBe(false);
+    expect(collector.snapshot()).toBeNull();
+  });
+
+  it('keeps a sealed snapshot and canonical bytes unchanged after idempotent disposal', () => {
+    const dom = fakeDom();
+    const collector = new BrowserTelemetryCollectorV1({ bootstrap: envelope(), canvas: canvas(), environment: environment(dom) });
+    collector.markReady();
+    collector.startCurrentIteration();
+    collector.completeCurrentIteration();
+    collector.seal();
+    const snapshot = collector.snapshot();
+    const beforeBytes = serializeSealedTelemetryExportV1(snapshot!);
+
+    collector.dispose();
+    const afterBytes = serializeSealedTelemetryExportV1(collector.snapshot()!);
+    collector.dispose();
+
+    expect(collector.snapshot()).toBe(snapshot);
+    expect(afterBytes).toEqual(beforeBytes);
+    expect(collector.canExport).toBe(false);
+    expect(collector.scheduleExportDownload({
+      document: { createElement: () => ({ click: () => {} } as unknown as HTMLAnchorElement) },
+      url: { createObjectURL: () => 'blob:unused', revokeObjectURL: () => {} },
+      setTimeout: () => 1,
+    })).toBe(false);
+    expect(dom.removedDocumentListeners).toEqual(['visibilitychange']);
+    expect(dom.removedWindowListeners).toEqual(['focus', 'blur']);
+  });
+
+  it('does not deliver a queued download after disposal', () => {
+    const collector = new BrowserTelemetryCollectorV1({ bootstrap: envelope(), canvas: canvas(), environment: environment(fakeDom()) });
+    collector.markReady();
+    collector.startCurrentIteration();
+    collector.completeCurrentIteration();
+    collector.seal();
+    const snapshot = collector.snapshot();
+    const tasks: Array<() => void> = [];
+    let created = 0;
+    let clicked = 0;
+    expect(collector.scheduleExportDownload({
+      document: { createElement: () => ({ click: () => { clicked += 1; } } as unknown as HTMLAnchorElement) },
+      url: {
+        createObjectURL: () => { created += 1; return 'blob:br02-disposed'; },
+        revokeObjectURL: () => {},
+      },
+      setTimeout: (callback) => { tasks.push(callback); return tasks.length; },
+    })).toBe(true);
+    expect(tasks).toHaveLength(1);
+
+    collector.dispose();
+    tasks.shift()?.();
+
+    expect(created).toBe(0);
+    expect(clicked).toBe(0);
+    expect(collector.snapshot()).toBe(snapshot);
+    expect(serializeSealedTelemetryExportV1(collector.snapshot()!)).toEqual(serializeSealedTelemetryExportV1(snapshot!));
   });
 
   it.each([
