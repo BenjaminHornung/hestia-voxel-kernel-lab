@@ -20,11 +20,13 @@ import { PALETTE_V1 } from './voxel/palette';
 import { estimateChunkMetadataBytes } from './voxel/sparseChunkWorld';
 import type { ChunkVisibleFaceMesh, MesherMode } from './voxel/types';
 import { meshChunkVisibleFaces } from './voxel/visibleFaceMesher';
+import type { BrowserTelemetryHandoffV1 } from './diagnostics/telemetry/browserHandoffV1';
 
 const root = document.querySelector<HTMLElement>('#voxel-app');
 if (!root) {
   throw new Error('Voxel application root is missing.');
 }
+const appRoot: HTMLElement = root;
 
 interface SelectedRoute {
   readonly lab: 'wp01' | 'wp02' | 'wp03' | 'wp04';
@@ -36,7 +38,7 @@ interface SelectedRoute {
 function selectedRoute(): SelectedRoute {
   const search = new URLSearchParams(window.location.search);
   for (const key of search.keys()) {
-    if (!['lab', 'mesher', 'ao', 'debug'].includes(key)) throw new RangeError(`Unknown query parameter: ${key}.`);
+    if (!['lab', 'mesher', 'ao', 'debug', 'br02Telemetry'].includes(key)) throw new RangeError(`Unknown query parameter: ${key}.`);
   }
   const labs = search.getAll('lab');
   const meshers = search.getAll('mesher');
@@ -359,29 +361,47 @@ function createWp04Scene(aoEnabled: boolean, debugMode: Wp04DebugMode): VoxelLab
 }
 
 let app: ThreeVoxelRenderer | null = null;
-try {
-  const route = selectedRoute();
-  const scene = route.lab === 'wp01' ? createWp01Scene()
-    : route.lab === 'wp02' ? createWp02Scene()
-      : route.lab === 'wp03' ? createWp03Scene(route.mesherMode)
-        : createWp04Scene(route.aoEnabled, route.debugMode);
-  app = new ThreeVoxelRenderer(root, scene);
-  root.querySelector<HTMLElement>('[data-testid="lab-heading"]')!.textContent = route.lab === 'wp01'
-    ? 'WP01 · Visible-face baseline'
-    : route.lab === 'wp02' ? 'WP02 · Sparse chunk fixture'
-      : route.lab === 'wp03' ? 'WP03 · Greedy meshing A/B' : 'WP04 · Block AO and palette-v1';
-} catch (error) {
-  root.dataset.ready = 'error';
-  root.dataset.lab = 'invalid';
-  const status = root.querySelector<HTMLElement>('[data-testid="app-status"]');
-  if (status) {
-    status.textContent = error instanceof Error ? error.message : 'Voxel lab initialization failed.';
+let benchmarkHandoff: BrowserTelemetryHandoffV1 | null = null;
+
+async function startApplication(): Promise<void> {
+  try {
+    if (import.meta.env.MODE === 'benchmark') {
+      const { createBrowserTelemetryHandoffV1 } = await import('./diagnostics/telemetry/browserHandoffV1');
+      benchmarkHandoff = createBrowserTelemetryHandoffV1(appRoot);
+      if (!benchmarkHandoff.shouldStartScene) {
+        appRoot.dataset.ready = 'error';
+        appRoot.dataset.lab = 'invalid';
+        return;
+      }
+    }
+    const route = selectedRoute();
+    const scene = route.lab === 'wp01' ? createWp01Scene()
+      : route.lab === 'wp02' ? createWp02Scene()
+        : route.lab === 'wp03' ? createWp03Scene(route.mesherMode)
+          : createWp04Scene(route.aoEnabled, route.debugMode);
+    app = new ThreeVoxelRenderer(appRoot, scene, benchmarkHandoff?.rendererSink);
+    benchmarkHandoff?.markRendererReady();
+    appRoot.querySelector<HTMLElement>('[data-testid="lab-heading"]')!.textContent = route.lab === 'wp01'
+      ? 'WP01 · Visible-face baseline'
+      : route.lab === 'wp02' ? 'WP02 · Sparse chunk fixture'
+        : route.lab === 'wp03' ? 'WP03 · Greedy meshing A/B' : 'WP04 · Block AO and palette-v1';
+  } catch (error) {
+    benchmarkHandoff?.markRendererFailed();
+    appRoot.dataset.ready = 'error';
+    appRoot.dataset.lab = 'invalid';
+    const status = appRoot.querySelector<HTMLElement>('[data-testid="app-status"]');
+    if (status) {
+      status.textContent = error instanceof Error ? error.message : 'Voxel lab initialization failed.';
+    }
   }
 }
+
+void startApplication();
 
 const dispose = (): void => {
   window.removeEventListener('beforeunload', dispose);
   app?.dispose();
+  benchmarkHandoff?.dispose();
 };
 
 window.addEventListener('beforeunload', dispose, { once: true });

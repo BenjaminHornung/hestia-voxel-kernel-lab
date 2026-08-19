@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:benchmark": "tsc --noEmit && vite build --mode benchmark",
     "test": "vitest run",
     "test:e2e": "playwright test --grep-invert @evidence-",
     "evidence:wp01": "playwright test --grep @evidence-wp01",

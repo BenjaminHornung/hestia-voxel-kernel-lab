@@ -16,6 +16,7 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { MemoryDiagnostics, NeutralMeshMemory, SceneMemoryDiagnostics } from '../diagnostics/memory';
 import { FrameIntervalTelemetry, type DurationSummary } from '../diagnostics/telemetry';
+import type { RendererTelemetrySinkV1 } from '../diagnostics/telemetry/collectorV1';
 import { VOLUME_SIZE, VoxelMaterial } from '../voxel/constants';
 import { MATERIAL_COLORS } from '../voxel/palette';
 import type { ChunkVisibleFaceMesh, MesherMode, Vec3, VisibleFaceMesh } from '../voxel/types';
@@ -280,6 +281,7 @@ export class ThreeVoxelRenderer {
   readonly #chunkBoundsLines: LineSegments;
   readonly #hud: HudElements;
   readonly #telemetry = new FrameIntervalTelemetry();
+  readonly #telemetrySink: RendererTelemetrySinkV1 | undefined;
   readonly #wireframeToggle: HTMLInputElement;
   readonly #blockEdgeToggle: HTMLInputElement;
   readonly #meshQuadEdgeToggle: HTMLInputElement;
@@ -292,6 +294,7 @@ export class ThreeVoxelRenderer {
   readonly #cameraPresets: readonly RendererCameraPreset[];
   readonly #resetButton: HTMLButtonElement;
   readonly #resize = (): void => this.resize();
+  readonly #contextLost = (): void => this.#telemetrySink?.onWebglContextLost();
   readonly #toggleWireframe = (): void => {
     for (const mesh of this.#voxelMeshes) {
       mesh.visible = !this.#wireframeToggle.checked;
@@ -344,14 +347,16 @@ export class ThreeVoxelRenderer {
   #lastFrameTime = 0;
   #disposed = false;
 
-  constructor(root: HTMLElement, data: VoxelLabScene) {
+  constructor(root: HTMLElement, data: VoxelLabScene, telemetrySink?: RendererTelemetrySinkV1) {
     this.#root = root;
+    this.#telemetrySink = telemetrySink;
     const canvas = requiredElement<HTMLCanvasElement>(root, '[data-testid="voxel-canvas"]');
     this.#canvas = canvas;
     const context = canvas.getContext('webgl2', { antialias: true, alpha: false });
     if (!context) {
       throw new Error('WebGL2 is required for the visible-face lab.');
     }
+    this.#canvas.addEventListener('webglcontextlost', this.#contextLost);
 
     this.#renderer = new WebGLRenderer({ canvas, context, antialias: true });
     this.#renderer.outputColorSpace = SRGBColorSpace;
@@ -671,12 +676,18 @@ export class ThreeVoxelRenderer {
       if (this.#disposed) {
         return;
       }
+      this.#telemetrySink?.onAnimationFrame(time);
       if (this.#lastFrameTime > 0) {
         this.#telemetry.record(time - this.#lastFrameTime);
       }
       this.#lastFrameTime = time;
       this.#controls.update();
-      this.#renderer.render(scene, this.#camera);
+      this.#telemetrySink?.beforeDraw();
+      try {
+        this.#renderer.render(scene, this.#camera);
+      } finally {
+        this.#telemetrySink?.afterDraw();
+      }
       if (this.updateHud()) {
         this.#root.dataset.ready = 'true';
       }
@@ -702,6 +713,7 @@ export class ThreeVoxelRenderer {
     this.#aoSelect.removeEventListener('change', this.#changeWp04View);
     this.#debugSelect.removeEventListener('change', this.#changeWp04View);
     this.#canvas.removeEventListener('keydown', this.#keyboardCameraPreset);
+    this.#canvas.removeEventListener('webglcontextlost', this.#contextLost);
     this.#resetButton.removeEventListener('click', this.#resetCamera);
     this.#controls.dispose();
     for (const geometry of this.#meshGeometries) {
