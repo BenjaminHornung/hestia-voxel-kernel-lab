@@ -1,7 +1,6 @@
 import {
   BENCHMARK_METRIC_REACHABILITY_MATRIX_V1,
   BENCHMARK_SCENARIO_REGISTRY_V1,
-  compareUtf16,
   type CanonicalIdV1,
   type CapabilityAvailabilityV1,
   type Sha256DigestV1,
@@ -10,6 +9,7 @@ import { createTelemetryBufferV1, type TelemetryBufferV1 } from './bufferV1';
 import { createMonotonicClockV1, type MonotonicClockV1, type PerformanceLikeV1 } from './clockV1';
 import {
   TELEMETRY_REASON_BY_DETAIL_V1,
+  deriveTelemetryCapabilityIdsV1,
   type Br02TelemetryExportV1,
   type TelemetryCapabilityV1,
   type TelemetryDetailCodeV1,
@@ -19,6 +19,16 @@ import {
 } from './contractV1';
 import type { BrowserTelemetryHandoffEnvelopeV1 } from './browserHandoffV1';
 
+export function deriveBrowserTelemetryCapabilityIdsV1(
+  bootstrap: BrowserTelemetryHandoffEnvelopeV1,
+): readonly CanonicalIdV1[] {
+  return deriveTelemetryCapabilityIdsV1({
+    scenarioId: bootstrap.scenarioId,
+    phase: bootstrap.phase,
+    backend: bootstrap.backend,
+  });
+}
+
 export type BrowserTelemetryCollectorStateV1 = 'initializing' | 'ready' | 'running' | 'sealed' | 'invalid';
 export type BrowserTelemetryCollectorReasonV1 = 'none' | 'download-failed' | 'renderer-failure' | TelemetryDetailCodeV1;
 
@@ -26,6 +36,7 @@ export interface RendererTelemetrySinkV1 {
   onAnimationFrame(timestamp: number): void;
   beforeDraw(): void;
   afterDraw(): void;
+  onRendererFailure(): void;
   onWebglContextLost(): void;
   onWebgpuDeviceLost(): void;
 }
@@ -201,33 +212,6 @@ function hasExactReachability(bootstrap: BrowserTelemetryHandoffEnvelopeV1, reco
   return entries.length === 1 && entries[0]!.disposition === 'emit-sample';
 }
 
-export function deriveBrowserTelemetryCapabilityIdsV1(
-  bootstrap: BrowserTelemetryHandoffEnvelopeV1,
-): readonly CanonicalIdV1[] {
-  const registryEntry = BENCHMARK_SCENARIO_REGISTRY_V1[bootstrap.scenarioId as keyof typeof BENCHMARK_SCENARIO_REGISTRY_V1];
-  if (registryEntry === undefined) throw new TypeError('BR02 telemetry scenario is not registered.');
-  const ids = new Set<string>(registryEntry.definition.capabilityContracts.map((entry) => entry.id));
-  for (const entry of BENCHMARK_METRIC_REACHABILITY_MATRIX_V1) {
-    if (entry.scenarioId === bootstrap.scenarioId
-      && entry.phase === bootstrap.phase
-      && entry.backend === bootstrap.backend
-      && entry.disposition === 'emit-sample'
-      && entry.capabilityId !== undefined) {
-      ids.add(entry.capabilityId);
-    }
-  }
-  const selected = registryEntry.definition.metricCapabilitySelections;
-  for (const selection of selected) {
-    if (selection.parameterKey === 'backend'
-      && selection.selections.some((candidate) => candidate.parameterValue === bootstrap.backend)) {
-      for (const candidate of selection.selections) {
-        if (candidate.parameterValue === bootstrap.backend) ids.add(candidate.capabilityId);
-      }
-    }
-  }
-  return [...ids].sort(compareUtf16).map(canonicalId);
-}
-
 function makeObserverState(entryType: TelemetryObserverDropEntryTypeV1, required: boolean): ObserverStateV1 {
   return { entryType, required, observer: null, active: false, accountingObserved: false };
 }
@@ -269,7 +253,7 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
     this.#canvas = options.canvas;
     this.#bootstrap = options.bootstrap;
     this.#onStateChange = options.onStateChange;
-    this.#capabilityIds = deriveBrowserTelemetryCapabilityIdsV1(options.bootstrap);
+    this.#capabilityIds = deriveTelemetryCapabilityIdsV1(options.bootstrap);
 
     this.#clock = createMonotonicClockV1(MAIN_REALM_ID, this.#environment.performance);
     const realm = this.#clock.registerRealm();
@@ -530,7 +514,13 @@ export class BrowserTelemetryCollectorV1 implements RendererTelemetrySinkV1 {
     this.#state = 'invalid';
     this.#reason = 'renderer-failure';
     this.#binding = null;
+    this.#rafBaseline = null;
+    this.#drawStart = null;
     this.#notifyState();
+  }
+
+  public onRendererFailure(): void {
+    this.markRendererFailed();
   }
 
   public recordRunTotal(startMs: number, value: number): boolean {

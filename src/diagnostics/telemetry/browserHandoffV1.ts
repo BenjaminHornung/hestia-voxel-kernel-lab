@@ -9,13 +9,16 @@ import {
 } from '../../benchmark/contracts/browserV1';
 import {
   BrowserTelemetryCollectorV1,
-  deriveBrowserTelemetryCapabilityIdsV1,
   type BrowserTelemetryCollectorEnvironmentV1,
   type BrowserTelemetryCollectorReasonV1,
   type BrowserTelemetryCollectorStateV1,
   type BrowserTelemetryDownloadEnvironmentV1,
   type RendererTelemetrySinkV1,
 } from './collectorV1';
+import {
+  BR02_BROWSER_METADATA_LIMITS_V1,
+  deriveTelemetryCapabilityIdsV1,
+} from './contractV1';
 
 export const BR02_BROWSER_HANDOFF_SCHEMA_VERSION = 1 as const;
 export const BR02_BROWSER_HANDOFF_CONTRACT_ID = 'br-02-browser-telemetry-handoff-v1' as const;
@@ -25,9 +28,7 @@ export const BR02_BROWSER_HANDOFF_QUERY_KEY = 'br02Telemetry' as const;
 export const BR02_BROWSER_HANDOFF_LIMITS_V1 = Object.freeze({
   maxEncodedCodeUnits: 65_536,
   maxDecodedBytes: 49_152,
-  maxIterations: 256,
-  maxRealms: 16,
-  maxCapabilities: 64,
+  ...BR02_BROWSER_METADATA_LIMITS_V1,
 } as const);
 
 type BrowserTelemetryModeV1 = 'telemetry-enabled-minimal' | 'telemetry-enabled-full';
@@ -207,7 +208,7 @@ function assertEnvelope(value: unknown): BrowserTelemetryHandoffEnvelopeV1 {
   }
   const entries = plainArray(envelope.iterations, '$.iterations');
   if (entries.length === 0) fail('$.iterations', 'iteration-empty', 'At least one iteration is required.');
-  if (entries.length > BR02_BROWSER_HANDOFF_LIMITS_V1.maxIterations) fail('$.iterations', 'iteration-limit', 'Iteration count exceeds the handoff limit.');
+  if (entries.length > BR02_BROWSER_METADATA_LIMITS_V1.maxIterations) fail('$.iterations', 'iteration-limit', 'Iteration count exceeds the handoff limit.');
   const iterationIds = new Set<string>();
   const iterations = entries.map((entry, index) => {
     const iteration = closed(entry, ITERATION_KEYS, `$.iterations[${index}]`);
@@ -217,20 +218,12 @@ function assertEnvelope(value: unknown): BrowserTelemetryHandoffEnvelopeV1 {
     iterationIds.add(iterationId);
     return { iterationId, iterationOrdinal };
   });
-  const capabilities = deriveBrowserTelemetryCapabilityIdsV1({
-    schemaVersion: BR02_BROWSER_HANDOFF_SCHEMA_VERSION,
-    contractId: BR02_BROWSER_HANDOFF_CONTRACT_ID,
-    runtimeActivation: BR02_BROWSER_RUNTIME_ACTIVATION,
-    runId,
-    planId,
+  const capabilities = deriveTelemetryCapabilityIdsV1({
     scenarioId,
     phase,
     backend,
-    telemetryMode,
-    iterations,
   });
-  if (1 > BR02_BROWSER_HANDOFF_LIMITS_V1.maxRealms) fail('$.iterations', 'realm-limit', 'Realm metadata exceeds the handoff limit.');
-  if (capabilities.length > BR02_BROWSER_HANDOFF_LIMITS_V1.maxCapabilities) fail('$.iterations', 'capability-limit', 'Capability metadata exceeds the handoff limit.');
+  if (capabilities.length > BR02_BROWSER_METADATA_LIMITS_V1.maxCapabilities) fail('$.capabilities', 'capability-limit', 'Capability metadata exceeds the handoff limit.');
   return {
     schemaVersion: BR02_BROWSER_HANDOFF_SCHEMA_VERSION,
     contractId: BR02_BROWSER_HANDOFF_CONTRACT_ID,

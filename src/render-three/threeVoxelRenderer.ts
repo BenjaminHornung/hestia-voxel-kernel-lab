@@ -175,6 +175,16 @@ function requiredElement<T extends Element>(root: ParentNode, selector: string):
   return element;
 }
 
+/** @internal */
+export function rethrowRendererFailureV1(error: unknown, onRendererFailure: () => void): never {
+  try {
+    onRendererFailure();
+  } catch {
+    // Keep the original frame error as the observable failure.
+  }
+  throw error;
+}
+
 function createNormalPositions(mesh: VisibleFaceMesh): Float32Array {
   const lines = new Float32Array(mesh.quadCount * 6);
   for (let quad = 0; quad < mesh.quadCount; quad += 1) {
@@ -676,22 +686,19 @@ export class ThreeVoxelRenderer {
       if (this.#disposed) {
         return;
       }
-      this.#telemetrySink?.onAnimationFrame(time);
-      if (this.#lastFrameTime > 0) {
-        this.#telemetry.record(time - this.#lastFrameTime);
-      }
-      this.#lastFrameTime = time;
-      this.#controls.update();
-      this.#telemetrySink?.beforeDraw();
       try {
+        this.#telemetrySink?.onAnimationFrame(time);
+        if (this.#lastFrameTime > 0) this.#telemetry.record(time - this.#lastFrameTime);
+        this.#lastFrameTime = time;
+        this.#controls.update();
+        this.#telemetrySink?.beforeDraw();
         this.#renderer.render(scene, this.#camera);
-      } finally {
         this.#telemetrySink?.afterDraw();
+        if (this.updateHud()) this.#root.dataset.ready = 'true';
+        this.#animationFrame = requestAnimationFrame(renderFrame);
+      } catch (error) {
+        rethrowRendererFailureV1(error, () => this.#telemetrySink?.onRendererFailure());
       }
-      if (this.updateHud()) {
-        this.#root.dataset.ready = 'true';
-      }
-      this.#animationFrame = requestAnimationFrame(renderFrame);
     };
     this.#animationFrame = requestAnimationFrame(renderFrame);
   }

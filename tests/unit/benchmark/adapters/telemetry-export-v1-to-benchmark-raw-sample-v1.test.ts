@@ -16,6 +16,7 @@ import type {
   TelemetryExportV1,
 } from '../../../../src/benchmark/contracts/browserV1';
 import { adaptTelemetryExportV1 } from '../../../../src/benchmark/adapters';
+import { deriveTelemetryCapabilityIdsV1 } from '../../../../src/diagnostics/telemetry/contractV1';
 import { createTelemetryBufferV1 } from '../../../../src/diagnostics/telemetry/bufferV1';
 import { applySyntheticFutureProducerRecordsV1, createBenchmarkCaseDocumentV1, createBenchmarkValidationContextV1 } from '../contracts/benchmark-case-fixtures-v1';
 import type {
@@ -91,21 +92,22 @@ function makeExport(options: {
   readonly backend?: BenchmarkBackendCellV1;
   readonly iterations?: readonly TelemetryIterationV1[];
   readonly realms?: readonly TelemetryRealmV1[];
-  readonly capabilities?: readonly TelemetryCapabilityV1[];
   readonly drafts?: readonly TelemetryRecordDraftV1[];
   readonly telemetryMode?: 'telemetry-enabled-minimal' | 'telemetry-enabled-full';
 } = {}): Br02TelemetryExportV1 {
   const phase = options.phase ?? 'measurement';
+  const scenarioId = id(options.scenarioId ?? 'mesh-golden-world-v1');
+  const backend = options.backend ?? 'three-webgl2';
   const buffer = createTelemetryBufferV1({
     runId: id(options.runId ?? 'run'),
     planId: id('plan'),
-    scenarioId: id(options.scenarioId ?? 'mesh-golden-world-v1'),
+    scenarioId,
     phase,
-    backend: options.backend ?? 'three-webgl2',
+    backend,
     telemetryMode: options.telemetryMode ?? 'telemetry-enabled-minimal',
     iterations: options.iterations ?? [{ iterationId: id('iteration-0'), iterationOrdinal: 0 }],
     realms: options.realms ?? [{ realmId: id('main-realm'), realm: 'main', timeOriginEpochMs: 1000.125 }],
-    capabilities: options.capabilities ?? [],
+    capabilities: deriveTelemetryCapabilityIdsV1({ scenarioId, phase, backend }).map(observedCapability),
   });
   for (const draft of options.drafts ?? []) expect(buffer.append(draft).status).toBe('accepted');
   return buffer.seal();
@@ -144,9 +146,9 @@ describe('BR02 telemetry export adapter', () => {
     { name: 'mesh.quads', scenarioId: 'mesh-golden-world-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'mesh.quads.count@1', expectedKind: 'counter', expectedUnit: 'count', realm: 'main', value: 7 },
     { name: 'mesh.output-bytes', scenarioId: 'mesh-golden-world-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'geometry.bytes@1', expectedKind: 'memory', expectedUnit: 'bytes', realm: 'main', value: 4096 },
     { name: 'coverage.sha256-match', scenarioId: 'mesh-golden-world-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'coverage.sha256.match@1', expectedKind: 'liveness', expectedUnit: 'count', realm: 'main', value: 1 },
-    { name: 'browser.long-task', scenarioId: 'scheduler-steady-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'longtask.duration.ms@1', expectedKind: 'long-task', expectedUnit: 'ms', realm: 'main', value: 50.25, capabilities: ['long-tasks'] },
+    { name: 'browser.long-task', scenarioId: 'scheduler-steady-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'longtask.duration.ms@1', expectedKind: 'long-task', expectedUnit: 'ms', realm: 'main', value: 50.25 },
     { name: 'draw-submit.cpu', scenarioId: 'backend-fixture-v1', phase: 'cold', backend: 'three-webgl2', expectedMetric: 'draw.submit.cpu.ms@1', expectedKind: 'duration', expectedUnit: 'ms', realm: 'main', value: 1.75 },
-    { name: 'browser.raf-interval', scenarioId: 'backend-fixture-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'raf.interval.ms@1', expectedKind: 'frame', expectedUnit: 'ms', realm: 'main', value: 16.75, capabilities: ['request-animation-frame'] },
+    { name: 'browser.raf-interval', scenarioId: 'backend-fixture-v1', phase: 'measurement', backend: 'three-webgl2', expectedMetric: 'raf.interval.ms@1', expectedKind: 'frame', expectedUnit: 'ms', realm: 'main', value: 16.75 },
   ] as const)('maps each BR02 owner record without rewriting its value', (testCase) => {
     const realms = testCase.realm === 'worker'
       ? [{ realmId: id('worker-realm'), realm: 'worker' as const, timeOriginEpochMs: 2000.5 }]
@@ -156,8 +158,7 @@ describe('BR02 telemetry export adapter', () => {
       phase: testCase.phase,
       backend: testCase.backend,
       realms,
-      capabilities: testCase.capabilities?.map((capabilityId) => observedCapability(capabilityId)),
-      telemetryMode: testCase.name === 'browser.long-task' ? 'telemetry-enabled-full' : undefined,
+       telemetryMode: testCase.name === 'browser.long-task' ? 'telemetry-enabled-full' : undefined,
       drafts: [sampleDraft(testCase.name, 'iteration-0', testCase.realm === 'worker' ? 'worker-realm' : 'main-realm', testCase.value, 12.375)],
     });
     const result = adapt(value, contextFor(value));
@@ -272,8 +273,7 @@ describe('BR02 telemetry export adapter', () => {
   it('rejects a zero RAF record before adaptation', () => {
     const value = makeExport({
       scenarioId: 'backend-fixture-v1',
-      capabilities: [observedCapability('request-animation-frame')],
-      drafts: [],
+       drafts: [],
     });
     const buffer = createTelemetryBufferV1({
       runId: value.runId,
@@ -299,26 +299,31 @@ describe('BR02 telemetry export adapter', () => {
     mutate(value);
     const context = contextFor(value);
     if (_label === 'phase') (context as any).phase = 'stress';
-    expectReason(adapt(value, context), 'metric-not-producible', 'br02-metric-not-reachable');
+    expectReason(adapt(value, context), 'sample-invalid', 'br02-export-invalid');
   });
 
   it('rejects a concrete raw WebGPU export at the current browser adapter boundary', () => {
-    const value = makeExport({
+    const value = clone(makeExport({
       scenarioId: 'backend-fixture-v1',
-      backend: 'raw-webgpu',
       drafts: [sampleDraft('draw-submit.cpu')],
-    });
-    expectReason(adapt(value, contextFor(value)), 'metric-not-producible', 'br02-metric-not-reachable');
+    })) as any;
+    value.backend = 'raw-webgpu';
+    expectReason(adapt(value, contextFor(value)), 'sample-invalid', 'br02-export-invalid');
   });
 
   it.each([
-    ['missing', (value: any) => { value.capabilities = []; }],
-    ['declared', (value: any) => { value.capabilities = [declaredCapability('request-animation-frame')]; }],
-    ['unavailable', (value: any) => { value.capabilities = [unavailableCapability('request-animation-frame')]; }],
+    ['missing', (value: any) => {
+      value.capabilities.find((capability: any) => capability.id === 'request-animation-frame').value = unavailableCapability('request-animation-frame').value;
+    }],
+    ['declared', (value: any) => {
+      value.capabilities.find((capability: any) => capability.id === 'request-animation-frame').value = declaredCapability('request-animation-frame').value;
+    }],
+    ['unavailable', (value: any) => {
+      value.capabilities.find((capability: any) => capability.id === 'request-animation-frame').value = unavailableCapability('request-animation-frame').value;
+    }],
   ] as const)('requires an observed capability when the path is capability-bound: %s', (_label, mutate) => {
     const value = clone(makeExport({
       scenarioId: 'backend-fixture-v1',
-      capabilities: [observedCapability('request-animation-frame')],
       drafts: [sampleDraft('browser.raf-interval')],
     })) as any;
     mutate(value);
@@ -445,8 +450,7 @@ describe('BR02 telemetry export adapter', () => {
       phase: 'measurement',
       backend: 'three-webgl2',
       iterations,
-      capabilities: [observedCapability('request-animation-frame')],
-      drafts,
+       drafts,
     });
     expect(exportValue.records.map((record) => [record.iterationId, record.name])).toEqual([
       [id('iteration-0'), 'draw-submit.cpu'],

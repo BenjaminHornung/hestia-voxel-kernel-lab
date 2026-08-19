@@ -37,6 +37,12 @@ Padding, `+`, `/`, invalid base64url length, invalid UTF-8, noncanonical JSON,
 unknown keys, missing keys, foreign prototypes, accessors, and duplicate
 iteration ordinals fail closed.
 
+The same iteration, realm, and capability metadata bounds are enforced again
+at direct export validation and buffer construction. Direct export validation
+accepts only a real BR01 scenario, an allowed phase, the current backend cell,
+and the exact UTF-16-sorted capability ID list derived from the BR01 scenario
+contracts, backend selections, and matching emit-sample reachability cells.
+
 This base accepts `three-webgl2` only for scenarios declaring a BR01 backend
 parameter. A scenario without that parameter must use `not-applicable`.
 `raw-webgpu` is bootstrap-invalid: this base has a WebGL2 renderer and never
@@ -113,6 +119,12 @@ The handoff state is closed: `disabled -> initializing -> ready -> running ->
 sealed`, with terminal `invalid`. A sealed or invalid capture never becomes
 ready again. The handoff is not a runner or authority and never starts or
 stops a scene.
+
+Every exception in one renderer frame body terminally projects
+`reason=renderer-failure`, clears the active binding and frame markers, and
+prevents lifecycle actions or another frame from being scheduled before the
+original exception is rethrown. A failed renderer draw has no `afterDraw` or
+draw sample, and exception details never enter telemetry or the fixed status.
 
 The runtime-inserted BR02 region is placed before the existing HUD `<dl>` and
 uses the existing button and focus styles. It exposes a read-only current

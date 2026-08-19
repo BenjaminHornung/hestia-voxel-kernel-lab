@@ -6,12 +6,14 @@ import type {
 } from '../../../../src/benchmark/contracts/browserV1';
 import { canonicalizeJsonV1 } from '../../../../src/benchmark/contracts/browserV1';
 import {
+  BR02_BROWSER_METADATA_LIMITS_V1,
   Br02TelemetryExportV1,
   TELEMETRY_CONTRACT_ID,
   TELEMETRY_DETAIL_CODES_V1,
   TELEMETRY_SCHEMA_VERSION,
   TelemetryRecordDraftV1,
   chargeRecordV1,
+  deriveTelemetryCapabilityIdsV1,
   isTelemetryExportV1,
   serializeSealedTelemetryExportV1,
   validateTelemetryExportV1,
@@ -20,17 +22,30 @@ import { createTelemetryBufferV1 as createBuffer } from '../../../../src/diagnos
 
 const id = (value: string): CanonicalIdV1 => value as CanonicalIdV1;
 const digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as Sha256DigestV1;
+const BACKEND_FIXTURE_CAPABILITY_IDS_GOLDEN = [
+  'performance-time-origin',
+  'request-animation-frame',
+  'webgl-disjoint-timer-query',
+  'webgl2',
+  'webgpu',
+  'webgpu-timestamp-query',
+] as const;
+
+const baseCapabilityMetadata = BACKEND_FIXTURE_CAPABILITY_IDS_GOLDEN.map((capabilityId) => ({
+  id: id(capabilityId),
+  value: { status: 'declared' as const, value: true as const, sourceRef: id('plan'), stability: 'run-config' as const },
+}));
 
 const baseInput = {
   runId: id('run'),
   planId: id('plan'),
-  scenarioId: id('scenario'),
+  scenarioId: id('backend-fixture-v1'),
   phase: 'measurement' as const,
   backend: 'three-webgl2' as const,
   telemetryMode: 'telemetry-enabled-minimal' as const,
   iterations: [{ iterationId: id('iteration-0'), iterationOrdinal: 0 }],
   realms: [{ realmId: id('main'), realm: 'main' as const, timeOriginEpochMs: 1000.25 }],
-  capabilities: [],
+  capabilities: baseCapabilityMetadata,
 };
 
 function runTotalDraft(iterationId: CanonicalIdV1 | null = id('iteration-0')): TelemetryRecordDraftV1 {
@@ -55,6 +70,15 @@ function clone<T>(value: T): T {
 }
 
 describe('BR02 telemetry contract v1', () => {
+  it('pins the BR01-derived capability golden and shared metadata limits', () => {
+    expect(deriveTelemetryCapabilityIdsV1({
+      scenarioId: id('backend-fixture-v1'),
+      phase: 'measurement',
+      backend: 'three-webgl2',
+    })).toEqual(BACKEND_FIXTURE_CAPABILITY_IDS_GOLDEN);
+    expect(BR02_BROWSER_METADATA_LIMITS_V1).toEqual({ maxIterations: 256, maxRealms: 16, maxCapabilities: 64 });
+  });
+
   it('exports the closed authoritative shape and directly differs from BR01 opaque exports', () => {
     const value = makeExport();
     expect(Object.keys(value)).toEqual([
@@ -166,10 +190,100 @@ describe('BR02 telemetry contract v1', () => {
     for (const value of values) {
       const exportValue = makeExport(false);
       const candidate = clone(exportValue) as any;
-      candidate.capabilities = [{ id: 'performance-observer', value }];
+      candidate.capabilities[0].value = value;
       expect(validateTelemetryExportV1(candidate).valid, statusOf(value)).toBe(true);
       expect(candidate.capabilities[0].value.status).not.toBe('supported');
     }
+  });
+
+  it('enforces shared metadata bounds at the direct export boundary', () => {
+    const base = clone(makeExport(false)) as any;
+    base.iterations = Array.from({ length: 256 }, (_, iterationOrdinal) => ({
+      iterationId: `iteration-${iterationOrdinal}`,
+      iterationOrdinal,
+    }));
+    expect(base.iterations).toHaveLength(256);
+    expect(validateTelemetryExportV1(base).valid).toBe(true);
+    base.iterations.push({ iterationId: 'iteration-256', iterationOrdinal: 256 });
+    expect(base.iterations).toHaveLength(257);
+    expect(validateTelemetryExportV1(base).valid).toBe(false);
+
+    const emptyIterations = clone(makeExport(false)) as any;
+    emptyIterations.iterations = [];
+    expect(validateTelemetryExportV1(emptyIterations).valid).toBe(false);
+
+    const sixteenRealms = clone(makeExport(false)) as any;
+    sixteenRealms.realms = Array.from({ length: 16 }, (_, index) => ({
+      realmId: `realm-${String(index).padStart(2, '0')}`,
+      realm: 'main',
+      timeOriginEpochMs: index,
+    }));
+    expect(sixteenRealms.realms).toHaveLength(16);
+    expect(validateTelemetryExportV1(sixteenRealms).valid).toBe(true);
+    sixteenRealms.realms.push({ realmId: 'realm-16', realm: 'main', timeOriginEpochMs: 16 });
+    expect(sixteenRealms.realms).toHaveLength(17);
+    expect(validateTelemetryExportV1(sixteenRealms).valid).toBe(false);
+
+    const emptyRealms = clone(makeExport(false)) as any;
+    emptyRealms.realms = [];
+    expect(validateTelemetryExportV1(emptyRealms).valid).toBe(false);
+  });
+
+  it('accepts a real no-backend BR01 scenario only with not-applicable backend semantics', () => {
+    const value = clone(makeExport(false)) as any;
+    value.scenarioId = 'navigation-leak-v1';
+    value.phase = 'leak';
+    value.backend = 'not-applicable';
+    value.capabilities = deriveTelemetryCapabilityIdsV1({
+      scenarioId: id(value.scenarioId),
+      phase: value.phase,
+      backend: value.backend,
+    }).map((capabilityId) => ({
+      id: capabilityId,
+      value: { status: 'declared', value: true, sourceRef: 'plan', stability: 'run-config' },
+    }));
+    expect(validateTelemetryExportV1(value).valid).toBe(true);
+  });
+
+  it.each([
+    ['unknown scenario', (value: any) => { value.scenarioId = 'invented-scenario'; }],
+    ['phase mismatch', (value: any) => { value.phase = 'stress'; }],
+    ['raw WebGPU', (value: any) => { value.backend = 'raw-webgpu'; }],
+    ['backend mismatch', (value: any) => { value.backend = 'not-applicable'; }],
+  ] as const)('rejects direct export metadata mismatch: %s', (_label, mutate) => {
+    const value = clone(makeExport(false)) as any;
+    mutate(value);
+    expect(validateTelemetryExportV1(value).valid).toBe(false);
+    expect(isTelemetryExportV1(value)).toBe(false);
+  });
+
+  it.each(['constructor'] as const)('rejects the canonical prototype scenario name %s as scenario-invalid', (scenarioId) => {
+    const value = clone(makeExport(false)) as any;
+    value.scenarioId = scenarioId;
+    const result = validateTelemetryExportV1(value);
+    expect(result.valid).toBe(false);
+    if (result.valid) throw new Error('Expected prototype scenario name to fail validation.');
+    expect(result.issues[0]).toMatchObject({ path: '$.scenarioId', code: 'scenario-invalid' });
+  });
+
+  it.each([
+    ['missing', (capabilities: any[]) => { capabilities.splice(0, 1); }],
+    ['extra known', (capabilities: any[]) => { capabilities.push({ ...capabilities[0], id: 'long-tasks' }); }],
+    ['foreign', (capabilities: any[]) => { capabilities[0].id = 'FOREIGN'; }],
+    ['unknown canonical', (capabilities: any[]) => { capabilities[0].id = 'unknown-capability'; }],
+    ['duplicate', (capabilities: any[]) => { capabilities[1].id = capabilities[0].id; }],
+    ['wrong UTF-16 order', (capabilities: any[]) => { [capabilities[0], capabilities[1]] = [capabilities[1], capabilities[0]]; }],
+    ['over limit', (capabilities: any[]) => {
+      while (capabilities.length <= 64) {
+        capabilities.push({ ...capabilities[0], id: `capability-${capabilities.length}` });
+      }
+      expect(capabilities).toHaveLength(65);
+    }],
+  ] as const)('requires the exact BR01-derived capability list: %s', (_label, mutate) => {
+    const value = clone(makeExport(false)) as any;
+    mutate(value.capabilities);
+    expect(validateTelemetryExportV1(value).valid).toBe(false);
+    expect(isTelemetryExportV1(value)).toBe(false);
   });
 
   it('projects fixed invalidation details to BR01 reasons and keeps them deduplicated', () => {

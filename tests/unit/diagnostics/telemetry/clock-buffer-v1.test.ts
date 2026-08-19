@@ -10,11 +10,24 @@ import { createMonotonicClockV1 } from '../../../../src/diagnostics/telemetry/cl
 import { createTelemetryBufferV1 } from '../../../../src/diagnostics/telemetry/bufferV1';
 
 const id = (value: string): CanonicalIdV1 => value as CanonicalIdV1;
+const BACKEND_FIXTURE_CAPABILITY_IDS_GOLDEN = [
+  'performance-time-origin',
+  'request-animation-frame',
+  'webgl-disjoint-timer-query',
+  'webgl2',
+  'webgpu',
+  'webgpu-timestamp-query',
+] as const;
+
+const capabilities = BACKEND_FIXTURE_CAPABILITY_IDS_GOLDEN.map((capabilityId) => ({
+  id: id(capabilityId),
+  value: { status: 'declared' as const, value: true as const, sourceRef: id('plan'), stability: 'run-config' as const },
+}));
 
 const input = {
   runId: id('run'),
   planId: id('plan'),
-  scenarioId: id('scenario'),
+  scenarioId: id('backend-fixture-v1'),
   phase: 'measurement' as const,
   backend: 'three-webgl2' as const,
   telemetryMode: 'telemetry-enabled-minimal' as const,
@@ -23,7 +36,7 @@ const input = {
     { realmId: id('main'), realm: 'main' as const, timeOriginEpochMs: 1000 },
     { realmId: id('worker'), realm: 'worker' as const, timeOriginEpochMs: 2000 },
   ],
-  capabilities: [],
+  capabilities,
 };
 
 function counterDraft(startMs = 1, realmId: CanonicalIdV1 = id('main')): TelemetryRecordDraftV1 {
@@ -101,6 +114,34 @@ describe('BR02 monotonic clock v1', () => {
 });
 
 describe('BR02 bounded append-only buffer v1', () => {
+  it('enforces shared iteration, realm, and capability bounds during construction', () => {
+    const iterations = Array.from({ length: 256 }, (_, iterationOrdinal) => ({
+      iterationId: id(`iteration-${iterationOrdinal}`),
+      iterationOrdinal,
+    }));
+    expect(() => createTelemetryBufferV1({ ...input, iterations })).not.toThrow();
+    expect(() => createTelemetryBufferV1({
+      ...input,
+      iterations: [...iterations, { iterationId: id('iteration-256'), iterationOrdinal: 256 }],
+    })).toThrow();
+    expect(() => createTelemetryBufferV1({ ...input, iterations: [] })).toThrow();
+
+    const realms = Array.from({ length: 16 }, (_, index) => ({
+      realmId: id(`realm-${String(index).padStart(2, '0')}`),
+      realm: 'main' as const,
+      timeOriginEpochMs: index,
+    }));
+    expect(() => createTelemetryBufferV1({ ...input, realms })).not.toThrow();
+    expect(() => createTelemetryBufferV1({ ...input, realms: [...realms, { realmId: id('realm-16'), realm: 'main', timeOriginEpochMs: 16 }] })).toThrow();
+    expect(() => createTelemetryBufferV1({ ...input, realms: [] })).toThrow();
+
+    const tooManyCapabilities = Array.from({ length: 65 }, (_, index) => ({
+      id: id(`capability-${index}`),
+      value: { status: 'declared' as const, value: true as const, sourceRef: id('plan'), stability: 'run-config' as const },
+    }));
+    expect(() => createTelemetryBufferV1({ ...input, capabilities: tooManyCapabilities })).toThrow();
+  });
+
   it('assigns deterministic IDs and independent per-realm sequences in acceptance order', () => {
     const buffer = createTelemetryBufferV1(input);
     const first = buffer.append(counterDraft(10, id('main')));

@@ -1,6 +1,8 @@
 import {
   BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_ID_V1,
   BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1,
+  BENCHMARK_METRIC_REACHABILITY_MATRIX_V1,
+  BENCHMARK_SCENARIO_REGISTRY_V1,
   canonicalizeJsonV1,
   compareUtf16,
 } from '../../benchmark/contracts/browserV1';
@@ -17,6 +19,12 @@ import type {
 export const TELEMETRY_SCHEMA_VERSION = 1 as const;
 export const TELEMETRY_CONTRACT_ID = 'br-02-in-browser-telemetry-v1' as const;
 export const TELEMETRY_CLOCK_CONTRACT_ID = 'br02-performance-time-origin-clock-v1' as const;
+
+export const BR02_BROWSER_METADATA_LIMITS_V1 = Object.freeze({
+  maxIterations: 256,
+  maxRealms: 16,
+  maxCapabilities: 64,
+} as const);
 
 export const TELEMETRY_LIMITS_V1 = Object.freeze({
   segmentCapacityRecords: 256,
@@ -436,6 +444,52 @@ function oneOf(value: unknown, values: readonly unknown[], path: string): void {
   if (!values.includes(value)) fail(path, 'enum-invalid', 'Value is outside the contract enum.');
 }
 
+export interface TelemetryCapabilityDerivationInputV1 {
+  readonly scenarioId: CanonicalIdV1;
+  readonly phase: BenchmarkSamplePhaseV1;
+  readonly backend: BenchmarkBackendCellV1;
+}
+
+export function deriveTelemetryCapabilityIdsV1(
+  input: TelemetryCapabilityDerivationInputV1,
+): readonly CanonicalIdV1[] {
+  if (!Object.prototype.hasOwnProperty.call(BENCHMARK_SCENARIO_REGISTRY_V1, input.scenarioId)) {
+    fail('$.scenarioId', 'scenario-invalid', 'Scenario is not a BR01 scenario.');
+  }
+  const registryEntry = BENCHMARK_SCENARIO_REGISTRY_V1[input.scenarioId as keyof typeof BENCHMARK_SCENARIO_REGISTRY_V1];
+  const definition = registryEntry.definition;
+  if (!definition.allowedPhases.includes(input.phase)) fail('$.phase', 'phase-not-allowed', 'Phase is not allowed for the scenario.');
+  if (input.backend !== 'three-webgl2' && input.backend !== 'raw-webgpu' && input.backend !== 'not-applicable') {
+    fail('$.backend', 'backend-invalid', 'Backend is not a BR01 backend cell.');
+  }
+  if (input.backend === 'raw-webgpu') fail('$.backend', 'backend-invalid', 'Only the current WebGL2 backend is valid for browser telemetry.');
+  const hasBackendParameter = definition.parameterContracts.some((contract) => contract.key === 'backend');
+  if (hasBackendParameter && input.backend !== 'three-webgl2') {
+    fail('$.backend', 'backend-invalid', 'Only the current WebGL2 backend is valid for browser telemetry.');
+  }
+  if (!hasBackendParameter && input.backend !== 'not-applicable') {
+    fail('$.backend', 'backend-invalid', 'Scenario does not declare a backend parameter.');
+  }
+
+  const ids = new Set<CanonicalIdV1>(definition.capabilityContracts.map((entry) => entry.id));
+  for (const selection of definition.metricCapabilitySelections) {
+    if (selection.parameterKey !== 'backend') continue;
+    for (const selected of selection.selections) {
+      if (selected.parameterValue === input.backend) ids.add(selected.capabilityId);
+    }
+  }
+  for (const entry of BENCHMARK_METRIC_REACHABILITY_MATRIX_V1) {
+    if (entry.scenarioId === input.scenarioId
+      && entry.phase === input.phase
+      && entry.backend === input.backend
+      && entry.disposition === 'emit-sample'
+      && entry.capabilityId !== undefined) {
+      ids.add(entry.capabilityId);
+    }
+  }
+  return [...ids].sort(compareUtf16);
+}
+
 function validateDimensions(value: unknown, path: string, expectedKeys: readonly string[]): void {
   const dimensions = plainArray(value, path);
   if (dimensions.length !== expectedKeys.length) fail(path, 'dimension-count-invalid', 'Wrong dimension count.');
@@ -633,7 +687,9 @@ function validateValidityReconciliation(
 }
 
 function validateIterations(value: unknown, path: string): readonly TelemetryIterationV1[] {
-  const entries = plainArray(value, path); if (entries.length === 0) fail(path, 'iteration-empty', 'At least one iteration is required.');
+  const entries = plainArray(value, path);
+  if (entries.length === 0) fail(path, 'iteration-empty', 'At least one iteration is required.');
+  if (entries.length > BR02_BROWSER_METADATA_LIMITS_V1.maxIterations) fail(path, 'iteration-limit', 'Iteration count exceeds the BR02 metadata limit.');
   const ids = new Set<string>();
   return entries.map((entry, index) => {
     const iteration = closed(entry, ['iterationId', 'iterationOrdinal'], `${path}[${index}]`);
@@ -644,7 +700,10 @@ function validateIterations(value: unknown, path: string): readonly TelemetryIte
 }
 
 function validateRealms(value: unknown, path: string): readonly TelemetryRealmV1[] {
-  const entries = plainArray(value, path); let previous = ''; const ids = new Set<string>();
+  const entries = plainArray(value, path);
+  if (entries.length === 0) fail(path, 'realm-empty', 'At least one realm is required.');
+  if (entries.length > BR02_BROWSER_METADATA_LIMITS_V1.maxRealms) fail(path, 'realm-limit', 'Realm metadata exceeds the BR02 metadata limit.');
+  let previous = ''; const ids = new Set<string>();
   return entries.map((entry, index) => {
     const realm = closed(entry, ['realmId', 'realm', 'timeOriginEpochMs'], `${path}[${index}]`); const id = canonicalId(realm.realmId, `${path}[${index}].realmId`);
     if (ids.has(id) || (previous !== '' && compareUtf16(previous, id) >= 0)) fail(`${path}[${index}].realmId`, 'realm-order-invalid', 'Realms must be sorted and unique.');
@@ -654,7 +713,9 @@ function validateRealms(value: unknown, path: string): readonly TelemetryRealmV1
 }
 
 function validateCapabilities(value: unknown, path: string): readonly TelemetryCapabilityV1[] {
-  const entries = plainArray(value, path); let previous = ''; const ids = new Set<string>();
+  const entries = plainArray(value, path);
+  if (entries.length > BR02_BROWSER_METADATA_LIMITS_V1.maxCapabilities) fail(path, 'capability-limit', 'Capability metadata exceeds the BR02 metadata limit.');
+  let previous = ''; const ids = new Set<string>();
   return entries.map((entry, index) => {
     const capability = closed(entry, ['id', 'value'], `${path}[${index}]`); const id = canonicalId(capability.id, `${path}[${index}].id`);
     if (ids.has(id) || (previous !== '' && compareUtf16(previous, id) >= 0)) fail(`${path}[${index}].id`, 'capability-order-invalid', 'Capabilities must be sorted and unique.');
@@ -740,17 +801,26 @@ function assertTelemetryExport(value: unknown): Br02TelemetryExportV1 {
   equal(exportValue.adapterContractVersion, BENCHMARK_TELEMETRY_ADAPTER_CONTRACT_VERSION_V1, '$.adapterContractVersion');
   const runId = canonicalId(exportValue.runId, '$.runId');
   canonicalId(exportValue.planId, '$.planId');
-  canonicalId(exportValue.scenarioId, '$.scenarioId');
+  const scenarioId = canonicalId(exportValue.scenarioId, '$.scenarioId');
   const phase = exportValue.phase;
   oneOf(phase, PHASES, '$.phase');
   oneOf(exportValue.backend, ['three-webgl2', 'raw-webgpu', 'not-applicable'], '$.backend');
+  const backend = exportValue.backend as BenchmarkBackendCellV1;
   const telemetryMode = exportValue.telemetryMode as TelemetryModeV1;
   oneOf(telemetryMode, ['telemetry-enabled-minimal', 'telemetry-enabled-full'], '$.telemetryMode');
+  const expectedCapabilityIds = deriveTelemetryCapabilityIdsV1({
+    scenarioId,
+    phase: phase as BenchmarkSamplePhaseV1,
+    backend,
+  });
   const iterations = validateIterations(exportValue.iterations, '$.iterations');
   validateClock(exportValue.clock, '$.clock');
   validateLimits(exportValue.limits, '$.limits');
   const realms = validateRealms(exportValue.realms, '$.realms');
-  validateCapabilities(exportValue.capabilities, '$.capabilities');
+  const capabilities = validateCapabilities(exportValue.capabilities, '$.capabilities');
+  if (capabilities.length !== expectedCapabilityIds.length || expectedCapabilityIds.some((id, index) => capabilities[index]?.id !== id)) {
+    fail('$.capabilities', 'capability-set-invalid', 'Capabilities must exactly match the canonical BR01-derived capability list.');
+  }
   const realmIds = new Set(realms.map((realm) => realm.realmId));
   const iterationIds = new Set(iterations.map((iteration) => iteration.iterationId));
   const records = plainArray(exportValue.records, '$.records');

@@ -5,6 +5,7 @@ import {
   type BrowserTelemetryCollectorEnvironmentV1,
 } from '../../../../src/diagnostics/telemetry/collectorV1';
 import type { BrowserTelemetryHandoffEnvelopeV1 } from '../../../../src/diagnostics/telemetry/browserHandoffV1';
+import { rethrowRendererFailureV1 } from '../../../../src/render-three/threeVoxelRenderer';
 
 const id = (value: string): CanonicalIdV1 => value as CanonicalIdV1;
 
@@ -468,6 +469,75 @@ describe('BR02 browser collector v1', () => {
     expect(sealed.state).toBe('sealed');
     expect(sealed.reason).toBe('none');
     expect(sealed.snapshot()).toBe(exportValue);
+  });
+
+  it('fails the complete frame operation once, preserves the original error, and does not schedule after a failed draw', () => {
+    const renderError = new Error('render details must not be captured');
+    const events: string[] = [];
+    let failures = 0;
+    let scheduled = 0;
+    const runControlledFrame = (failure: Error, afterDraw: boolean): unknown => {
+      try {
+        events.push('raf', 'record', 'controls', 'before', 'render');
+        if (afterDraw) events.push('after', 'hud');
+        throw failure;
+        // The real frame loop schedules only after this point.
+        scheduled += 1;
+      } catch (error) {
+        try {
+          rethrowRendererFailureV1(error, () => { failures += 1; });
+        } catch (rethrow) {
+          return rethrow;
+        }
+      }
+      return undefined;
+    };
+    const renderCaught = runControlledFrame(renderError, false);
+    expect(renderCaught).toBe(renderError);
+    expect(events).toEqual(['raf', 'record', 'controls', 'before', 'render']);
+    expect(failures).toBe(1);
+    expect(scheduled).toBe(0);
+
+    const phaseError = new TypeError('HUD details must not be captured');
+    events.length = 0;
+    const phaseCaught = runControlledFrame(phaseError, true);
+    expect(phaseCaught).toBe(phaseError);
+    expect(events).toEqual(['raf', 'record', 'controls', 'before', 'render', 'after', 'hud']);
+    expect(failures).toBe(2);
+    expect(scheduled).toBe(0);
+  });
+
+  it('uses the renderer-failure terminal path for collector state, markers, controls, and idempotent disposal', () => {
+    const dom = fakeDom();
+    const collector = new BrowserTelemetryCollectorV1({ bootstrap: envelope(), canvas: canvas(), environment: environment(dom) });
+    collector.markReady();
+    collector.startCurrentIteration();
+    collector.onAnimationFrame(10);
+    collector.beforeDraw();
+    collector.onRendererFailure();
+
+    expect(collector.state).toBe('invalid');
+    expect(collector.reason).toBe('renderer-failure');
+    expect(collector.canStartCurrentIteration).toBe(false);
+    expect(collector.canCompleteCurrentIteration).toBe(false);
+    expect(collector.canCompleteAndSealCurrentIteration).toBe(false);
+    expect(collector.canAdvanceToNextIteration).toBe(false);
+    expect(collector.canSeal).toBe(false);
+    expect(collector.canExport).toBe(false);
+    expect(collector.completeCurrentIteration()).toBe(false);
+    expect(collector.completeAndSealCurrentIteration()).toBe(false);
+    expect(collector.advanceToNextIteration()).toBe(false);
+    expect(collector.seal()).toBe(false);
+    expect(collector.scheduleExportDownload({
+      document: { createElement: () => ({ click: () => {} } as unknown as HTMLAnchorElement) },
+      url: { createObjectURL: () => 'blob:unused', revokeObjectURL: () => {} },
+      setTimeout: () => 1,
+    })).toBe(false);
+    collector.afterDraw();
+    expect(collector.snapshot()).toBeNull();
+    collector.dispose();
+    collector.dispose();
+    expect(collector.markReady()).toBe(false);
   });
 
   it('seals immutable bytes and schedules real Blob/object-URL delivery outside the lifecycle call', () => {

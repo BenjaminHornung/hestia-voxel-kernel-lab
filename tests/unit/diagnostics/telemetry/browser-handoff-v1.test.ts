@@ -158,10 +158,14 @@ describe('BR02 browser handoff v1', () => {
 
   it('rejects more than the bounded iteration metadata before collector construction', () => {
     const value = baseEnvelope() as any;
-    value.iterations = Array.from({ length: 257 }, (_, iterationOrdinal) => ({
+    value.iterations = Array.from({ length: 256 }, (_, iterationOrdinal) => ({
       iterationId: `iteration-${iterationOrdinal}`,
       iterationOrdinal,
     }));
+    expect(validateBrowserTelemetryHandoffEnvelopeV1(value).valid).toBe(true);
+    value.iterations.push({ iterationId: 'iteration-256', iterationOrdinal: 256 });
+    expect(validateBrowserTelemetryHandoffEnvelopeV1(value).valid).toBe(false);
+    value.iterations = [];
     expect(validateBrowserTelemetryHandoffEnvelopeV1(value).valid).toBe(false);
   });
 
@@ -217,7 +221,18 @@ describe('BR02 browser handoff v1', () => {
     expect(handoff.state).toBe('invalid');
     expect(handoff.reason).toBe('renderer-failure');
     expect(handoff.collector?.reason).toBe('renderer-failure');
-    expect(root.querySelector<FakeElement>('[data-testid="telemetry-contract-status"]')?.textContent).not.toContain('context-loss');
+    for (const testId of [
+      'telemetry-start-current-iteration',
+      'telemetry-complete-current-iteration',
+      'telemetry-advance-next-iteration',
+      'telemetry-seal',
+      'telemetry-export',
+    ]) {
+      expect(root.querySelector<FakeElement>(`[data-testid="${testId}"]`)?.disabled).toBe(true);
+    }
+    const statusText = root.querySelector<FakeElement>('[data-testid="telemetry-contract-status"]')?.textContent;
+    expect(statusText).toBe('contract=br-02-browser-telemetry-handoff-v1; version=1; state=invalid; reason=renderer-failure');
+    expect(statusText).not.toContain('render details must not be captured');
 
     const sealedRoot = handoffRoot();
     const sealedEnvironment = handoffEnvironment();

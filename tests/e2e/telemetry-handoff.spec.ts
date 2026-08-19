@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test } from '@playwright/test';
-import { build, preview, type PreviewServer } from 'vite';
+import { expect, test, type Page } from '@playwright/test';
+import { build, createServer, preview, type PreviewServer, type ViteDevServer } from 'vite';
+import type { BenchmarkSamplePhaseV1, CanonicalIdV1, Sha256DigestV1, TelemetryAdapterContextV1, TelemetryExportV1 } from '../../src/benchmark/contracts/browserV1';
 import { trackPageFailures } from './support';
 
 const telemetryQuery = Buffer.from(JSON.stringify({
@@ -21,33 +22,44 @@ const telemetryQuery = Buffer.from(JSON.stringify({
   telemetryMode: 'telemetry-enabled-minimal',
 })).toString('base64url');
 
-interface TelemetryExportE2e {
-  readonly schemaVersion: number;
-  readonly contractId: string;
-  readonly adapterContractId: string;
-  readonly adapterContractVersion: number;
-  readonly iterations: readonly { readonly iterationId: string; readonly iterationOrdinal: number }[];
-  readonly records: readonly {
-    readonly recordId: string;
-    readonly ingestSequence: number;
-    readonly kind: string;
-    readonly iterationId: string | null;
-    readonly fields: { readonly dimensions?: readonly { readonly key: string; readonly value: number }[] };
-  }[];
-  readonly sealed: boolean;
-}
-
 function objectKeys(value: unknown): readonly string[] {
   if (Array.isArray(value)) return value.flatMap(objectKeys);
   if (value === null || typeof value !== 'object') return [];
   return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => [key, ...objectKeys(child)]);
 }
 
+async function waitForTelemetryInterval(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+}
+
 let benchmarkDir: string | undefined;
 let benchmarkServer: PreviewServer | undefined;
 let benchmarkBaseUrl: string | undefined;
+let productModuleServer: ViteDevServer | undefined;
+let adaptTelemetryExportV1: typeof import('../../src/benchmark/adapters').adaptTelemetryExportV1;
+let benchmarkMetricRegistryV1: typeof import('../../src/benchmark/contracts/browserV1').BENCHMARK_METRIC_REGISTRY_V1;
+let serializeSealedTelemetryExportV1: typeof import('../../src/diagnostics/telemetry/contractV1').serializeSealedTelemetryExportV1;
+let validateTelemetryExportV1: typeof import('../../src/diagnostics/telemetry/contractV1').validateTelemetryExportV1;
 
 test.beforeAll(async () => {
+  productModuleServer = await createServer({
+    root: process.cwd(),
+    configFile: false,
+    mode: 'benchmark',
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  });
+  const [adapterModule, browserContractsModule, telemetryContractModule] = await Promise.all([
+    productModuleServer.ssrLoadModule('/src/benchmark/adapters/index.ts'),
+    productModuleServer.ssrLoadModule('/src/benchmark/contracts/browserV1.ts'),
+    productModuleServer.ssrLoadModule('/src/diagnostics/telemetry/contractV1.ts'),
+  ]);
+  adaptTelemetryExportV1 = adapterModule.adaptTelemetryExportV1;
+  benchmarkMetricRegistryV1 = browserContractsModule.BENCHMARK_METRIC_REGISTRY_V1;
+  serializeSealedTelemetryExportV1 = telemetryContractModule.serializeSealedTelemetryExportV1;
+  validateTelemetryExportV1 = telemetryContractModule.validateTelemetryExportV1;
   benchmarkDir = mkdtempSync(join(tmpdir(), 'br02-e2e-benchmark-'));
   await build({
     root: process.cwd(),
@@ -69,6 +81,9 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  if (productModuleServer !== undefined) {
+    await productModuleServer.close();
+  }
   if (benchmarkServer !== undefined) {
     await new Promise<void>((resolve) => benchmarkServer!.httpServer.close(() => resolve()));
   }
@@ -132,6 +147,8 @@ test('benchmark handoff exposes keyboard-accessible lifecycle and real download'
     await start.focus();
     await page.keyboard.press('Enter');
     await expect(page.getByTestId('telemetry-contract-status')).toContainText('state=running');
+    await waitForTelemetryInterval(page);
+    await expect(page.getByTestId('telemetry-contract-status')).toContainText('state=running');
     await page.keyboard.press('Tab');
     await expect(complete).toBeFocused();
     await complete.click();
@@ -139,6 +156,8 @@ test('benchmark handoff exposes keyboard-accessible lifecycle and real download'
     await advance.click();
     await expect(page.getByTestId('telemetry-current-iteration')).toHaveText('id=iteration-1; ordinal=1');
     await start.click();
+    await expect(page.getByTestId('telemetry-contract-status')).toContainText('state=running');
+    await waitForTelemetryInterval(page);
     await expect(page.getByTestId('telemetry-contract-status')).toContainText('state=running');
     await complete.click();
     await expect(page.getByTestId('telemetry-contract-status')).toContainText('state=sealed');
@@ -152,7 +171,16 @@ test('benchmark handoff exposes keyboard-accessible lifecycle and real download'
     expect(download.suggestedFilename()).toBe('br02-telemetry-export-v1.json');
     const exportPath = testInfo.outputPath('br02-telemetry-export-v1.json');
     await download.saveAs(exportPath);
-    const telemetryExport = JSON.parse(readFileSync(exportPath, 'utf8')) as TelemetryExportE2e;
+    const rawBytes = new Uint8Array(readFileSync(exportPath));
+    const parsedTelemetryExport: unknown = JSON.parse(new TextDecoder().decode(rawBytes));
+    const validation = validateTelemetryExportV1(parsedTelemetryExport);
+    expect(validation.valid).toBe(true);
+    if (!validation.valid) throw new Error('The downloaded BR02 export failed its browser-safe contract validation.');
+    const telemetryExport = validation.value;
+    const firstSerialization = serializeSealedTelemetryExportV1(telemetryExport);
+    const secondSerialization = serializeSealedTelemetryExportV1(telemetryExport);
+    expect(Array.from(firstSerialization)).toEqual(Array.from(secondSerialization));
+    expect(Array.from(firstSerialization)).toEqual(Array.from(rawBytes));
     expect(telemetryExport.schemaVersion).toBe(1);
     expect(telemetryExport.contractId).toBe('br-02-in-browser-telemetry-v1');
     expect(telemetryExport.adapterContractId).toBe('br02-telemetry-export-v1-to-benchmark-raw-sample-v1');
@@ -170,9 +198,35 @@ test('benchmark handoff exposes keyboard-accessible lifecycle and real download'
       if (record.kind !== 'sample') continue;
       const iteration = telemetryExport.iterations.find((candidate) => candidate.iterationId === record.iterationId);
       expect(iteration).toBeDefined();
-      const timeBlock = record.fields.dimensions?.find((dimension) => dimension.key === 'time-block-ordinal');
+      const timeBlock = 'dimensions' in record.fields
+        ? record.fields.dimensions.find((dimension) => dimension.key === 'time-block-ordinal')
+        : undefined;
       if (timeBlock !== undefined) expect(timeBlock.value).toBe(iteration!.iterationOrdinal);
     }
+    const runBindingSha256 = `sha256:${'b'.repeat(64)}` as Sha256DigestV1;
+    const contexts: readonly TelemetryAdapterContextV1[] = telemetryExport.iterations.map((iteration) => ({
+      hardwareCellId: 'e2e-hardware-cell' as CanonicalIdV1,
+      slotId: 'e2e-slot' as CanonicalIdV1,
+      browserProcessId: 'e2e-browser-process' as CanonicalIdV1,
+      runId: telemetryExport.runId,
+      iterationId: iteration.iterationId,
+      phase: telemetryExport.phase as BenchmarkSamplePhaseV1,
+      runBindingSha256,
+    }));
+    expect(contexts.every((context) => Object.keys(context).length === 7)).toBe(true);
+    const adapterInput = telemetryExport as unknown as TelemetryExportV1;
+    const adapted = contexts.map((context) => adaptTelemetryExportV1(adapterInput, context, benchmarkMetricRegistryV1));
+    const repeated = contexts.map((context) => adaptTelemetryExportV1(adapterInput, context, benchmarkMetricRegistryV1));
+    expect(adapted).toEqual(repeated);
+    for (const [index, result] of adapted.entries()) {
+      expect(result.invalidReasons).toEqual([]);
+      expect(result.samples.length).toBeGreaterThan(0);
+      expect(result.samples.every((sample) => sample.iterationId === telemetryExport.iterations[index]!.iterationId)).toBe(true);
+    }
+    const samples = adapted.flatMap((result) => result.samples);
+    expect(samples.map((sample) => sample.ordinal)).toEqual(samples.map((_sample, index) => index));
+    expect(samples.map((sample) => sample.sampleId)).toEqual(samples.map((_sample, index) => `br02-sample-${String(index).padStart(8, '0')}`));
+    expect(new Set(samples.map((sample) => sample.sampleId)).size).toBe(samples.length);
     expect(objectKeys(telemetryExport).filter((key) => /^(target|selector|text|pointer|url|container|path|stack|error|message)$/i.test(key))).toEqual([]);
     await page.screenshot({ path: testInfo.outputPath('telemetry-handoff.png') });
     expect(failures).toEqual({ consoleErrors: [], pageErrors: [], requestFailures: [], httpErrors: [] });
