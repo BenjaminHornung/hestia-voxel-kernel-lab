@@ -13,6 +13,12 @@ const FIXTURE_PATHS = ['fixtures/A-small.txt', 'fixtures/large.bin'] as const;
 const CANDIDATE_PATH = 'candidate.txt';
 const textEncoder = new TextEncoder();
 const empty = new Uint8Array();
+const FUTURE_OWNER_CONFIGURATIONS = [
+  { scenarioId: 'mesh-density-sweep-v1', fixtureId: 'density-volume-suite-v1', owner: 'BR02', backend: 'three-webgl2' },
+  { scenarioId: 'scheduler-steady-v1', fixtureId: 'scheduler-edit-stream-v1', owner: 'WP05', backend: 'three-webgl2' },
+  { scenarioId: 'brush-stress-v1', fixtureId: 'brush-command-stream-v1', owner: 'WP05', backend: 'three-webgl2' },
+  { scenarioId: 'backend-fixture-v1', fixtureId: 'backend-parity-world-v1', owner: 'BR05', backend: 'raw-webgpu' },
+] as const;
 
 const observed = <T>(value: T) => ({ status: 'observed' as const, value, sourceRef: 'capture-v1', stability: 'stable' as const });
 const declared = <T>(value: T) => ({ status: 'declared' as const, value, sourceRef: 'plan-v1', stability: 'run-config' as const });
@@ -194,7 +200,7 @@ function rebindRuns(document: any, calculateRunBinding: (run: any) => string): v
 }
 
 describe('BR01 generic historical fixture provenance contract', () => {
-  it('accepts a non-WP04 registered binding from exact historical Git blobs and keeps current mutations irrelevant', async () => {
+  it('accepts exact historical Git blobs despite changed current bytes', async () => {
     const repository = createTestRepository();
     const modules = await importWithBindings({ [FIXTURE_ID]: bindingFor(repository) });
     try {
@@ -209,25 +215,38 @@ describe('BR01 generic historical fixture provenance contract', () => {
           sourceFileSetSha256: { status: 'observed', value: repository.fixtureDigest },
         });
       }
+    } finally {
+      cleanupModuleMock();
+    }
+  }, 30_000);
 
+  it('remains accepted under a real git replace and removes it in finally', async () => {
+    const repository = createTestRepository();
+    const modules = await importWithBindings({ [FIXTURE_ID]: bindingFor(repository) });
+    try {
       git(repository.root, ['replace', repository.ownerCommit, repository.currentCommit]);
       try {
         expect(modules.sourcePreflight.sourcePreflightV1(preflightInput(repository))).toMatchObject({ status: 'accepted' });
       } finally {
         git(repository.root, ['replace', '-d', repository.ownerCommit]);
       }
+    } finally {
+      cleanupModuleMock();
+    }
+  }, 30_000);
 
-      const mutations = [
-        (input: any) => { input.fixture.sourceCommitSha = declared('f'.repeat(40)); },
-        (input: any) => { input.fixture.sourcePaths = observed(['fixtures/a-small.txt', 'fixtures/large.bin']); },
-        (input: any) => { input.fixture.sourcePaths = observed(['fixtures/A-other.txt', 'fixtures/large.bin']); },
-        (input: any) => { input.fixture.sourceFileSetSha256 = observed(`sha256:${'b'.repeat(64)}`); },
-      ];
-      for (const mutate of mutations) {
-        const input = preflightInput(repository);
-        mutate(input);
-        expect(modules.sourcePreflight.sourcePreflightV1(input)).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
-      }
+  it.each([
+    ['wrong fixture.sourceCommitSha', (input: any) => { input.fixture.sourceCommitSha = declared('f'.repeat(40)); }],
+    ['wrong-case fixture.sourcePaths', (input: any) => { input.fixture.sourcePaths = observed(['fixtures/a-small.txt', 'fixtures/large.bin']); }],
+    ['different fixture source path', (input: any) => { input.fixture.sourcePaths = observed(['fixtures/A-other.txt', 'fixtures/large.bin']); }],
+    ['wrong fixture.sourceFileSetSha256', (input: any) => { input.fixture.sourceFileSetSha256 = observed(`sha256:${'b'.repeat(64)}`); }],
+  ] as const)('rejects %s', async (_label, mutate) => {
+    const repository = createTestRepository();
+    const modules = await importWithBindings({ [FIXTURE_ID]: bindingFor(repository) });
+    try {
+      const input = preflightInput(repository);
+      mutate(input);
+      expect(modules.sourcePreflight.sourcePreflightV1(input)).toMatchObject({ status: 'rejected', code: 'fixture-contract-mismatch' });
     } finally {
       cleanupModuleMock();
     }
@@ -275,73 +294,74 @@ describe('BR01 generic historical fixture provenance contract', () => {
     }
   }, 30_000);
 
-  it('proves future owner activation through source preflight, run rebinding, and synthetic records only', async () => {
+  it.each(FUTURE_OWNER_CONFIGURATIONS)('proves future owner activation for $scenarioId', async (configuration) => {
     const repository = createTestRepository();
-    const futureFixtures = [
-      { scenarioId: 'mesh-density-sweep-v1', fixtureId: 'density-volume-suite-v1', owner: 'BR02', backend: 'three-webgl2' },
-      { scenarioId: 'scheduler-steady-v1', fixtureId: 'scheduler-edit-stream-v1', owner: 'WP05', backend: 'three-webgl2' },
-      { scenarioId: 'brush-stress-v1', fixtureId: 'brush-command-stream-v1', owner: 'WP05', backend: 'three-webgl2' },
-      { scenarioId: 'backend-fixture-v1', fixtureId: 'backend-parity-world-v1', owner: 'BR05', backend: 'raw-webgpu' },
-    ] as const;
-    const bindings = Object.fromEntries(futureFixtures.map(({ fixtureId }) => [fixtureId, bindingFor(repository, fixtureId)]));
+    const bindings = Object.fromEntries(FUTURE_OWNER_CONFIGURATIONS.map(({ fixtureId }) => [fixtureId, bindingFor(repository, fixtureId)]));
     const modules = await importWithBindings(bindings);
     try {
-      for (const configuration of futureFixtures) {
-          const semanticBytes = canonicalizeJsonV1({ fixtureContractId: configuration.fixtureId, fixtureContractVersion: 1 });
-          const outcome = modules.sourcePreflight.sourcePreflightV1(preflightInput(repository, configuration.fixtureId, semanticBytes));
-          expect(outcome.status).toBe('accepted');
-          if (outcome.status !== 'accepted') continue;
+      const semanticBytes = canonicalizeJsonV1({ fixtureContractId: configuration.fixtureId, fixtureContractVersion: 1 });
+      const outcome = modules.sourcePreflight.sourcePreflightV1(preflightInput(repository, configuration.fixtureId, semanticBytes));
+      expect(outcome.status).toBe('accepted');
+      if (outcome.status !== 'accepted') return;
 
-          const phase = configuration.scenarioId === 'brush-stress-v1' ? 'stress' : 'measurement';
-          const container = phase === 'stress' ? 'stress' : 'warm-measurement';
-          const document = modules.fixtures.createBenchmarkCaseDocumentV1({ scenarioId: configuration.scenarioId, phase, container, backend: configuration.backend, samples: true }) as any;
-          replaceDocumentProvenance(document, outcome.provenance);
-          const context = modules.fixtures.createBenchmarkValidationContextV1({ scenarioId: configuration.scenarioId }) as any;
-          context.fixture = outcome.provenance.fixture;
-          context.candidate = outcome.provenance.candidate;
-          rebindRuns(document, modules.validate.calculateRunBindingSha256V1);
-          const targetRun = document.browserProcesses[0].runs.at(-1);
-          const recordNames = modules.registry.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1
-            .filter((entry: any) => entry.scenarioId === configuration.scenarioId
-              && entry.phase === targetRun.execution.phase
-              && entry.backend === configuration.backend
-              && entry.disposition === 'emit-sample')
-            .map((entry: any) => entry.recordName);
-          expect(modules.registry.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.some((entry: any) => entry.scenarioId === configuration.scenarioId && entry.futureProducerOwner === configuration.owner)).toBe(true);
-          modules.fixtures.applySyntheticFutureProducerRecordsV1(document, recordNames);
-          const validation = modules.validate.validateBenchmarkRunV1(document, context);
-          expect(validation, JSON.stringify({ configuration, validation, fixture: targetRun.source.fixture, documentReasons: document.measurementEligibilityReasons, runReasons: targetRun.measurementEligibilityReasons, recordNames })).toMatchObject({ valid: true });
-          expect(document.measurementEligible).toBe(true);
-          expect(document.browserProcesses[0].runs.at(-1).execution.measurementEligibility).toBe('eligible');
-          if (configuration.scenarioId === 'backend-fixture-v1') {
-            const unsupported = structuredClone(document);
-            const environments = [unsupported.environment, unsupported.browserProcesses[0].environment, ...unsupported.browserProcesses[0].runs.map((run: any) => run.environment)];
-            for (const environment of environments) {
-              environment.capabilities.find((entry: any) => entry.id === 'webgpu-timestamp-query').value = { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'api-not-supported' };
-            }
-            rebindRuns(unsupported, modules.validate.calculateRunBindingSha256V1);
-            expect(modules.validate.validateBenchmarkRunV1(unsupported, context)).toMatchObject({ valid: false, code: 'required-capability-missing' });
-          }
+      const phase = configuration.scenarioId === 'brush-stress-v1' ? 'stress' : 'measurement';
+      const container = phase === 'stress' ? 'stress' : 'warm-measurement';
+      const document = modules.fixtures.createBenchmarkCaseDocumentV1({ scenarioId: configuration.scenarioId, phase, container, backend: configuration.backend, samples: true }) as any;
+      replaceDocumentProvenance(document, outcome.provenance);
+      const context = modules.fixtures.createBenchmarkValidationContextV1({ scenarioId: configuration.scenarioId }) as any;
+      context.fixture = outcome.provenance.fixture;
+      context.candidate = outcome.provenance.candidate;
+      rebindRuns(document, modules.validate.calculateRunBindingSha256V1);
+      const targetRun = document.browserProcesses[0].runs.at(-1);
+      const recordNames = modules.registry.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1
+        .filter((entry: any) => entry.scenarioId === configuration.scenarioId
+          && entry.phase === targetRun.execution.phase
+          && entry.backend === configuration.backend
+          && entry.disposition === 'emit-sample')
+        .map((entry: any) => entry.recordName);
+      expect(modules.registry.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1.some((entry: any) => entry.scenarioId === configuration.scenarioId && entry.futureProducerOwner === configuration.owner)).toBe(true);
+      modules.fixtures.applySyntheticFutureProducerRecordsV1(document, recordNames);
+      const validation = modules.validate.validateBenchmarkRunV1(document, context);
+      expect(validation, JSON.stringify({ configuration, validation, fixture: targetRun.source.fixture, documentReasons: document.measurementEligibilityReasons, runReasons: targetRun.measurementEligibilityReasons, recordNames })).toMatchObject({ valid: true });
+      expect(document.measurementEligible).toBe(true);
+      expect(document.browserProcesses[0].runs.at(-1).execution.measurementEligibility).toBe('eligible');
+      if (configuration.scenarioId === 'backend-fixture-v1') {
+        const unsupported = structuredClone(document);
+        const environments = [unsupported.environment, unsupported.browserProcesses[0].environment, ...unsupported.browserProcesses[0].runs.map((run: any) => run.environment)];
+        for (const environment of environments) {
+          environment.capabilities.find((entry: any) => entry.id === 'webgpu-timestamp-query').value = { status: 'unsupported', value: null, sourceRef: 'capture-v1', reasonCode: 'api-not-supported' };
         }
+        rebindRuns(unsupported, modules.validate.calculateRunBindingSha256V1);
+        expect(modules.validate.validateBenchmarkRunV1(unsupported, context)).toMatchObject({ valid: false, code: 'required-capability-missing' });
+      }
+    } finally {
+      cleanupModuleMock();
+    }
+  }, 30_000);
 
-        const structural = modules.fixtures.createBenchmarkCaseDocumentV1({ scenarioId: 'mesh-density-sweep-v1', samples: true }) as any;
-        const structuralFixtures = [
-          structural.source.fixture,
-          ...structural.browserProcesses.flatMap((process: any) => [process.source.fixture, ...process.runs.flatMap((run: any) => [run.source.fixture, run.scenario.fixture])]),
-        ];
-        for (const fixture of structuralFixtures) fixture.sourceCommitSha = declared(fixture.sourceCommitSha.value);
-        const structuralContext = modules.fixtures.createBenchmarkValidationContextV1({ scenarioId: 'mesh-density-sweep-v1' }) as any;
-        structuralContext.fixture = structural.source.fixture;
-        rebindRuns(structural, modules.validate.calculateRunBindingSha256V1);
-        const allFutureRecordNames = modules.registry.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1
-          .filter((entry: any) => entry.scenarioId === 'mesh-density-sweep-v1' && entry.phase === 'measurement' && entry.backend === 'three-webgl2' && entry.disposition === 'emit-sample')
-          .map((entry: any) => entry.recordName);
-        modules.fixtures.applySyntheticFutureProducerRecordsV1(structural, allFutureRecordNames);
-        expect(structural.measurementEligible).toBe(false);
-        expect(structural.measurementEligibilityReasons).toEqual([{ code: 'fixture-contract-mismatch', detail: 'eligibility gate', phase: 'measurement' }]);
+  it('keeps future producer records structurally valid behind the fixture eligibility gate', async () => {
+    const repository = createTestRepository();
+    const bindings = Object.fromEntries(FUTURE_OWNER_CONFIGURATIONS.map(({ fixtureId }) => [fixtureId, bindingFor(repository, fixtureId)]));
+    const modules = await importWithBindings(bindings);
+    try {
+      const structural = modules.fixtures.createBenchmarkCaseDocumentV1({ scenarioId: 'mesh-density-sweep-v1', samples: true }) as any;
+      const structuralFixtures = [
+        structural.source.fixture,
+        ...structural.browserProcesses.flatMap((process: any) => [process.source.fixture, ...process.runs.flatMap((run: any) => [run.source.fixture, run.scenario.fixture])]),
+      ];
+      for (const fixture of structuralFixtures) fixture.sourceCommitSha = declared(fixture.sourceCommitSha.value);
+      const structuralContext = modules.fixtures.createBenchmarkValidationContextV1({ scenarioId: 'mesh-density-sweep-v1' }) as any;
+      structuralContext.fixture = structural.source.fixture;
+      rebindRuns(structural, modules.validate.calculateRunBindingSha256V1);
+      const allFutureRecordNames = modules.registry.BENCHMARK_METRIC_REACHABILITY_MATRIX_V1
+        .filter((entry: any) => entry.scenarioId === 'mesh-density-sweep-v1' && entry.phase === 'measurement' && entry.backend === 'three-webgl2' && entry.disposition === 'emit-sample')
+        .map((entry: any) => entry.recordName);
+      modules.fixtures.applySyntheticFutureProducerRecordsV1(structural, allFutureRecordNames);
+      expect(structural.measurementEligible).toBe(false);
+      expect(structural.measurementEligibilityReasons).toEqual([{ code: 'fixture-contract-mismatch', detail: 'eligibility gate', phase: 'measurement' }]);
       expect(modules.validate.validateBenchmarkRunV1(structural, structuralContext)).toMatchObject({ valid: true });
     } finally {
       cleanupModuleMock();
     }
-  }, 60_000);
+  }, 30_000);
 });

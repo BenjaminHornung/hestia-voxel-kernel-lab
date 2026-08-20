@@ -17,6 +17,7 @@ const FIXTURE_SEMANTIC_DIGEST = sha256BytesV1(FIXTURE_SEMANTIC_BYTES);
 const result = (stdout: string | Uint8Array, status = 0): SourcePreflightCommandResultV1 => ({ status, stdout: typeof stdout === 'string' ? new TextEncoder().encode(`${stdout}\n`) : stdout, stderr: empty });
 const emptyResult = (): SourcePreflightCommandResultV1 => ({ status: 0, stdout: empty, stderr: empty });
 const CANDIDATE_BLOB_OID = 'c'.repeat(40);
+const REAL_GIT_TEST_TIMEOUT_MS = 30_000;
 
 interface CandidateCommandOptions {
   readonly treeOid?: string;
@@ -640,7 +641,7 @@ describe('BR01 source preflight', () => {
     const candidateBytes = new TextEncoder().encode('candidate');
     const outcome = runRealGitCandidatePreflight({ candidatePath: 'candidate.txt', candidateBytes });
     expect(outcome, JSON.stringify(outcome)).toMatchObject({ status: 'accepted' });
-  });
+  }, REAL_GIT_TEST_TIMEOUT_MS);
   it.each([
     ['ignored dist file', 'dist/index.js', 'build'],
     ['ignored node_modules file', 'node_modules/vendor/index.js', 'vendor'],
@@ -651,7 +652,7 @@ describe('BR01 source preflight', () => {
       status: 'rejected',
       code: 'candidate-contract-mismatch',
     });
-  });
+  }, REAL_GIT_TEST_TIMEOUT_MS);
   it('rejects an unrelated dirty change as source-dirty in an isolated real Git repository', () => {
     const candidateBytes = new TextEncoder().encode('candidate');
     expect(runRealGitCandidatePreflight({
@@ -659,7 +660,7 @@ describe('BR01 source preflight', () => {
       candidateBytes,
       mutate: (root) => writeFileSync(join(root, 'unrelated.txt'), new TextEncoder().encode('changed')),
     })).toMatchObject({ status: 'rejected', code: 'source-dirty' });
-  });
+  }, REAL_GIT_TEST_TIMEOUT_MS);
   it('accepts a tracked current-HEAD candidate only after exact blob and filtered hash binding', () => {
     expect(candidateBindingPreflight()).toMatchObject({ status: 'accepted' });
   });
