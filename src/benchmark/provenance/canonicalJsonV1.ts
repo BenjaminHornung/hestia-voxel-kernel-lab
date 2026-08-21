@@ -316,6 +316,18 @@ function assertNoUnpairedSurrogatesInJsonText(text: string): void {
 }
 
 export function parseCanonicalJsonV1(input: Uint8Array | string): unknown {
+  const value = parseJsonV1(input);
+  const bytes = typeof input === 'string' ? textEncoder.encode(input) : input;
+  const canonical = canonicalizeJsonV1(value);
+  if (canonical.byteLength !== bytes.byteLength) throw new CanonicalJsonError('JSON is not canonical JCS.');
+  for (let index = 0; index < canonical.length; index += 1) {
+    if (canonical[index] !== bytes[index]) throw new CanonicalJsonError('JSON is not canonical JCS.');
+  }
+  return value;
+}
+
+/** Parse untrusted JSON while retaining the duplicate-key rejection of the canonical parser. */
+export function parseJsonV1(input: Uint8Array | string): unknown {
   if (typeof input === 'string' && hasUnpairedSurrogate(input)) {
     throw new CanonicalJsonError('JSON text contains an unpaired UTF-16 surrogate.');
   }
@@ -328,11 +340,6 @@ export function parseCanonicalJsonV1(input: Uint8Array | string): unknown {
     value = JSON.parse(text) as unknown;
   } catch {
     throw new CanonicalJsonError('Input is not valid JSON.');
-  }
-  const canonical = canonicalizeJsonV1(value);
-  if (canonical.byteLength !== bytes.byteLength) throw new CanonicalJsonError('JSON is not canonical JCS.');
-  for (let index = 0; index < canonical.length; index += 1) {
-    if (canonical[index] !== bytes[index]) throw new CanonicalJsonError('JSON is not canonical JCS.');
   }
   return value;
 }

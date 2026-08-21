@@ -1,0 +1,47 @@
+{
+  "expectedSourceCommitSha": "e88978cbcd5504789a804fb25e353e08aaec1bd6",
+  "expectedBuildSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "fixtureContractId": "backend-parity-world-v1",
+  "fixtureSemanticSha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "hardwareProfileId": "br03-synthetic-ci",
+  "hardwareBindingSha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "syntheticHardwareProfile": true,
+  "browser": {
+    "requestedChannel": "chromium",
+    "headless": true,
+    "requestedArgs": ["--headless=new"]
+  },
+  "orderSeed": 1,
+  "candidates": [
+    {
+      "id": "synthetic-a",
+      "sourceFileSetSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "id": "synthetic-b",
+      "sourceFileSetSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "backend-fixture-v1",
+      "parameters": [
+        { "key": "seed", "value": 1212502868 },
+        { "key": "backend", "value": "three-webgl2" },
+        { "key": "mesher", "value": "greedy-ao" },
+        { "key": "chunk-edge", "value": 32 },
+        { "key": "worker-count", "value": 0 },
+        { "key": "camera-contract-sha256", "value": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        { "key": "feature-contract-sha256", "value": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+      ]
+    }
+  ],
+  "phases": {
+    "cold": { "enabled": true, "minimumProcessesPerCandidate": 10 },
+    "warmMeasurement": { "enabled": false, "minimumProcessesPerCandidate": 0, "measurementIterationsPerProcess": 0 },
+    "stress": { "enabled": false, "minimumProcessesPerCandidate": 0 },
+    "trace": { "enabled": false, "minimumProcessesPerCandidate": 0 },
+    "leak": { "enabled": false, "minimumProcessesPerCandidate": 0 }
+  },
+  "retryPolicy": "none"
+}
