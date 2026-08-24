@@ -1,25 +1,21 @@
-import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
 import {
   BENCHMARK_METRIC_REGISTRY_V1,
-  BENCHMARK_REPOSITORY_URL,
-  BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1,
   BENCHMARK_SCENARIO_REGISTRY_V1,
   BENCHMARK_SCHEMA_SET_SHA256_V1,
-  BENCHMARK_STATUS_COMMAND,
-  EMPTY_STATUS_SHA256,
+  BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1,
+  BENCHMARK_WP04_SEMANTIC_SHA256_V1,
+  getBenchmarkWp04SemanticBytesV1,
+  type BenchmarkCandidateBindingV1,
+  type BenchmarkFixtureContractBindingV1,
   type AvailabilityDeclaredStabilityV1,
-   type AvailabilityV1,
+  type AvailabilityV1,
   type BenchmarkEnvironmentManifestV1,
-  type BenchmarkSourceProvenanceV1,
   type BenchmarkValidationContextV1,
   type CanonicalIdV1,
-  type NonEmptyReadonlyArray,
   type NonEmptyString,
-  type RepositoryRelativePathV1,
   type SafePositiveIntegerV1,
 } from '../../contracts';
-import { compareUtf16, readFileBytesV1, repositoryRelativePathV1 } from '../../provenance';
+import { canonicalizeJsonV1, compareUtf16, parseCanonicalJsonV1, sourcePreflightV1, verifyBuildHandoffV1 } from '../../provenance';
 import { createTelemetryBufferV1 } from '../../../diagnostics/telemetry/bufferV1';
 import {
   BR02_BROWSER_HANDOFF_CONTRACT_ID,
@@ -46,136 +42,14 @@ import { validateDownloadedTelemetryV1 } from '../browser/br02HandoffDriverV1';
 import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitResultV1 } from '../contractsV1';
 import { deriveHardwareCellIdV1 } from '../ids/orchestrationIdsV1';
 import { createRunInvocationV1 } from '../invocation/runInvocationV1';
-import { resolveRunnerBuildSourceCommitShaV1, resolveRunnerSourceShaV1 } from '../runnerSourceV1';
 import { ProcessUnitResultLedgerV1 } from '../results/processUnitResultLedgerV1';
+import { assertRunnerAuthorityV1, type RunnerAuthorityV1 } from '../runnerSourceV1';
+import { runNoReplaceGitCommandV1 } from '../provenance/gitCommandV1';
+import { assertWp04SyntheticRouteV1 } from '../scenarios/scenarioDriverRegistryV1';
+import { readFixedValidatorAttestationSetV1, VALIDATOR_ATTESTATION_COMMIT_SHA_V1 } from './validatorAttestationV1';
+import { parseCandidateBindingV1, closedPreflightObjectV1 } from '../preflight/preflightBindingsV1';
 
 const sourceRef = 'br03-synthetic-contract-v1' as CanonicalIdV1;
-const SYNTHETIC_VALIDATOR_SOURCE_PATHS = [
-  'src/benchmark/adapters/telemetryExportV1ToBenchmarkRawSampleV1.ts',
-  'src/benchmark/contracts/scenarioRegistryV1.ts',
-  'src/benchmark/contracts/schemaSetV1.ts',
-  'src/benchmark/contracts/validateV1.ts',
-  'src/diagnostics/telemetry/contractV1.ts',
-] as const;
-const MAX_VALIDATOR_SOURCE_BYTES = BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes;
-
-function boundedGitOutputV1(result: ReturnType<typeof spawnSync>, label: string): { readonly stdout: Uint8Array; readonly stderr: Uint8Array } {
-  const stdout = result.stdout instanceof Uint8Array ? new Uint8Array(result.stdout) : new Uint8Array();
-  const stderr = result.stderr instanceof Uint8Array ? new Uint8Array(result.stderr) : new Uint8Array();
-  if (stdout.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
-    || stderr.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
-    || stdout.byteLength + stderr.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', `Git ${label} output exceeded the v1 command bound.`);
-  }
-  return { stdout, stderr };
-}
-
-async function readSyntheticValidatorSourceBindingV1(projectRoot: string, expectedSourceCommitSha: string): Promise<readonly { readonly path: string; readonly absolutePath: string; readonly bytes: Uint8Array }[]> {
-  const builtSourceCommitSha = resolveRunnerBuildSourceCommitShaV1();
-  if (builtSourceCommitSha !== null && builtSourceCommitSha !== expectedSourceCommitSha) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'The built runner was not built from the expected source commit.');
-  }
-  const commit = spawnSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
-    cwd: projectRoot,
-    encoding: 'buffer',
-    shell: false,
-    windowsHide: true,
-    timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-    maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-  });
-  const commitOutput = boundedGitOutputV1(commit, 'source commit lookup');
-  const actualCommit = commit.status === 0 && commitOutput.stderr.byteLength === 0 ? new TextDecoder().decode(commitOutput.stdout).trim() : '';
-  if (actualCommit !== expectedSourceCommitSha) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic receipt validator sources require the expected current source commit.', { cause: commit.error });
-  }
-  const status = spawnSync('git', ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'], {
-    cwd: projectRoot,
-    encoding: 'buffer',
-    shell: false,
-    windowsHide: true,
-    timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-    maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-  });
-  const statusOutput = boundedGitOutputV1(status, 'source status lookup');
-  if (status.status !== 0 || statusOutput.stderr.byteLength !== 0 || statusOutput.stdout.byteLength !== 0) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic receipts require a clean source worktree.', { cause: status.error });
-  }
-  const files = [] as { readonly path: string; readonly absolutePath: string; readonly bytes: Uint8Array }[];
-  for (const path of SYNTHETIC_VALIDATOR_SOURCE_PATHS) {
-    const absolutePath = resolve(projectRoot, path);
-    let currentBytes: Uint8Array;
-    try {
-      currentBytes = readFileBytesV1(absolutePath, {
-        maxFileBytes: MAX_VALIDATOR_SOURCE_BYTES,
-        maxAggregateBytes: MAX_VALIDATOR_SOURCE_BYTES,
-      });
-    } catch (error) {
-      throw new RunnerFailureErrorV1('source-preflight-rejected', `Synthetic receipt validator source could not be read: ${path}.`, { cause: error });
-    }
-    const committed = spawnSync('git', ['--no-replace-objects', 'rev-parse', '--verify', `${expectedSourceCommitSha}:${path}`], {
-      cwd: projectRoot,
-      encoding: 'buffer',
-      shell: false,
-      windowsHide: true,
-      timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-      maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-    });
-    const committedOutput = boundedGitOutputV1(committed, `committed validator lookup for ${path}`);
-    const committedBlobSha = committed.status === 0 && committedOutput.stderr.byteLength === 0 ? new TextDecoder().decode(committedOutput.stdout).trim() : '';
-    const committedBytesResult = spawnSync('git', ['--no-replace-objects', 'cat-file', 'blob', `${expectedSourceCommitSha}:${path}`], {
-      cwd: projectRoot,
-      encoding: 'buffer',
-      shell: false,
-      windowsHide: true,
-      timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-      maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-    });
-    const committedBytesOutput = boundedGitOutputV1(committedBytesResult, `committed validator read for ${path}`);
-    const committedBytes = committedBytesOutput.stdout;
-    const current = spawnSync('git', ['--no-replace-objects', 'hash-object', `--path=${path}`, '--stdin'], {
-      cwd: projectRoot,
-      input: currentBytes,
-      encoding: 'buffer',
-      shell: false,
-      windowsHide: true,
-      timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-      maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-    });
-    const currentOutput = boundedGitOutputV1(current, `working validator hash for ${path}`);
-    const currentBlobSha = current.status === 0 && currentOutput.stderr.byteLength === 0 ? new TextDecoder().decode(currentOutput.stdout).trim() : '';
-    if (committed.status !== 0 || committedOutput.stderr.byteLength !== 0 || committedBytesResult.status !== 0 || committedBytesOutput.stderr.byteLength !== 0
-      || current.status !== 0 || currentOutput.stderr.byteLength !== 0 || committedBlobSha !== currentBlobSha) {
-      throw new RunnerFailureErrorV1('source-preflight-rejected', `Synthetic receipt validator source is not bound to ${expectedSourceCommitSha}: ${path}.`, { cause: committed.error ?? committedBytesResult.error ?? current.error });
-    }
-    files.push({ path, absolutePath, bytes: committedBytes });
-  }
-  const afterCommitResult = spawnSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
-    cwd: projectRoot,
-    encoding: 'buffer',
-    shell: false,
-    windowsHide: true,
-    timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-    maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-  });
-  const afterCommitOutput = boundedGitOutputV1(afterCommitResult, 'post-read source commit lookup');
-  const afterCommit = afterCommitResult.status === 0 && afterCommitOutput.stderr.byteLength === 0 ? new TextDecoder().decode(afterCommitOutput.stdout).trim() : '';
-  if (afterCommit !== expectedSourceCommitSha) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic receipt validator sources were read across a source commit change.', { cause: afterCommitResult.error });
-  }
-  const afterStatusResult = spawnSync('git', ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'], {
-    cwd: projectRoot,
-    encoding: 'buffer',
-    shell: false,
-    windowsHide: true,
-    timeout: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.gitCommandTimeoutMs,
-    maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-  });
-  const afterStatusOutput = boundedGitOutputV1(afterStatusResult, 'post-read source status lookup');
-  if (afterStatusResult.status !== 0 || afterStatusOutput.stderr.byteLength !== 0 || afterStatusOutput.stdout.byteLength !== 0) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic receipt sources were read across a worktree change.', { cause: afterStatusResult.error });
-  }
-  return files;
-}
 
 function declared<T>(value: T, stability: AvailabilityDeclaredStabilityV1 = 'run-config'): AvailabilityV1<T> {
   return { status: 'declared', value, sourceRef, stability };
@@ -185,38 +59,108 @@ function unknown<T>(reasonCode: string): AvailabilityV1<T> {
   return { status: 'unknown', value: null, sourceRef, reasonCode: reasonCode as CanonicalIdV1 };
 }
 
-function syntheticSource(plan: BuiltRunPlanV1, candidateIndex: number): BenchmarkSourceProvenanceV1 {
-  const candidate = plan.core.candidates[candidateIndex];
-  if (candidate === undefined) throw new RangeError('Synthetic candidate index is outside the plan.');
-  const sourcePaths = [repositoryRelativePathV1('src/main.ts')] as NonEmptyReadonlyArray<RepositoryRelativePathV1>;
-  return {
-    schemaVersion: 'benchmark-source-provenance-v1',
-    repositoryUrl: BENCHMARK_REPOSITORY_URL,
-    commitSha: plan.core.expectedSourceCommitSha,
-    commitTreeSha: plan.core.expectedSourceCommitSha,
-    worktree: { state: 'clean', statusCommand: BENCHMARK_STATUS_COMMAND, statusOutputSha256: EMPTY_STATUS_SHA256, submodules: [] },
-    build: {
-      algorithmVersion: 'hestia-benchmark-build-sha256-v1',
-      rootPath: 'dist',
-      sha256: plan.core.expectedBuildSha256,
-      fileCount: 1 as SafePositiveIntegerV1,
-      totalBytes: 1 as SafePositiveIntegerV1,
+export interface SyntheticContractPreflightConfigV1 {
+  readonly schemaVersion: 'br03-synthetic-contract-preflight-v1';
+  readonly candidates: readonly { readonly id: CanonicalIdV1; readonly binding: BenchmarkCandidateBindingV1 }[];
+}
+
+export function parseSyntheticContractPreflightConfigV1(bytes: Uint8Array): SyntheticContractPreflightConfigV1 {
+  const object = closedPreflightObjectV1(parseCanonicalJsonV1(bytes), ['schemaVersion', 'candidates'], 'Synthetic-contract preflight');
+  if (object.schemaVersion !== 'br03-synthetic-contract-preflight-v1' || !Array.isArray(object.candidates) || object.candidates.length === 0) {
+    throw new TypeError('Synthetic-contract preflight header or candidates are invalid.');
+  }
+  const candidates = object.candidates.map((entry, index) => {
+    const candidate = closedPreflightObjectV1(entry, ['id', 'binding'], `Synthetic-contract candidate ${index}`);
+    if (typeof candidate.id !== 'string') throw new TypeError('Synthetic-contract candidate ID is invalid.');
+    const binding = parseCandidateBindingV1(candidate.binding, `Synthetic-contract candidate ${index}.binding`);
+    if (binding.id !== candidate.id) throw new TypeError('Synthetic-contract candidate ID does not match its binding.');
+    return { id: candidate.id as CanonicalIdV1, binding };
+  });
+  if (new Set(candidates.map(({ id }) => id)).size !== candidates.length) throw new TypeError('Synthetic-contract candidate IDs must be unique.');
+  return { schemaVersion: object.schemaVersion, candidates };
+}
+
+function availablePreflightValueV1(value: AvailabilityV1<unknown>): unknown {
+  return value.status === 'observed' || value.status === 'declared' ? value.value : undefined;
+}
+
+export function assertSyntheticContractPreflightBindingsV1(plan: BuiltRunPlanV1, preflight: SyntheticContractPreflightConfigV1): void {
+  const expected = plan.core.candidates;
+  if (preflight.candidates.length !== expected.length
+    || preflight.candidates.some(({ id, binding }, index) => expected[index]?.id !== id
+      || binding.id !== id
+      || availablePreflightValueV1(binding.sourceFileSetSha256) !== expected[index]?.sourceFileSetSha256)) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic-contract preflight candidates do not exactly match the accepted plan.');
+  }
+}
+
+interface AcceptedSyntheticPreflightV1 {
+  readonly byCandidateId: ReadonlyMap<string, Extract<ReturnType<typeof sourcePreflightV1>, { readonly status: 'accepted' }> >;
+  readonly selected: Extract<ReturnType<typeof sourcePreflightV1>, { readonly status: 'accepted' }>;
+}
+
+function runSyntheticSourcePreflightV1(
+  projectRoot: string,
+  expectedSourceCommitSha: string,
+  plan: BuiltRunPlanV1,
+  preflight: SyntheticContractPreflightConfigV1,
+  selectedCandidateId: string,
+): AcceptedSyntheticPreflightV1 {
+  assertSyntheticContractPreflightBindingsV1(plan, preflight);
+  const fixture = {
+    ...BENCHMARK_SOURCE_FIXTURE_BINDINGS_V1['wp04-golden-world-v1'],
+    semanticSha256: {
+      status: 'observed' as const,
+      value: BENCHMARK_WP04_SEMANTIC_SHA256_V1,
+      sourceRef,
+      stability: 'stable' as const,
     },
-    fixture: {
-      id: plan.core.fixtureContractId,
-      version: 1 as SafePositiveIntegerV1,
-       semanticSha256: declared(plan.core.fixtureSemanticSha256),
-      sourceCommitSha: declared(plan.core.expectedSourceCommitSha),
-      sourceFileSetSha256: unknown('owner-binding-unavailable'),
-      sourcePaths: unknown('owner-binding-unavailable'),
-    },
-    candidate: {
-      id: candidate.id,
-      version: 1 as SafePositiveIntegerV1,
-       sourceFileSetSha256: declared(candidate.sourceFileSetSha256),
-      sourcePaths: declared(sourcePaths),
-    },
-  };
+  } as unknown as BenchmarkFixtureContractBindingV1;
+  if (plan.core.fixtureContractId !== fixture.id || plan.core.fixtureSemanticSha256 !== BENCHMARK_WP04_SEMANTIC_SHA256_V1) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic-contract mode is not bound to the authoritative WP04 fixture.');
+  }
+  const semanticBytes = getBenchmarkWp04SemanticBytesV1();
+  const byCandidateId = new Map<string, Extract<ReturnType<typeof sourcePreflightV1>, { readonly status: 'accepted' }>>();
+  for (const candidate of preflight.candidates) {
+    const result = sourcePreflightV1({
+      rootPath: projectRoot,
+      expectedSourceCommitSha,
+      fixtureSemanticBytes: semanticBytes,
+      fixture,
+      candidate: candidate.binding,
+      runCommand: runNoReplaceGitCommandV1,
+    });
+    if (result.status === 'rejected') {
+      throw new RunnerFailureErrorV1('source-preflight-rejected', `Source preflight rejected ${candidate.id}: ${result.code}: ${result.detail}`);
+    }
+    if (result.provenance.build.sha256 !== plan.core.expectedBuildSha256) {
+      throw new RunnerFailureErrorV1('build-handoff-rejected', 'Source preflight build digest does not match the plan.');
+    }
+    const build = verifyBuildHandoffV1(result.buildHandoff);
+    if (build.status === 'rejected') throw new RunnerFailureErrorV1('build-handoff-rejected', `Build handoff rejected: ${build.code}.`);
+    byCandidateId.set(candidate.id, result);
+  }
+  const selected = byCandidateId.get(selectedCandidateId);
+  if (selected === undefined) throw new RunnerFailureErrorV1('source-preflight-rejected', 'Selected synthetic candidate preflight binding is missing.');
+  return { byCandidateId, selected };
+}
+
+function assertSyntheticPreflightUnchangedV1(before: AcceptedSyntheticPreflightV1, after: AcceptedSyntheticPreflightV1): void {
+  if (before.byCandidateId.size !== after.byCandidateId.size) throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic source preflight candidate set changed.');
+  for (const [candidateId, beforeResult] of before.byCandidateId) {
+    const afterResult = after.byCandidateId.get(candidateId);
+    if (afterResult === undefined
+      || !sameCanonicalValueV1(beforeResult.provenance, afterResult.provenance)
+      || !sameCanonicalValueV1(beforeResult.buildHandoff, afterResult.buildHandoff)) {
+      throw new RunnerFailureErrorV1('source-preflight-rejected', 'Synthetic source or build provenance changed during receipt assembly.');
+    }
+  }
+}
+
+function sameCanonicalValueV1(left: unknown, right: unknown): boolean {
+  const leftBytes = canonicalizeJsonV1(left);
+  const rightBytes = canonicalizeJsonV1(right);
+  return leftBytes.byteLength === rightBytes.byteLength && leftBytes.every((byte, index) => byte === rightBytes[index]);
 }
 
 function syntheticEnvironment(plan: BuiltRunPlanV1, scenarioId: BuiltRunPlanV1['core']['scenarios'][number]['id']): BenchmarkEnvironmentManifestV1 {
@@ -265,6 +209,8 @@ export interface SyntheticContractRunOptionsV1 {
   readonly createdUtc: string;
   readonly outputRoot: string;
   readonly projectRoot: string;
+  readonly preflight: SyntheticContractPreflightConfigV1;
+  readonly runnerAuthority: RunnerAuthorityV1;
 }
 
 export interface SyntheticContractRunResultV1 {
@@ -278,16 +224,21 @@ export interface SyntheticContractRunResultV1 {
 
 export async function runSyntheticContractV1(options: SyntheticContractRunOptionsV1): Promise<SyntheticContractRunResultV1> {
   const { plan } = options;
-  if (!plan.core.syntheticHardwareProfile) throw new TypeError('Synthetic contract mode requires a synthetic hardware profile plan.');
+  assertRunnerAuthorityV1(options.runnerAuthority);
+  if (options.runnerAuthority.sourceCommitSha !== plan.core.expectedSourceCommitSha) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority does not match the expected source commit.');
+  }
+  if (plan.core.syntheticHardwareProfile !== true) throw new TypeError('Synthetic contract mode requires a synthetic hardware profile plan.');
   if (!Number.isSafeInteger(options.slotIndex) || options.slotIndex < 0) throw new RangeError('slotIndex must be a non-negative safe integer.');
   const unit = plan.core.processUnits[options.slotIndex];
-  if (unit === undefined || unit.scenarioId !== 'backend-fixture-v1' || unit.processContainer !== 'cold' || unit.processOrdinal !== 0) {
-    throw new TypeError('Synthetic contract mode requires the first cold backend-fixture process for one candidate cell.');
+  if (unit === undefined || unit.processContainer !== 'cold' || unit.processOrdinal !== 0) {
+    throw new TypeError('Synthetic contract mode requires the first cold mesh-golden process for one candidate cell.');
   }
-  const candidateIndex = plan.core.candidates.findIndex(({ id }) => id === unit.candidateId);
-  const source = syntheticSource(plan, candidateIndex);
+  assertWp04SyntheticRouteV1(unit.scenarioId, unit.scenarioParameters);
+  const acceptedPreflight = runSyntheticSourcePreflightV1(options.projectRoot, plan.core.expectedSourceCommitSha, plan, options.preflight, unit.candidateId);
+  const source = acceptedPreflight.selected.provenance;
   const environment = syntheticEnvironment(plan, unit.scenarioId);
-  const invocation = createRunInvocationV1(plan, { createdUtc: options.createdUtc, outputRoot: options.outputRoot, selectedSlotIds: [unit.ids.slotId], runnerSourceSha: await resolveRunnerSourceShaV1() });
+  const invocation = createRunInvocationV1(plan, { createdUtc: options.createdUtc, outputRoot: options.outputRoot, selectedSlotIds: [unit.ids.slotId], runnerSourceSha: options.runnerAuthority.runnerSourceSha });
   const invocationUnit = invocation.processUnits.find(({ slotId }) => slotId === unit.ids.slotId)!;
   const plannedRun = invocationUnit.runs[0]!;
   const backend = unit.scenarioParameters.find(({ key }) => key === 'backend')?.value;
@@ -309,7 +260,7 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
     realmId: 'synthetic-main' as CanonicalIdV1,
     startMs: 1,
     kind: 'sample',
-    name: 'draw-submit.cpu',
+    name: 'run.total',
     iterationId: plannedRun.iterationIds[0]!,
     fields: {
       sampleKind: 'duration', sourceUnit: 'ms', value: 1,
@@ -347,7 +298,7 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
     plan, unit, plannedRun, createdUtc: options.createdUtc, hardwareCellId, source, environment, telemetryExport,
     pageState: { visibility: 'visible', focus: 'focused', backgroundTabs: 0 },
     origin: { kind: 'planned' },
-    measurementEligibilityReasons: [{ code: 'fixture-contract-mismatch', detail: 'synthetic contract fixture' as NonEmptyString, phase: 'cold' }],
+    measurementEligibilityReasons: [{ code: 'environment-incomplete', detail: 'synthetic environment is diagnostic-only' as NonEmptyString, phase: 'cold' }],
     telemetryAdapter,
   });
   const validationContext: BenchmarkValidationContextV1 = {
@@ -367,18 +318,31 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
     processes: [{ unit, runs: [run] }],
     validationContext,
   });
-  const validatorSourceFiles = await readSyntheticValidatorSourceBindingV1(options.projectRoot, plan.core.expectedSourceCommitSha);
+  const validatorBefore = readFixedValidatorAttestationSetV1(options.projectRoot);
   const minted = await mintReceiptV1({
     document,
     planId: plan.runPlanId,
     slotId: unit.ids.slotId,
     runId: plannedRun.runId,
     telemetryExportRawBytes,
-    validatorSourceCommitSha: plan.core.expectedSourceCommitSha,
-    validatorSourceFiles,
+    validatorSourceCommitSha: VALIDATOR_ATTESTATION_COMMIT_SHA_V1,
+    validatorSourceFiles: validatorBefore.files,
     validationContext,
     telemetryAdapter,
   });
+  const postflight = runSyntheticSourcePreflightV1(options.projectRoot, plan.core.expectedSourceCommitSha, plan, options.preflight, unit.candidateId);
+  assertSyntheticPreflightUnchangedV1(acceptedPreflight, postflight);
+  const validatorAfter = readFixedValidatorAttestationSetV1(options.projectRoot);
+  if (validatorBefore.filesetDigest !== validatorAfter.filesetDigest
+    || validatorBefore.fileCount !== validatorAfter.fileCount
+    || validatorBefore.totalBytes !== validatorAfter.totalBytes
+    || validatorBefore.files.some((file, index) => {
+      const other = validatorAfter.files[index];
+      return other === undefined || file.path !== other.path || file.bytes.byteLength !== other.bytes.byteLength
+        || file.bytes.some((byte, byteIndex) => byte !== other.bytes[byteIndex]);
+    })) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Validator source closure changed during receipt assembly.');
+  }
   const ledger = new ProcessUnitResultLedgerV1(plan, invocation);
   for (const invocationUnit of invocation.processUnits) {
     const current = plan.core.processUnits.find(({ ids }) => ids.slotId === invocationUnit.slotId);

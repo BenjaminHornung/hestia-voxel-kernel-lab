@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -41,7 +41,7 @@ describe('BR03 lifecycle-smoke contract v1', () => {
       schemaVersion: 'br03-lifecycle-smoke-preflight-v1' as const,
       fixtureSemanticPath: 'fixture-semantic.json',
       fixture: { id: plan.core.fixtureContractId, semanticSha256: observed(plan.core.fixtureSemanticSha256) } as never,
-      candidates: [{ id: candidate.id, binding: { id: candidate.id, sourceFileSetSha256: observed(candidate.sourceFileSetSha256) } as never }],
+      candidates: plan.core.candidates.map(({ id, sourceFileSetSha256 }) => ({ id, binding: { id, sourceFileSetSha256: observed(sourceFileSetSha256) } as never })),
     };
     expect(() => assertLifecyclePreflightBindingsV1(plan, preflight)).not.toThrow();
     expect(() => assertLifecyclePreflightBindingsV1(plan, {
@@ -85,17 +85,16 @@ describe('BR03 lifecycle-smoke contract v1', () => {
         slotIndex: 0,
         createdUtc: '2026-08-20T12:00:00.000Z',
         outputRoot,
-        projectRoot,
-        preflight: {
+         projectRoot,
+         runnerAuthority: {} as never,
+         preflight: {
           schemaVersion: 'br03-lifecycle-smoke-preflight-v1',
           fixtureSemanticPath: 'fixture-semantic.json',
           fixture: { id: plan.core.fixtureContractId, semanticSha256: observed(plan.core.fixtureSemanticSha256) } as never,
           candidates: [{ id: unit.candidateId, binding: { id: unit.candidateId, sourceFileSetSha256: observed(`sha256:${'f'.repeat(64)}`) } as never }],
         },
-      })).rejects.toThrow(/source-preflight-rejected/);
-      const [invocationId] = await readdir(outputRoot);
-      const results = JSON.parse(await readFile(join(outputRoot, invocationId!, 'process-unit-results.json'), 'utf8')) as readonly { readonly slotId: string; readonly disposition: string; readonly failureClass: string; readonly failureCode: string }[];
-      expect(results.find(({ slotId }) => slotId === unit.ids.slotId)).toMatchObject({ disposition: 'invalid', failureClass: 'provenance', failureCode: 'source-preflight-rejected' });
+      })).rejects.toThrow(/validated built-runner authority/);
+      await expect(readdir(outputRoot)).rejects.toThrow();
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }

@@ -64,3 +64,23 @@ export function resolveScenarioRouteV1(
     ? { status: 'unavailable', reasonCode: driver.reasonCode, measurementEligible: false }
     : { status: 'ready', route, measurementEligible: false };
 }
+
+export function assertWp04SyntheticRouteV1(
+  scenarioId: BenchmarkScenarioIdV1,
+  parameters: readonly BenchmarkScenarioParameterV1[],
+): void {
+  if (scenarioId !== 'mesh-golden-world-v1') throw new TypeError('Synthetic contract mode requires mesh-golden-world-v1.');
+  const canonical = validateScenarioParametersV1({ id: scenarioId, parameters });
+  const values = new Map(canonical.map(({ key, value }) => [key, value]));
+  if (values.get('seed') !== 0x4845_5354
+    || values.get('backend') !== 'three-webgl2'
+    || values.get('mesher') !== 'greedy-ao'
+    || values.get('chunk-edge') !== 32
+    || values.get('worker-count') !== 0) {
+    throw new TypeError('Synthetic contract mode requires the exact WP04 mesh-golden tuple.');
+  }
+  const route = resolveScenarioRouteV1(scenarioId, canonical);
+  if (route.status !== 'ready' || route.route !== '/?lab=wp04&ao=on&debug=surface') {
+    throw new TypeError('Synthetic contract mode requires the exact WP04 route.');
+  }
+}

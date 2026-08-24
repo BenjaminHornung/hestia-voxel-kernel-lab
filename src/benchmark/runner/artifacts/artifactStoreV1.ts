@@ -197,7 +197,7 @@ export function buildBenchmarkBundleV1(options: BuildBundleOptionsV1): BuiltBund
 
 function assertChild(root: string, child: string): void {
   const fromRoot = relative(root, child);
-  if (fromRoot.length === 0 || fromRoot.startsWith('..') || resolve(root, fromRoot) !== resolve(child)) {
+  if (fromRoot.length === 0 || isAbsolute(fromRoot) || fromRoot.startsWith('..') || resolve(root, fromRoot) !== resolve(child)) {
     throw new Error('Artifact path escapes its invocation root.');
   }
 }
@@ -333,9 +333,6 @@ export async function verifyLifecycleSmokeArtifactsV1(
   for (const result of expectedArtifacts) {
     const directory = join(smokeRoot, result.slotId);
     try {
-      if (expected !== undefined && result.failureCode !== 'required-metric-producers-unavailable') {
-        throw new Error('Lifecycle-smoke terminal result has an unexpected producer failure code.');
-      }
       const names = await readdir(directory, { withFileTypes: true });
       const expectedNames = ['environment.json', 'manifest.json', 'run.json', 'telemetry-export.json'];
       if (names.length !== expectedNames.length || names.some((entry) => entry.isSymbolicLink() || !entry.isFile() || !expectedNames.includes(entry.name))) {

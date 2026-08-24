@@ -1,9 +1,10 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { canonicalizeJsonV1 } from '../../../../src/benchmark/provenance';
 import { assertBundleRunBindingsV1, assertRunModeCompatibilityV1, classifyRunnerErrorV1, CliInputErrorV1 } from '../../../../src/benchmark/runner/cli';
 import { RunnerFailureErrorV1 } from '../../../../src/benchmark/runner/contractsV1';
 import { parseRunPlanInputJsonV1 } from '../../../../src/benchmark/runner/plan/planFileV1';
 import { buildRunPlanV1, RunPlanValidationErrorV1 } from '../../../../src/benchmark/runner/plan/runPlanV1';
+import { runPlanInputV1 } from '../../../fixtures/benchmark/runner/runPlanInputV1';
 
 describe('BR03 CLI failure and closure contracts v1', () => {
   it('enforces the exact valid-run to bundle-run set', () => {
@@ -13,7 +14,7 @@ describe('BR03 CLI failure and closure contracts v1', () => {
   });
 
   it('rejects a non-synthetic hardware profile at the synthetic CLI boundary', () => {
-    const input = parseRunPlanInputJsonV1(readFileSync(new URL('../../../fixtures/benchmark/runner/synthetic-contract-plan-input-v1.json', import.meta.url)));
+    const input = parseRunPlanInputJsonV1(canonicalizeJsonV1(runPlanInputV1()));
     const plan = buildRunPlanV1({ ...input, syntheticHardwareProfile: false });
     let failure: unknown;
     try {

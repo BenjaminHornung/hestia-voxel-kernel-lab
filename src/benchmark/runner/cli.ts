@@ -1,8 +1,7 @@
-import { spawnSync } from 'node:child_process';
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1, type BenchmarkRunDocumentV1, type BenchmarkValidationContextV1, type CanonicalIdV1 } from '../contracts';
+import { BENCHMARK_WP04_SEMANTIC_SHA256_V1, type BenchmarkRunDocumentV1, type BenchmarkValidationContextV1, type CanonicalIdV1 } from '../contracts';
 import { canonicalizeJsonV1, parseCanonicalJsonV1, readFileBytesV1 } from '../provenance';
 import { ArtifactCleanupErrorV1, deriveBundleIdV1, readVerifiedBundleRunIdsV1, verifyInvocationControlV1, verifyLifecycleSmokeArtifactsV1, verifyWrittenBundleV1 } from './artifacts/artifactStoreV1';
 import { RunnerFailureErrorV1, type BuiltRunPlanV1, type RunInvocationV1, type RunPlanProcessUnitV1 } from './contractsV1';
@@ -12,10 +11,11 @@ import { parseLifecycleSmokePreflightConfigV1, runLifecycleSmokeV1 } from './liv
 import { encodeBuiltRunPlanV1, parseBuiltRunPlanV1, parseRunPlanInputJsonV1 } from './plan/planFileV1';
 import { buildRunPlanV1, RunPlanValidationErrorV1 } from './plan/runPlanV1';
 import { parseProcessUnitResultV1, ProcessUnitResultLedgerV1 } from './results/processUnitResultLedgerV1';
-import { runSyntheticContractV1 } from './synthetic/syntheticContractRunV1';
+import { parseSyntheticContractPreflightConfigV1, runSyntheticContractV1 } from './synthetic/syntheticContractRunV1';
 import { deriveHardwareCellIdV1 } from './ids/orchestrationIdsV1';
-import { resolveRunnerSourceShaV1 } from './runnerSourceV1';
-import { resolveScenarioRouteV1 } from './scenarios/scenarioDriverRegistryV1';
+import { createRunnerAuthorityV1 } from './runnerSourceV1';
+import { runNoReplaceGitV1 } from './provenance/gitCommandV1';
+import { assertWp04SyntheticRouteV1, resolveScenarioRouteV1 } from './scenarios/scenarioDriverRegistryV1';
 
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 
@@ -93,7 +93,7 @@ function parseArguments(arguments_: readonly string[]): { readonly command: Comm
   if (command === 'run') {
     const mode = values.get('mode');
     if (mode !== 'synthetic-contract-v1' && mode !== 'lifecycle-smoke-v1') throw new CliInputErrorV1('Unknown BR03 run mode.');
-    if ((mode === 'lifecycle-smoke-v1') !== values.has('preflight')) throw new CliInputErrorV1('Lifecycle-smoke mode alone requires --preflight.');
+    if (!values.has('preflight')) throw new CliInputErrorV1('Run modes require --preflight.');
   }
   return { command, values };
 }
@@ -118,23 +118,11 @@ async function readCliInputV1<T>(path: string, parser: (bytes: Uint8Array) => T)
 }
 
 async function resolveRepositoryRootV1(cwd: string): Promise<string> {
-  const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-    cwd,
-    encoding: 'buffer',
-    shell: false,
-    windowsHide: true,
-    timeout: 5_000,
-    maxBuffer: BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes,
-  });
-  const stdout = result.stdout instanceof Uint8Array ? new Uint8Array(result.stdout) : new Uint8Array();
-  const stderr = result.stderr instanceof Uint8Array ? new Uint8Array(result.stderr) : new Uint8Array();
-  if (stdout.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
-    || stderr.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
-    || stdout.byteLength + stderr.byteLength > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.commandOutputMaxBytes
-    || result.status !== 0 || result.error !== undefined || (result.signal !== undefined && result.signal !== null) || stderr.byteLength !== 0) {
+  const result = runNoReplaceGitV1(['rev-parse', '--show-toplevel'], cwd);
+  if (result.status !== 0 || result.error !== undefined || (result.signal !== undefined && result.signal !== null) || result.stderr.byteLength !== 0) {
     throw new RunnerFailureErrorV1('source-preflight-rejected', 'Could not resolve the Git repository root.', { cause: result.error });
   }
-  const reportedRoot = new TextDecoder().decode(stdout).trim();
+  const reportedRoot = new TextDecoder('utf-8', { fatal: true }).decode(result.stdout).trim();
   if (reportedRoot.length === 0) throw new RunnerFailureErrorV1('source-preflight-rejected', 'Could not resolve the Git repository root.', { cause: result.error });
   let realCwd: string;
   let realRoot: string;
@@ -290,8 +278,22 @@ async function planCommand(values: ReadonlyMap<string, string>): Promise<void> {
 export function assertRunModeCompatibilityV1(mode: string, plan: BuiltRunPlanV1, unit: RunPlanProcessUnitV1): void {
   if (mode === 'synthetic-contract-v1') {
     const backend = unit.scenarioParameters.find(({ key }) => key === 'backend')?.value;
-    if (unit.scenarioId !== 'backend-fixture-v1' || backend !== 'three-webgl2' || plan.core.syntheticHardwareProfile !== true) {
-      throw new CliInputErrorV1('Synthetic contract mode requires the three-webgl2 backend fixture and a synthetic hardware profile.');
+    const values = new Map(unit.scenarioParameters.map(({ key, value }) => [key, value]));
+    if (unit.scenarioId !== 'mesh-golden-world-v1'
+      || plan.core.fixtureContractId !== 'wp04-golden-world-v1'
+      || plan.core.syntheticHardwareProfile !== true
+      || plan.core.fixtureSemanticSha256 !== BENCHMARK_WP04_SEMANTIC_SHA256_V1
+      || values.get('seed') !== 0x4845_5354
+      || backend !== 'three-webgl2'
+      || values.get('mesher') !== 'greedy-ao'
+      || values.get('chunk-edge') !== 32
+      || values.get('worker-count') !== 0) {
+      throw new CliInputErrorV1('Synthetic contract mode requires the exact WP04 mesh-golden tuple and a synthetic hardware profile.');
+    }
+    try {
+      assertWp04SyntheticRouteV1(unit.scenarioId, unit.scenarioParameters);
+    } catch (error) {
+      throw new CliInputErrorV1(`Synthetic contract route is invalid: ${error instanceof Error ? error.message : 'invalid route'}.`, { cause: error });
     }
   } else if (unit.scenarioId !== 'mesh-golden-world-v1') {
     throw new CliInputErrorV1('Lifecycle-smoke mode requires the mesh-golden-world-v1 scenario.');
@@ -322,15 +324,18 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
   if (!Number.isFinite(createdDate.getTime()) || createdDate.toISOString() !== createdUtc) {
     throw new CliInputErrorV1('created-utc must be a canonical UTC timestamp.');
   }
+  const projectRoot = await resolveRepositoryRootV1(process.cwd());
+  const authority = await createRunnerAuthorityV1(projectRoot, plan.core.expectedSourceCommitSha);
   const common = {
     plan,
     slotIndex,
     createdUtc,
     outputRoot: values.get('output-root')!,
-    projectRoot: await resolveRepositoryRootV1(process.cwd()),
+    projectRoot,
+    runnerAuthority: authority,
   };
   const result = mode === 'synthetic-contract-v1'
-    ? await runSyntheticContractV1(common)
+    ? await runSyntheticContractV1({ ...common, preflight: await readCliInputV1(values.get('preflight')!, parseSyntheticContractPreflightConfigV1) })
     : await runLifecycleSmokeV1({ ...common, preflight: await readCliInputV1(values.get('preflight')!, parseLifecycleSmokePreflightConfigV1) });
   output({ status: 'completed', mode, ...result });
   if (mode === 'lifecycle-smoke-v1' && 'disposition' in result && result.disposition === 'unsupported') process.exitCode = 7;
@@ -338,9 +343,13 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
 
 async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void> {
   const plan = await readCliInputV1(values.get('plan')!, parseBuiltRunPlanV1);
+  const projectRoot = await resolveRepositoryRootV1(process.cwd());
+  const authority = await createRunnerAuthorityV1(projectRoot, plan.core.expectedSourceCommitSha);
   let invocationRoot: string;
   try {
-    invocationRoot = await realpath(values.get('invocation-root')!);
+    const suppliedInvocationRoot = values.get('invocation-root')!;
+    if ((await lstat(suppliedInvocationRoot)).isSymbolicLink()) throw new Error('Invocation root must not be a symbolic link.');
+    invocationRoot = await realpath(suppliedInvocationRoot);
     if (!(await lstat(invocationRoot)).isDirectory()) throw new Error('Invocation root must be a real directory.');
   } catch (error) {
     throw new CliInputErrorV1(`CLI invocation input is invalid: ${error instanceof Error ? error.message : 'invalid invocation root'}.`, { cause: error });
@@ -352,7 +361,7 @@ async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void>
   }
   const invocation = parseCanonicalJsonV1(await readBounded(join(invocationRoot, 'invocation.json'))) as unknown as RunInvocationV1;
   if (invocation.outputRoot !== '<RESULTS>') throw new TypeError('Persisted invocation output root is not redacted.');
-  const invocationIssues = verifyRunInvocationV1(plan, invocation, await resolveRunnerSourceShaV1());
+  const invocationIssues = verifyRunInvocationV1(plan, invocation, authority.runnerSourceSha);
   if (invocationIssues.length > 0 || basename(invocationRoot) !== invocation.invocationId) throw new TypeError('Invocation does not match its plan or root identity.');
   const rawResults = parseCanonicalJsonV1(await readBounded(join(invocationRoot, 'process-unit-results.json')));
   if (!Array.isArray(rawResults)) throw new TypeError('Process-unit results must be an array.');
@@ -383,7 +392,7 @@ async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void>
     const bundleManifest = parseCanonicalJsonV1(await readBounded(join(currentBundleRoot, 'bundle-manifest.json'))) as { readonly bundleId?: unknown };
     const document = parseCanonicalJsonV1(await readBounded(join(currentBundleRoot, 'raw', 'hardware-cell.json'))) as BenchmarkRunDocumentV1;
     if (bundleManifest.bundleId !== bundle.name || typeof document.hardwareCellId !== 'string'
-      || deriveBundleIdV1(invocation.invocationId, document.hardwareCellId as never) !== bundle.name) {
+      || deriveBundleIdV1(invocation.invocationId, document.hardwareCellId as CanonicalIdV1) !== bundle.name) {
       throw new TypeError('Bundle identity is not bound to its invocation and hardware cell.');
     }
     assertBundleContextDocumentBindingsV1(context, document);

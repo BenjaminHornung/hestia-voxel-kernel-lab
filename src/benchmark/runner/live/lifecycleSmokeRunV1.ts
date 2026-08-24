@@ -37,12 +37,14 @@ import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitFailureCodeV
 import { collectEnvironmentV1 } from '../environment/environmentCollectorV1';
 import { deriveHardwareCellIdV1 } from '../ids/orchestrationIdsV1';
 import { createRunInvocationV1 } from '../invocation/runInvocationV1';
-import { resolveRunnerBuildSourceCommitShaV1, resolveRunnerSourceShaV1 } from '../runnerSourceV1';
 import { boundedCleanupV1, BrowserStartupCleanupErrorV1, startBrowserProcessV1 } from '../process/browserProcessSupervisorV1';
 import { CleanupGuardV1 } from '../process/cleanupGuardV1';
 import { PreviewStartupCleanupErrorV1, startPreviewServerV1 } from '../process/previewServerSupervisorV1';
 import { ProcessUnitResultLedgerV1 } from '../results/processUnitResultLedgerV1';
 import { resolveScenarioRouteV1 } from '../scenarios/scenarioDriverRegistryV1';
+import { parseCandidateBindingV1, parseFixtureBindingV1, closedPreflightObjectV1 } from '../preflight/preflightBindingsV1';
+import { assertRunnerAuthorityV1, type RunnerAuthorityV1 } from '../runnerSourceV1';
+import { runNoReplaceGitCommandV1 } from '../provenance/gitCommandV1';
 
 const MAX_SEMANTIC_BYTES = 1024 * 1024;
 const LIFECYCLE_PROCESS_TIMEOUT_MS = 120_000;
@@ -89,6 +91,7 @@ export interface LifecycleSmokeRunOptionsV1 {
   readonly outputRoot: string;
   readonly projectRoot: string;
   readonly preflight: LifecycleSmokePreflightConfigV1;
+  readonly runnerAuthority: RunnerAuthorityV1;
 }
 
 export interface LifecycleSmokeRunResultV1 {
@@ -99,32 +102,24 @@ export interface LifecycleSmokeRunResultV1 {
   readonly disposition: 'unsupported';
 }
 
-function closedObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${label} must be an object.`);
-  const object = value as Record<string, unknown>;
-  const allowed = new Set(keys);
-  if (Object.keys(object).length !== keys.length || Object.keys(object).some((key) => !allowed.has(key))) {
-    throw new TypeError(`${label} has missing or unexpected fields.`);
-  }
-  return object;
-}
-
 export function parseLifecycleSmokePreflightConfigV1(bytes: Uint8Array): LifecycleSmokePreflightConfigV1 {
-  const object = closedObject(parseCanonicalJsonV1(bytes), ['schemaVersion', 'fixtureSemanticPath', 'fixture', 'candidates'], 'Lifecycle-smoke preflight');
+  const object = closedPreflightObjectV1(parseCanonicalJsonV1(bytes), ['schemaVersion', 'fixtureSemanticPath', 'fixture', 'candidates'], 'Lifecycle-smoke preflight');
   if (object.schemaVersion !== 'br03-lifecycle-smoke-preflight-v1' || typeof object.fixtureSemanticPath !== 'string') {
     throw new TypeError('Lifecycle-smoke preflight header is invalid.');
   }
   if (!Array.isArray(object.candidates) || object.candidates.length === 0) throw new TypeError('Lifecycle-smoke candidates are missing.');
   const candidates = object.candidates.map((entry, index) => {
-    const candidate = closedObject(entry, ['id', 'binding'], `Lifecycle-smoke candidate ${index}`);
+    const candidate = closedPreflightObjectV1(entry, ['id', 'binding'], `Lifecycle-smoke candidate ${index}`);
     if (typeof candidate.id !== 'string') throw new TypeError('Lifecycle-smoke candidate ID is invalid.');
-    return { id: candidate.id as CanonicalIdV1, binding: candidate.binding as unknown as BenchmarkCandidateBindingV1 };
+    const binding = parseCandidateBindingV1(candidate.binding, `Lifecycle-smoke candidate ${index}.binding`);
+    if (binding.id !== candidate.id) throw new TypeError('Lifecycle-smoke candidate ID does not match its binding.');
+    return { id: candidate.id as CanonicalIdV1, binding };
   });
   if (new Set(candidates.map(({ id }) => id)).size !== candidates.length) throw new TypeError('Lifecycle-smoke candidate IDs must be unique.');
   return {
     schemaVersion: object.schemaVersion,
     fixtureSemanticPath: repositoryRelativePathV1(object.fixtureSemanticPath),
-    fixture: object.fixture as unknown as BenchmarkFixtureContractBindingV1,
+    fixture: parseFixtureBindingV1(object.fixture, 'Lifecycle-smoke fixture'),
     candidates,
   };
 }
@@ -134,10 +129,13 @@ function observedValue(value: { readonly status: string; readonly value: unknown
 }
 
 export function assertLifecyclePreflightBindingsV1(plan: BuiltRunPlanV1, preflight: LifecycleSmokePreflightConfigV1): void {
+  const expectedCandidates = plan.core.candidates;
   if (preflight.fixture.id !== plan.core.fixtureContractId
     || observedValue(preflight.fixture.semanticSha256) !== plan.core.fixtureSemanticSha256
-    || preflight.candidates.some((candidate) => candidate.binding.id !== candidate.id
-      || observedValue(candidate.binding.sourceFileSetSha256) !== plan.core.candidates.find(({ id }) => id === candidate.id)?.sourceFileSetSha256)) {
+    || preflight.candidates.length !== expectedCandidates.length
+    || preflight.candidates.some((candidate, index) => candidate.id !== expectedCandidates[index]?.id
+      || candidate.binding.id !== candidate.id
+      || observedValue(candidate.binding.sourceFileSetSha256) !== expectedCandidates[index]?.sourceFileSetSha256)) {
     throw new TypeError('Lifecycle-smoke preflight bindings do not match the accepted plan.');
   }
 }
@@ -189,16 +187,16 @@ export function lifecycleTerminalFailureCodeV1(
 }
 
 export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): Promise<LifecycleSmokeRunResultV1> {
-  const builtSourceCommitSha = resolveRunnerBuildSourceCommitShaV1();
-  if (builtSourceCommitSha !== null && builtSourceCommitSha !== options.plan.core.expectedSourceCommitSha) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'The built runner was not built from the expected source commit.');
+  assertRunnerAuthorityV1(options.runnerAuthority);
+  if (options.runnerAuthority.sourceCommitSha !== options.plan.core.expectedSourceCommitSha) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority does not match the expected source commit.');
   }
   if (!Number.isSafeInteger(options.slotIndex) || options.slotIndex < 0) throw new RangeError('slotIndex must be a non-negative safe integer.');
   const unit = options.plan.core.processUnits[options.slotIndex];
   if (unit === undefined || unit.processContainer !== 'cold' || unit.processOrdinal !== 0) {
     throw new TypeError('Lifecycle-smoke mode supports the first cold process of one candidate cell.');
   }
-  const invocation = createRunInvocationV1(options.plan, { createdUtc: options.createdUtc, outputRoot: options.outputRoot, selectedSlotIds: [unit.ids.slotId], runnerSourceSha: await resolveRunnerSourceShaV1() });
+  const invocation = createRunInvocationV1(options.plan, { createdUtc: options.createdUtc, outputRoot: options.outputRoot, selectedSlotIds: [unit.ids.slotId], runnerSourceSha: options.runnerAuthority.runnerSourceSha });
   const invocationUnit = invocation.processUnits.find(({ slotId }) => slotId === unit.ids.slotId)!;
   const plannedRun = invocationUnit.runs[0]!;
   let stage: ProcessUnitFailureCodeV1 = 'source-preflight-rejected';
@@ -288,14 +286,16 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       assertLifecyclePreflightBindingsV1(options.plan, options.preflight);
       const candidate = options.preflight.candidates.find(({ id }) => id === unit.candidateId);
       if (candidate === undefined) throw new TypeError('Lifecycle-smoke candidate preflight binding is missing.');
-      preflightInput = {
+      const currentPreflightInput: Parameters<typeof sourcePreflightV1>[0] = {
         rootPath: options.projectRoot,
         expectedSourceCommitSha: options.plan.core.expectedSourceCommitSha,
         fixtureSemanticBytes: await readFixtureSemanticBytesV1(options.projectRoot, options.preflight.fixtureSemanticPath),
         fixture: options.preflight.fixture,
         candidate: candidate.binding,
+        runCommand: runNoReplaceGitCommandV1,
       };
-      const preflight = sourcePreflightV1(preflightInput);
+      preflightInput = currentPreflightInput;
+      const preflight = sourcePreflightV1(currentPreflightInput);
       if (preflight.status === 'rejected') throw new Error(`Source preflight rejected: ${preflight.code}: ${preflight.detail}`);
       acceptedPreflight = preflight;
       setStage('build-handoff-rejected');
@@ -326,6 +326,7 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       const postflight = sourcePreflightV1({
         ...preflightInput,
         fixtureSemanticBytes: await readFixtureSemanticBytesV1(options.projectRoot, options.preflight.fixtureSemanticPath),
+        runCommand: runNoReplaceGitCommandV1,
       });
       const postBuild = postflight.status === 'accepted' ? verifyBuildHandoffV1(postflight.buildHandoff) : undefined;
       const beforeBytes = canonicalizeJsonV1(acceptedPreflight.provenance);
@@ -595,7 +596,8 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   });
   input.setStage('browser-crash');
   ownedBrowser.assertRunning();
-  if (environment.effectiveArgs.status !== 'observed') throw new TypeError('Effective browser command line was not observed for profile ownership verification.');
+   input.setStage('environment-invalid');
+   if (environment.effectiveArgs.status !== 'observed') throw new TypeError('Effective browser command line was not observed for profile ownership verification.');
   const hardwareCellId = deriveHardwareCellIdV1({
     candidateId: unit.candidateId,
     hardwareProfileId: options.plan.core.hardwareProfileId,
@@ -608,7 +610,8 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   });
   const telemetryAdapter = createSinglePassTelemetryAdapterV1();
   input.setStage('validation-failed');
-  const run = assembleRunV1({
+   const environmentReasonDetail = `lifecycle smoke only${environment.ineligibilityReasons.length === 0 ? '' : `: ${environment.ineligibilityReasons.join(', ')}`}` as NonEmptyString;
+   const run = assembleRunV1({
     plan: options.plan,
     unit,
     plannedRun,
@@ -619,7 +622,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     telemetryExport: handoff.telemetryExport,
     pageState: { visibility: runtime.visibility, focus: runtime.focused ? 'focused' : 'unfocused', backgroundTabs: ownedBrowser.context.pages().length - 1 },
     origin: { kind: 'planned' },
-    measurementEligibilityReasons: [{ code: 'environment-incomplete', detail: 'lifecycle smoke only' as NonEmptyString, phase: plannedRun.phase }],
+     measurementEligibilityReasons: [{ code: 'environment-incomplete', detail: environmentReasonDetail, phase: plannedRun.phase }],
     telemetryAdapter,
   });
   input.setStage('browser-crash');

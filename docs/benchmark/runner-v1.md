@@ -16,10 +16,12 @@ Create a canonical plan from a closed JSON input:
 npm run benchmark:plan -- --input <plan-input.json> --output <plan.json>
 ```
 
+The plan input itself must be canonical RFC 8785 JCS JSON; pretty-printed or otherwise byte-noncanonical JSON is rejected rather than normalized.
+
 Run the synthetic contract integration, which is the only BR03 path allowed to create a positive BR01 validation receipt:
 
 ```text
-npm run benchmark:run -- --plan <plan.json> --mode synthetic-contract-v1 --slot-index 0 --created-utc <UTC> --output-root .benchmark-results
+npm run benchmark:run -- --plan <plan.json> --mode synthetic-contract-v1 --slot-index 0 --created-utc <UTC> --output-root .benchmark-results --preflight <synthetic-preflight.json>
 ```
 
 Run the real browser lifecycle smoke:
@@ -53,7 +55,7 @@ The live slot remains `unsupported` for measurement because the accepted integra
 
 ## Preflight file
 
-The preflight file is canonical JSON with this closed top-level shape:
+The lifecycle preflight file is canonical JSON with this closed top-level shape:
 
 ```json
 {
@@ -65,6 +67,17 @@ The preflight file is canonical JSON with this closed top-level shape:
 ```
 
 `fixture` is the accepted BR01 `BenchmarkFixtureContractBindingV1`; each candidate `binding` is a `BenchmarkCandidateBindingV1`. IDs and observed semantic/fileset digests must match the accepted plan. BR01 performs the authoritative closed-shape, Git-object, exact-case path, fileset and clean-tree validation. A dirty checkout, mismatched commit, changed build, unavailable fixture binding or changed candidate source stops before browser startup.
+
+Synthetic contract mode requires a separate canonical control with this closed top-level shape:
+
+```json
+{
+  "candidates": [{ "binding": {}, "id": "candidate-id" }],
+  "schemaVersion": "br03-synthetic-contract-preflight-v1"
+}
+```
+
+The synthetic control contains every planned candidate exactly once. Its candidate bindings are checked against the plan, then BR01 `sourcePreflightV1` and `verifyBuildHandoffV1` run for every candidate. The fixture is not caller-supplied: synthetic mode derives the authoritative `wp04-golden-world-v1` binding and canonical semantic bytes from BR01 and requires the exact `mesh-golden-world-v1` WP04 tuple (`seed=0x48455354`, `three-webgl2`, `greedy-ao`, chunk edge `32`, worker count `0`).
 
 ## Determinism and phases
 
@@ -78,11 +91,11 @@ Each invocation root is created exclusively under `.benchmark-results/<invocatio
 
 Synthetic success writes a BR01 bundle with exactly one raw run, BR02 export and BR01 receipt closure per logical run. Assembly and receipt derivation share a single-pass adapter session, so the accepted BR02 adapter executes once per target iteration while BR01 still independently checks the cached derivation.
 
-Synthetic contract mode is a local BR01/BR02 contract integration and emits a `diagnostic` bundle. It requires the verified repository worktree to be clean. Its BR01-required source worktree fields, build file counts, and commit/build bindings are contract placeholders or plan declarations, not observations; fixture and candidate digests are declared, and the synthetic executable digest is unavailable. Before minting its receipt, synthetic mode verifies the working validator files against the expected commit and supplies the exact committed blob bytes to the receipt; only lifecycle smoke performs the broader authoritative source/build preflight before browser startup.
+Synthetic contract mode is a local BR01/BR02 contract integration and emits a `diagnostic` bundle. It requires a clean verified repository and uses the real current source commit, tree, candidate fileset and built `dist` facts observed by BR01 preflight. It mints exactly one receipt using the dynamically enumerated validator attestation set: every regular Git blob under `src/benchmark/contracts/**` and `src/benchmark/provenance/**` at fixed commit `e88978cbcd5504789a804fb25e353e08aaec1bd6`, with exact committed bytes supplied to BR01. The synthetic environment is deliberately declared and the run has exactly one `environment-incomplete` reason; this is schema/integrity evidence only, never a performance claim. Source/build preflight and validator closure are repeated before publication and must be byte/digest stable.
 
 Live lifecycle smoke writes `environment.json`, `run.json`, the exact `telemetry-export.json`, and a canonical manifest binding each file's byte length and SHA-256. `benchmark:verify` rejects missing, extra, changed, noncanonical, unmanifested or mismatched control, bundle and lifecycle files.
 
-The built CLI embeds the clean Git commit used by `build:runner`; a dirty or unresolvable source tree receives a non-commit build stamp and run modes reject it for a source-commit plan. The CLI also attests the exact bytes of `.benchmark-runner/runner.mjs`; run modes reject a plan whose expected source commit differs from that build stamp, and `benchmark:verify` accepts invocations created by that built runner. Direct source-module calls used by tests attest the loaded source module and are not CLI-verifiable.
+The built CLI can only be produced from a resolvable clean Git worktree; the build fails before output mutation for dirty/unresolvable input and rechecks the commit/status after bundling. Runtime authority requires the embedded exact source commit, the bounded SHA-256 of the complete `.benchmark-runner/runner.mjs`, and realpath identity with `<resolved Git root>/.benchmark-runner/runner.mjs`. `run` and `verify` receive a private runtime-branded authority, so direct source-module calls cannot create CLI-verifiable artifacts or receipts; a bundle from checkout X invoked with checkout Y is rejected before invocation creation. The runner SHA is a consistency binding to the current build and checkout, not an external code-signing trust anchor.
 
 Bundle files and validation contexts are staged and published in order. An interrupted publication leaves an incomplete invocation that verification rejects; the runner never repairs or adopts such leftovers.
 

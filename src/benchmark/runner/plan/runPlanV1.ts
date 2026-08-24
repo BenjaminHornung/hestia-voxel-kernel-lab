@@ -215,6 +215,10 @@ export function buildRunPlanV1(
   const candidateById = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
   const candidates = candidateIds.map((candidateId) => candidateById.get(candidateId)!);
   const scenarios = canonicalScenarios(input.scenarios);
+  const fixtureMismatches = scenarios
+    .filter(({ id }) => BENCHMARK_SCENARIO_REGISTRY_V1[id].definition.fixtureContractId !== input.fixtureContractId)
+    .map(({ id }) => `${id} requires fixture ${BENCHMARK_SCENARIO_REGISTRY_V1[id].definition.fixtureContractId}.`);
+  if (fixtureMismatches.length > 0) throw new RunPlanValidationErrorV1(fixtureMismatches);
   const containers = enabledContainers(input);
   const orderSeed = input.orderSeed as UInt32V1;
   const balanceBlocks: RunPlanBalanceBlockV1[] = [];

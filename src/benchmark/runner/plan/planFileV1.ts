@@ -1,5 +1,5 @@
 import type { BenchmarkScenarioParameterV1 } from '../../contracts';
-import { canonicalizeJsonV1, parseCanonicalJsonV1, parseJsonV1 } from '../../provenance';
+import { canonicalizeJsonV1, parseCanonicalJsonV1 } from '../../provenance';
 import type { BuiltRunPlanV1, RunPlanCoreV1, RunPlanInputV1 } from '../contractsV1';
 import { verifyBuiltRunPlanV1 } from './runPlanV1';
 
@@ -48,7 +48,7 @@ function processRequirement(value: unknown, label: string) {
 export function parseRunPlanInputJsonV1(bytes: Uint8Array): RunPlanInputV1 {
   let parsed: unknown;
   try {
-    parsed = parseJsonV1(bytes);
+    parsed = parseCanonicalJsonV1(bytes);
   } catch (error) {
     throw new TypeError(`Run-plan input is not valid UTF-8 JSON: ${error instanceof Error ? error.message : 'parse failure'}.`, { cause: error });
   }

@@ -128,6 +128,10 @@ describe('BR03 run plan v1', () => {
     expect(() => buildRunPlanV1(input, collision)).toThrow(/collision/i);
   });
 
+  it('rejects a scenario whose registered fixture is not the plan fixture', () => {
+    expect(() => buildRunPlanV1({ ...runPlanInputV1(), fixtureContractId: id('backend-parity-world-v1') })).toThrow(/mesh-golden-world-v1 requires fixture wp04-golden-world-v1/);
+  });
+
   it('rejects a rehashed plan whose generated execution graph was removed', () => {
     const plan = buildRunPlanV1(runPlanInputV1());
     const core = { ...plan.core, processUnits: [] };
