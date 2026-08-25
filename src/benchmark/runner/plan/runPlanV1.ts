@@ -110,6 +110,22 @@ interface EnabledContainerV1 {
 
 function enabledContainers(input: RunPlanInputV1): readonly EnabledContainerV1[] {
   const result: EnabledContainerV1[] = [];
+  const requirements = [
+    ['cold', input.phases.cold.minimumProcessesPerCandidate],
+    ['warm-measurement', input.phases.warmMeasurement.minimumProcessesPerCandidate],
+    ['stress', input.phases.stress.minimumProcessesPerCandidate],
+    ['trace', input.phases.trace.minimumProcessesPerCandidate],
+    ['leak', input.phases.leak.minimumProcessesPerCandidate],
+  ] as const;
+  for (const [container, count] of requirements) {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new RunPlanValidationErrorV1([`${container} process minimum is invalid.`]);
+    }
+  }
+  if (!Number.isSafeInteger(input.phases.warmMeasurement.measurementIterationsPerProcess)
+    || input.phases.warmMeasurement.measurementIterationsPerProcess < 0) {
+    throw new RunPlanValidationErrorV1(['Measurement iterations per process are invalid.']);
+  }
   const add = (
     container: BenchmarkProcessContainerV1,
     enabled: boolean,
@@ -180,6 +196,32 @@ export function validateRunPlanCoreV1(plan: RunPlanCoreV1): readonly string[] {
     || Object.values(ids.ownership).some((owner) => owner !== 'BR03'))) {
     issues.push('Invalid orchestration ID ownership or pair ordinal.');
   }
+  if (plan.balanceBlocks.some(({ blockId, balanceBlockId }) => blockId !== balanceBlockId)
+    || new Set(plan.balanceBlocks.map(({ balanceBlockId }) => balanceBlockId)).size !== plan.balanceBlocks.length) {
+    issues.push('Balance-block identity is inconsistent.');
+  }
+  const blockIds = new Set(plan.balanceBlocks.map(({ balanceBlockId }) => balanceBlockId));
+  if (plan.processUnits.some(({ balanceBlockId }) => !blockIds.has(balanceBlockId))) issues.push('Process unit references an unknown balance block.');
+  const pairCells = new Map<string, RunPlanProcessUnitV1[]>();
+  for (const unit of plan.processUnits) {
+    const cells = pairCells.get(unit.ids.pairCellId) ?? [];
+    cells.push(unit);
+    pairCells.set(unit.ids.pairCellId, cells);
+  }
+  for (const units of pairCells.values()) {
+    if (new Set(units.map(({ ids }) => ids.pairOrdinal)).size !== 1) issues.push('Pair-cell ordinal is inconsistent.');
+    if (plan.comparisonMode === 'reference-paired') {
+      const reference = units.filter(({ comparisonArm }) => comparisonArm === 'reference');
+      const comparisons = units.filter(({ comparisonArm }) => comparisonArm === 'comparison');
+      if (units.length !== 2 || new Set(units.map(({ candidateId }) => candidateId)).size !== 2
+        || reference.length !== 1 || comparisons.length !== 1
+        || reference[0]?.candidateId !== plan.referenceCandidateId) {
+        issues.push('Reference-paired cells require exactly one reference and one distinct comparison arm.');
+      }
+    } else if (units.length !== 1 || units[0]?.comparisonArm !== 'unpaired') {
+      issues.push('Unpaired-only cells must contain exactly one unpaired arm.');
+    }
+  }
   return issues;
 }
 
@@ -214,6 +256,16 @@ export function buildRunPlanV1(
   });
   const candidateById = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
   const candidates = candidateIds.map((candidateId) => candidateById.get(candidateId)!);
+  if (input.comparisonMode === 'reference-paired') {
+    if (input.referenceCandidateId === null || !candidateById.has(input.referenceCandidateId)) {
+      throw new RunPlanValidationErrorV1(['referenceCandidateId must identify a selected candidate.']);
+    }
+  } else if (input.comparisonMode === 'unpaired-only') {
+    if (input.referenceCandidateId !== null) throw new RunPlanValidationErrorV1(['unpaired-only plans cannot declare a referenceCandidateId.']);
+    if (candidateIds.length === 2) throw new RunPlanValidationErrorV1(['Two-candidate plans require an explicit referenceCandidateId.']);
+  } else {
+    throw new RunPlanValidationErrorV1(['comparisonMode is invalid.']);
+  }
   const scenarios = canonicalScenarios(input.scenarios);
   const fixtureMismatches = scenarios
     .filter(({ id }) => BENCHMARK_SCENARIO_REGISTRY_V1[id].definition.fixtureContractId !== input.fixtureContractId)
@@ -229,9 +281,10 @@ export function buildRunPlanV1(
 
   for (const container of containers) {
     for (const scenario of scenarios) {
-      const scenarioSeedDigest = hash('br03/order/scenarios/v1', { orderSeed, scenarioId: scenario.id });
-      const scenarioSeed = Number.parseInt(scenarioSeedDigest.slice('sha256:'.length, 'sha256:'.length + 8), 16) as UInt32V1;
-      const rows = buildCounterbalanceRowsV1(candidateIds, scenarioSeed, hash);
+      const scenarioSeedValue = scenario.parameters.find(({ key }) => key === 'seed')?.value ?? null;
+      const scenarioSeedDigest = hash('br03/order/scenarios/v1', { orderSeed, scenarioId: scenario.id, scenarioSeed: scenarioSeedValue });
+      const effectiveScenarioSeed = Number.parseInt(scenarioSeedDigest.slice('sha256:'.length, 'sha256:'.length + 8), 16) as UInt32V1;
+      const rows = buildCounterbalanceRowsV1(candidateIds, effectiveScenarioSeed, hash);
       const occurrencesPerCandidate = rows
         .flatMap(({ candidateIds: rowCandidates }) => rowCandidates)
         .filter((candidateId) => candidateId === candidateIds[0]).length;
@@ -247,6 +300,7 @@ export function buildRunPlanV1(
           orderSeed,
           repetitionOrdinal,
           scenarioId: scenario.id,
+          scenarioSeed: scenarioSeedValue,
         };
         const blockId = idFromDigestV1('br03-block-', hash('br03/balance-block/v1', blockIdentity));
         if (balanceBlocks.some((block) => block.blockId === blockId)) {
@@ -254,27 +308,49 @@ export function buildRunPlanV1(
         }
         balanceBlocks.push({
           blockId,
+          balanceBlockId: blockId,
           processContainer: container.container,
           scenarioId: scenario.id,
           repetitionOrdinal,
           rows,
         });
         for (const row of rows) {
-          const groups = candidateIds.length === 2
-            ? Array.from(
-              { length: row.candidateIds.length / 2 },
-              (_, index) => row.candidateIds.slice(index * 2, index * 2 + 2),
-            )
-            : [row.candidateIds];
+          const groups: readonly { readonly candidateIds: readonly typeof candidateIds[number][]; readonly arms: readonly RunPlanProcessUnitV1['comparisonArm'][] }[] = candidateIds.length === 2
+            ? Array.from({ length: row.candidateIds.length / 2 }, (_, index) => {
+              const pair = row.candidateIds.slice(index * 2, index * 2 + 2);
+              return {
+                candidateIds: pair,
+                arms: pair.map((candidateId) => candidateId === input.referenceCandidateId ? 'reference' as const : 'comparison' as const),
+              };
+            })
+            : input.comparisonMode === 'reference-paired'
+              ? row.candidateIds.filter((candidateId) => candidateId !== input.referenceCandidateId).map((candidateId) => {
+                const referenceFirst = row.candidateIds.indexOf(input.referenceCandidateId!) < row.candidateIds.indexOf(candidateId);
+                return {
+                  candidateIds: referenceFirst ? [input.referenceCandidateId!, candidateId] : [candidateId, input.referenceCandidateId!],
+                  arms: referenceFirst ? ['reference', 'comparison'] : ['comparison', 'reference'],
+                };
+              })
+              : row.candidateIds.map((candidateId) => ({ candidateIds: [candidateId], arms: ['unpaired'] }));
           let rowPosition = 0;
           for (let groupOrdinal = 0; groupOrdinal < groups.length; groupOrdinal += 1) {
-            const pairIdentity = { ...blockIdentity, groupOrdinal, rowOrdinal: row.rowOrdinal };
+            const group = groups[groupOrdinal]!;
+            const pairIdentity = {
+              ...blockIdentity,
+              balanceBlockId: blockId,
+              comparisonMode: input.comparisonMode,
+              groupOrdinal,
+              pairCandidateIds: group.candidateIds,
+              referenceCandidateId: input.referenceCandidateId,
+              rowOrdinal: row.rowOrdinal,
+            };
             const pairCellId = idFromDigestV1('br03-pair-', hash('br03/pair-cell/v1', pairIdentity));
             if (pairCells.has(pairCellId)) throw new Error('Digest collision in pair-cell IDs.');
             pairCells.add(pairCellId);
             const currentPairOrdinal = pairOrdinal;
             pairOrdinal += 1;
-            for (const candidateId of groups[groupOrdinal]!) {
+            for (let armOrdinal = 0; armOrdinal < group.candidateIds.length; armOrdinal += 1) {
+              const candidateId = group.candidateIds[armOrdinal]!;
               const processCell = `${scenario.id}:${candidateId}`;
               const processOrdinal = processOrdinals.get(processCell) ?? 0;
               processOrdinals.set(processCell, processOrdinal + 1);
@@ -298,6 +374,7 @@ export function buildRunPlanV1(
                 scenarioId: scenario.id,
                 scenarioParameters: scenario.parameters,
                 candidateId,
+                comparisonArm: group.arms[armOrdinal]!,
                 balanceBlockId: blockId,
                 rowOrdinal: row.rowOrdinal,
                 sequencePosition: rowPosition,
@@ -326,6 +403,8 @@ export function buildRunPlanV1(
     syntheticHardwareProfile: input.syntheticHardwareProfile,
     browser: { ...input.browser, requestedArgs: [...input.browser.requestedArgs] },
     orderSeed,
+    comparisonMode: input.comparisonMode,
+    referenceCandidateId: input.referenceCandidateId,
     candidates,
     scenarios,
     phases: input.phases,
@@ -354,6 +433,8 @@ export function verifyBuiltRunPlanV1(plan: BuiltRunPlanV1): readonly string[] {
       syntheticHardwareProfile: core.syntheticHardwareProfile,
       browser: core.browser,
       orderSeed: core.orderSeed,
+      comparisonMode: core.comparisonMode,
+      referenceCandidateId: core.referenceCandidateId,
       candidates: core.candidates,
       scenarios: core.scenarios,
       phases: core.phases,

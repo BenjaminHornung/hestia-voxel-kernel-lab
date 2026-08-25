@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CanonicalIdV1, Sha256DigestV1, UInt32V1 } from '../../../../src/benchmark/contracts';
 import { canonicalizeJsonV1, sha256BytesV1 } from '../../../../src/benchmark/provenance';
 import { buildCounterbalanceRowsV1 } from '../../../../src/benchmark/runner/plan/counterbalanceV1';
+import type { RunPlanProcessUnitV1 } from '../../../../src/benchmark/runner/contractsV1';
 import {
   buildRunPlanV1,
   classifyPopulationV1,
@@ -14,6 +15,11 @@ import {
 } from '../../../fixtures/benchmark/runner/runPlanInputV1';
 
 const id = (value: string) => value as CanonicalIdV1;
+const pairCells = (units: readonly RunPlanProcessUnitV1[]) => {
+  const result = new Map<string, RunPlanProcessUnitV1[]>();
+  for (const unit of units) result.set(unit.ids.pairCellId, [...(result.get(unit.ids.pairCellId) ?? []), unit]);
+  return result;
+};
 
 describe('BR03 run plan v1', () => {
   it('produces byte-identical plans, full digests, stable IDs and owner literals', () => {
@@ -67,6 +73,15 @@ describe('BR03 run plan v1', () => {
     const firstBlock = plan.core.balanceBlocks[0]!;
     expect(firstBlock.rows.map(({ scheme }) => scheme)).toEqual(['abba', 'baab']);
     expect(firstBlock.rows.every(({ candidateIds }) => candidateIds.length === 4)).toBe(true);
+    expect(firstBlock.balanceBlockId).toBe(firstBlock.blockId);
+
+    for (const units of pairCells(plan.core.processUnits).values()) {
+      expect(units).toHaveLength(2);
+      expect(new Set(units.map(({ candidateId }) => candidateId)).size).toBe(2);
+      expect(units.filter(({ comparisonArm }) => comparisonArm === 'reference').map(({ candidateId }) => candidateId)).toEqual(['candidate-a']);
+      expect(new Set(units.map(({ ids }) => ids.pairOrdinal)).size).toBe(1);
+    }
+    expect(new Set(plan.core.processUnits.map(({ ids }) => ids.bootstrapClusterId)).size).toBe(plan.core.processUnits.length);
 
     const cold = plan.core.processUnits.filter(({ processContainer }) => processContainer === 'cold');
     const warm = plan.core.processUnits.filter(({ processContainer }) => processContainer === 'warm-measurement');
@@ -88,6 +103,27 @@ describe('BR03 run plan v1', () => {
         expect(rows.filter(({ candidateIds }) => candidateIds[position] === candidateId)).toHaveLength(count % 2 === 0 ? 1 : 2);
       }
     });
+  });
+
+  it.each([3, 4, 5])('creates only explicit two-arm reference pairs for %i candidates', (count) => {
+    const input = runPlanInputV1(Array.from({ length: count }, (_, index) => `candidate-${index}`));
+    const plan = buildRunPlanV1(input);
+    for (const units of pairCells(plan.core.processUnits).values()) {
+      expect(units).toHaveLength(2);
+      expect(new Set(units.map(({ candidateId }) => candidateId)).size).toBe(2);
+      expect(units.find(({ comparisonArm }) => comparisonArm === 'reference')?.candidateId).toBe('candidate-0');
+      expect(units.filter(({ comparisonArm }) => comparisonArm === 'comparison')).toHaveLength(1);
+    }
+  });
+
+  it.each([3, 4, 5])('keeps %i-candidate unpaired-only cells singleton', (count) => {
+    const base = runPlanInputV1(Array.from({ length: count }, (_, index) => `candidate-${index}`));
+    const plan = buildRunPlanV1({ ...base, comparisonMode: 'unpaired-only', referenceCandidateId: null });
+    expect(plan.core.comparisonMode).toBe('unpaired-only');
+    for (const units of pairCells(plan.core.processUnits).values()) {
+      expect(units).toHaveLength(1);
+      expect(units[0]!.comparisonArm).toBe('unpaired');
+    }
   });
 
   it('classifies 2, 3, 4 and 5 process populations without lowering the 30-iteration floor', () => {
@@ -126,6 +162,39 @@ describe('BR03 run plan v1', () => {
     })).toThrow(/Missing parameter seed/);
     const collision = () => `sha256:${'0'.repeat(64)}` as Sha256DigestV1;
     expect(() => buildRunPlanV1(input, collision)).toThrow(/collision/i);
+  });
+
+  it('validates disabled phase numeric domains and comparison direction', () => {
+    const input = runPlanInputV1();
+    expect(() => buildRunPlanV1({ ...input, referenceCandidateId: id('missing') })).toThrow(/selected candidate/);
+    expect(() => buildRunPlanV1({ ...input, comparisonMode: 'unpaired-only', referenceCandidateId: id('candidate-a') })).toThrow(/cannot declare/);
+    expect(() => buildRunPlanV1({ ...input, comparisonMode: 'unpaired-only', referenceCandidateId: null })).toThrow(/Two-candidate/);
+    expect(() => buildRunPlanV1({
+      ...input,
+      phases: { ...input.phases, trace: { enabled: false, minimumProcessesPerCandidate: -1 } },
+    })).toThrow(/trace process minimum/);
+    expect(() => buildRunPlanV1({
+      ...input,
+      phases: { ...input.phases, warmMeasurement: { enabled: false, minimumProcessesPerCandidate: 0, measurementIterationsPerProcess: -1 } },
+    })).toThrow(/Measurement iterations/);
+  });
+
+  it('uses the scenario seed in deterministic scenario ordering', () => {
+    const input = runPlanInputV1(['candidate-a', 'candidate-b', 'candidate-c']);
+    const first = buildRunPlanV1(input);
+    const second = Array.from({ length: 16 }, (_, index) => index + 1)
+      .map((seed) => buildRunPlanV1({
+        ...input,
+        scenarios: input.scenarios.map((scenario) => ({
+          ...scenario,
+          parameters: scenario.parameters.map((parameter) => parameter.key === 'seed' ? { ...parameter, value: seed as UInt32V1 } : parameter),
+        })),
+      }))
+      .find((candidate) => JSON.stringify(candidate.core.balanceBlocks[0]!.rows) !== JSON.stringify(first.core.balanceBlocks[0]!.rows));
+    expect(second).toBeDefined();
+    if (second === undefined) throw new Error('Expected at least one distinct deterministic scenario-seed order.');
+    expect(second.core.balanceBlocks[0]!.rows).not.toEqual(first.core.balanceBlocks[0]!.rows);
+    expect(second.core.processUnits[0]!.ids.slotId).not.toBe(first.core.processUnits[0]!.ids.slotId);
   });
 
   it('rejects a scenario whose registered fixture is not the plan fixture', () => {

@@ -33,7 +33,15 @@ export class ProcessUnitResultLedgerV1 {
   readonly #expected: ReadonlyMap<string, { readonly browserProcessId: string; readonly ordinal: number; readonly runIds: ReadonlySet<string> }>;
   readonly #results = new Map<string, ProcessUnitResultV1>();
 
-  public constructor(plan: BuiltRunPlanV1, invocation: RunInvocationV1) {
+  public constructor(
+    plan: BuiltRunPlanV1,
+    invocation: RunInvocationV1,
+    adaptiveRunIds: ReadonlyMap<string, readonly string[]> = new Map(),
+  ) {
+    const adaptiveIds = [...adaptiveRunIds.values()].flat();
+    if (new Set(adaptiveIds).size !== adaptiveIds.length || adaptiveIds.some((runId) => !ID.test(runId))) {
+      throw new TypeError('Adaptive run IDs must be globally unique canonical IDs.');
+    }
     const invocationUnits = new Map<string, RunInvocationV1['processUnits'][number]>(invocation.processUnits.map((unit) => [unit.slotId, unit]));
     const planUnits = new Map(plan.core.processUnits.map((unit, ordinal) => [unit.ids.slotId, { unit, ordinal }] as const));
     this.#expected = new Map(invocation.processUnits.map((invocationUnit) => {
@@ -42,13 +50,20 @@ export class ProcessUnitResultLedgerV1 {
       return [accepted.unit.ids.slotId, {
         browserProcessId: accepted.unit.ids.browserProcessId,
         ordinal: accepted.ordinal,
-        runIds: new Set(invocationUnit.runs.map(({ runId }) => runId)),
+        runIds: new Set([
+          ...invocationUnit.runs.map(({ runId }) => runId),
+          ...(adaptiveRunIds.get(invocationUnit.slotId) ?? []),
+        ]),
       }] as const;
     }));
     if (invocation.selectedSlotIds.length !== invocation.processUnits.length
       || new Set(invocation.selectedSlotIds).size !== invocation.selectedSlotIds.length
       || invocation.selectedSlotIds.some((slotId) => !invocationUnits.has(slotId))
-      || [...this.#expected].some(([slotId, expected]) => expected.runIds.size === 0 || invocationUnits.get(slotId)?.browserProcessId !== expected.browserProcessId)) {
+      || [...this.#expected].some(([slotId, expected]) => {
+        const invocationUnit = invocationUnits.get(slotId);
+        return invocationUnit?.browserProcessId !== expected.browserProcessId
+          || (expected.runIds.size === 0 && invocationUnit?.adaptiveWarmup === null);
+      })) {
       throw new TypeError('Run invocation does not cover the accepted plan.');
     }
   }
@@ -82,14 +97,19 @@ export class ProcessUnitResultLedgerV1 {
     if (result.disposition === 'invalid' && !invalidFailureCodes.has(result.failureCode)) {
       throw new TypeError('Invalid process-unit results require a provenance, environment, or warmup failure code.');
     }
+    if (result.disposition === 'invalid' && result.failureCode === 'warmup-not-stable' && result.runIds.length === 0) {
+      throw new TypeError('Warmup-not-stable results must retain every executed warmup run ID.');
+    }
     if (result.disposition === 'aborted' && result.failureCode !== 'operator-abort') {
       throw new TypeError('Aborted process-unit results require the operator-abort failure code.');
     }
     if (result.disposition === 'failed' && (unsupportedFailureCodes.has(result.failureCode) || invalidFailureCodes.has(result.failureCode) || result.failureCode === 'operator-abort')) {
       throw new TypeError('Failed process-unit results contain a failure code for another disposition.');
     }
-    if (result.disposition !== 'valid' && result.runIds.length > 0 && result.disposition !== 'unsupported') {
-      throw new TypeError('Only unsupported results may retain completed run IDs.');
+    if (result.disposition !== 'valid' && result.runIds.length > 0
+      && result.disposition !== 'unsupported'
+      && !(result.disposition === 'invalid' && result.failureCode === 'warmup-not-stable')) {
+      throw new TypeError('Only producer-unavailable or unstable-warmup results may retain completed run IDs.');
     }
     if (successful && !exactRunBinding) throw new TypeError('Valid process-unit results must bind every planned invocation run exactly once.');
     if (result.runIds.length > 0 && !exactRunBinding) throw new TypeError('Process-unit result run binding must be complete and exact.');

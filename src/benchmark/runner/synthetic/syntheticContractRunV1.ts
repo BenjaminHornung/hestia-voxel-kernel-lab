@@ -39,7 +39,7 @@ import {
   writeProcessUnitResultsV1,
 } from '../artifacts/artifactStoreV1';
 import { validateDownloadedTelemetryV1 } from '../browser/br02HandoffDriverV1';
-import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitResultV1 } from '../contractsV1';
+import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitResultV1, type RunInvocationRerunOriginV1, type RunInvocationV1 } from '../contractsV1';
 import { deriveHardwareCellIdV1 } from '../ids/orchestrationIdsV1';
 import { createRunInvocationV1 } from '../invocation/runInvocationV1';
 import { ProcessUnitResultLedgerV1 } from '../results/processUnitResultLedgerV1';
@@ -211,6 +211,9 @@ export interface SyntheticContractRunOptionsV1 {
   readonly projectRoot: string;
   readonly preflight: SyntheticContractPreflightConfigV1;
   readonly runnerAuthority: RunnerAuthorityV1;
+  readonly attempt?: number;
+  readonly rerunOrigin?: RunInvocationRerunOriginV1;
+  readonly predecessorInvocation?: RunInvocationV1;
 }
 
 export interface SyntheticContractRunResultV1 {
@@ -238,7 +241,15 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
   const acceptedPreflight = runSyntheticSourcePreflightV1(options.projectRoot, plan.core.expectedSourceCommitSha, plan, options.preflight, unit.candidateId);
   const source = acceptedPreflight.selected.provenance;
   const environment = syntheticEnvironment(plan, unit.scenarioId);
-  const invocation = createRunInvocationV1(plan, { createdUtc: options.createdUtc, outputRoot: options.outputRoot, selectedSlotIds: [unit.ids.slotId], runnerSourceSha: options.runnerAuthority.runnerSourceSha });
+  const invocation = createRunInvocationV1(plan, {
+    createdUtc: options.createdUtc,
+    outputRoot: options.outputRoot,
+    attempt: options.attempt,
+    rerunOrigin: options.rerunOrigin,
+    predecessorInvocation: options.predecessorInvocation,
+    selectedSlotIds: [unit.ids.slotId],
+    runnerSourceSha: options.runnerAuthority.runnerSourceSha,
+  });
   const invocationUnit = invocation.processUnits.find(({ slotId }) => slotId === unit.ids.slotId)!;
   const plannedRun = invocationUnit.runs[0]!;
   const backend = unit.scenarioParameters.find(({ key }) => key === 'backend')?.value;
@@ -297,7 +308,7 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
   const run = assembleRunV1({
     plan, unit, plannedRun, createdUtc: options.createdUtc, hardwareCellId, source, environment, telemetryExport,
     pageState: { visibility: 'visible', focus: 'focused', backgroundTabs: 0 },
-    origin: { kind: 'planned' },
+    origin: plannedRun.origin,
     measurementEligibilityReasons: [{ code: 'environment-incomplete', detail: 'synthetic environment is diagnostic-only' as NonEmptyString, phase: 'cold' }],
     telemetryAdapter,
   });

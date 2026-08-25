@@ -38,6 +38,10 @@ npm run benchmark:verify -- --plan <plan.json> --invocation-root <invocation-dir
 
 All CLI options use separate `--name value` pairs. Unknown, duplicate, missing, inline-`=` or mode-incompatible options fail closed. The runner performs no automatic retry.
 
+Plan input binds comparison direction with `comparisonMode: "reference-paired"` plus a selected `referenceCandidateId`, or uses `comparisonMode: "unpaired-only"` with `referenceCandidateId: null` for three-or-more-candidate order-only plans. Two-candidate plans always use explicit reference pairing. Every reference-paired `pairCellId` contains exactly one reference and one distinct comparison arm with one shared pair ordinal; N-way Williams rows control order but are never represented as N-member pair cells. Unpaired-only plans use one technical singleton cell per arm. `balanceBlockId` is explicit on both the balance block and every process unit, while every browser process retains its own bootstrap cluster.
+
+The scenario `seed` parameter participates in deterministic scenario/candidate ordering and orchestration IDs in addition to the plan digest. Process counts and warm-measurement iteration counts must remain non-negative safe integers even when their phase is disabled; `enabled` controls execution, not schema validity.
+
 ## Live boundary
 
 `lifecycle-smoke-v1` is deliberately narrower than a performance campaign. It accepts only process ordinal zero of a planned cold `mesh-golden-world-v1` cell with the fixed BR03 route contract. The runner:
@@ -83,7 +87,9 @@ The synthetic control contains every planned candidate exactly once. Its candida
 
 The plan digest covers deterministic inputs only: source/build/fixture/profile bindings, browser contract, seed, candidates, scenarios, phase requirements, counterbalance rows and concrete BR03-owned orchestration IDs. Timestamps, output paths, ports, OS PIDs and temporary paths exist only in the invocation.
 
-Cold slots use a fresh process and profile. Warm-measurement plans reserve up to 50 one-iteration warmup runs and a separate measurement run; `WarmupControllerV1` delegates stability recomputation to the BR01 rule and rejects instability at 50. No currently live scenario is allowed to execute that path, so the CLI does not fabricate warmup values or silently promote lifecycle-smoke data. Trace and leak remain separate unavailable containers.
+Cold slots use a fresh process and profile. Warm-measurement plans allow a deterministic maximum of 50 one-iteration warmup runs; `WarmupControllerV1` delegates stability recomputation to the BR01 rule and rejects instability at 50. No currently live scenario is allowed to execute that path, so the CLI does not fabricate warmup values or silently promote lifecycle-smoke data. Trace and leak remain separate unavailable containers.
+
+Warm-measurement invocation units do not predeclare 50 phantom runs. `AdaptiveWarmupControllerV1` allocates one warmup run and its iteration/sample identities only when execution starts, accepts exactly one BR02-adapted control sample, and calls BR01 `recomputeWarmupStabilityV1` after each completion. It allocates measurement only at the first accepted stable boundary, retains exact evidence, and becomes invalid without a measurement at 50. Only allocated runs belong in terminal results and BR01 documents.
 
 ## Artifacts
 
@@ -99,7 +105,11 @@ The built CLI can only be produced from a resolvable clean Git worktree; the bui
 
 Bundle files and validation contexts are staged and published in order. An interrupted publication leaves an incomplete invocation that verification rejects; the runner never repairs or adopts such leftovers.
 
-An identical rerun without a distinct attempt identity is rejected by the create-new invocation root and is classified as infrastructure failure (`4`); the v1 CLI does not expose the approved rerun metadata path.
+An identical attempt-0 execution is rejected by the create-new invocation root and is classified as infrastructure failure (`4`).
+
+Attempt-0 identity is derived only from the plan digest, the canonical selected-slot set, and attempt `0`; timestamps, output spelling, and runner paths cannot create another initial identity. A later attempt uses `--attempt <n> --approval-id <id> --replaces-invocation-root <root>`. The predecessor must already have a complete immutable terminal control, use the same plan and selected slots, and be exactly attempt `n-1`. Each produced BR01 run then carries `origin.kind: "infrastructure-rerun"`, the approval ID, and the exact replaced predecessor run ID. The runner never retries automatically.
+
+A valid slot whose ScenarioDriver is unavailable still creates an immutable invocation and one terminal `unsupported / scenario-unavailable` process-unit result, then exits `7`; it does not start preview or browser work.
 
 ## Failure and cleanup
 

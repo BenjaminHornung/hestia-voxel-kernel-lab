@@ -1,6 +1,7 @@
 import type {
   BenchmarkOrchestrationIdsV1,
   BenchmarkProcessContainerV1,
+  BenchmarkRunOriginV1,
   BenchmarkSamplePhaseV1,
   BenchmarkScenarioIdV1,
   BenchmarkScenarioParameterV1,
@@ -51,6 +52,8 @@ export interface RunPlanInputV1 {
     readonly requestedArgs: readonly string[];
   };
   readonly orderSeed: number;
+  readonly comparisonMode: 'reference-paired' | 'unpaired-only';
+  readonly referenceCandidateId: CanonicalIdV1 | null;
   readonly candidates: readonly RunPlanCandidateV1[];
   readonly scenarios: readonly RunPlanScenarioV1[];
   readonly phases: RunPlanPhaseRequirementsV1;
@@ -65,6 +68,7 @@ export interface BalanceRowV1 {
 
 export interface RunPlanBalanceBlockV1 {
   readonly blockId: CanonicalIdV1;
+  readonly balanceBlockId: CanonicalIdV1;
   readonly processContainer: BenchmarkProcessContainerV1;
   readonly scenarioId: BenchmarkScenarioIdV1;
   readonly repetitionOrdinal: number;
@@ -77,6 +81,7 @@ export interface RunPlanProcessUnitV1 {
   readonly scenarioId: BenchmarkScenarioIdV1;
   readonly scenarioParameters: readonly BenchmarkScenarioParameterV1[];
   readonly candidateId: CanonicalIdV1;
+  readonly comparisonArm: 'reference' | 'comparison' | 'unpaired';
   readonly balanceBlockId: CanonicalIdV1;
   readonly rowOrdinal: number;
   readonly sequencePosition: number;
@@ -102,6 +107,8 @@ export interface RunPlanCoreV1 {
     readonly requestedArgs: readonly string[];
   };
   readonly orderSeed: UInt32V1;
+  readonly comparisonMode: 'reference-paired' | 'unpaired-only';
+  readonly referenceCandidateId: CanonicalIdV1 | null;
   readonly candidates: readonly RunPlanCandidateV1[];
   readonly scenarios: readonly RunPlanScenarioV1[];
   readonly phases: RunPlanPhaseRequirementsV1;
@@ -122,12 +129,20 @@ export interface PlannedInvocationRunV1 {
   readonly runId: CanonicalIdV1;
   readonly phase: BenchmarkSamplePhaseV1;
   readonly iterationIds: readonly CanonicalIdV1[];
+  readonly origin: BenchmarkRunOriginV1;
+}
+
+export interface AdaptiveWarmupScheduleV1 {
+  readonly schemaVersion: 'br03-adaptive-warmup-schedule-v1';
+  readonly maximumWarmupRuns: 50;
+  readonly measurementIterations: number;
 }
 
 export interface RunInvocationProcessUnitV1 {
   readonly slotId: CanonicalIdV1;
   readonly browserProcessId: CanonicalIdV1;
   readonly runs: readonly PlannedInvocationRunV1[];
+  readonly adaptiveWarmup: AdaptiveWarmupScheduleV1 | null;
 }
 
 export type RunInvocationRerunOriginV1 = {

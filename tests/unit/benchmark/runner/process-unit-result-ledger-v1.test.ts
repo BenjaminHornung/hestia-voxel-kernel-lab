@@ -72,12 +72,15 @@ describe('BR03 process-unit result ledger v1', () => {
     })).toThrow(/operator-abort/);
   });
 
-  it('does not accept a valid result that names only part of a warm invocation', () => {
+  it('binds adaptive warmup terminal results to exactly the executed run set', () => {
     const plan = buildRunPlanV1(runPlanInputV1());
-    const invocation = createRunInvocationV1(plan, { createdUtc: '2026-08-20T12:00:00.000Z', outputRoot: '.benchmark-results', runnerSourceSha: testRunnerSourceShaV1 });
     const unit = plan.core.processUnits.find(({ processContainer }) => processContainer === 'warm-measurement')!;
-    const invocationUnit = invocation.processUnits.find(({ slotId }) => slotId === unit.ids.slotId)!;
-    const ledger = new ProcessUnitResultLedgerV1(plan, invocation);
+    const invocation = createRunInvocationV1(plan, {
+      createdUtc: '2026-08-20T12:00:00.000Z', outputRoot: '.benchmark-results', runnerSourceSha: testRunnerSourceShaV1,
+      selectedSlotIds: [unit.ids.slotId],
+    });
+    const adaptiveRunIds = ['adaptive-run-0', 'adaptive-run-1'] as never;
+    const ledger = new ProcessUnitResultLedgerV1(plan, invocation, new Map([[unit.ids.slotId, adaptiveRunIds]]));
     expect(() => ledger.record({
       schemaVersion: 'br03-process-unit-result-v1',
       slotId: unit.ids.slotId,
@@ -85,8 +88,14 @@ describe('BR03 process-unit result ledger v1', () => {
       disposition: 'valid',
       failureClass: 'none',
       failureCode: 'none',
-      runIds: [invocationUnit.runs[0]!.runId],
+      runIds: ['adaptive-run-0' as never],
     })).toThrow(/every planned invocation run|complete and exact/);
+    const invalidLedger = new ProcessUnitResultLedgerV1(plan, invocation, new Map([[unit.ids.slotId, adaptiveRunIds]]));
+    invalidLedger.record({
+      schemaVersion: 'br03-process-unit-result-v1', slotId: unit.ids.slotId, browserProcessId: unit.ids.browserProcessId,
+      disposition: 'invalid', failureClass: 'candidate', failureCode: 'warmup-not-stable', runIds: adaptiveRunIds,
+    });
+    expect(invalidLedger.finalize()).toHaveLength(1);
   });
 
   it('closes only the explicitly selected invocation subset', () => {

@@ -33,6 +33,8 @@ export function runPlanInputV1(candidateIds = ['candidate-a', 'candidate-b']): R
       requestedArgs: ['--disable-background-timer-throttling'],
     },
     orderSeed: 0x1020_3040,
+    comparisonMode: 'reference-paired',
+    referenceCandidateId: id(candidateIds[0]!),
     candidates: candidateIds.map((candidateId, index) => ({
       id: id(candidateId),
       sourceFileSetSha256: digest(String((index % 9) + 1)),

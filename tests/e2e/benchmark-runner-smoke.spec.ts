@@ -147,6 +147,8 @@ test('runs the clean built CLI through a real WP04 diagnostic receipt and reject
     syntheticHardwareProfile: true,
     browser: { requestedChannel: 'chrome', headless: true, requestedArgs: [] },
     orderSeed: 0x1020_3040,
+    comparisonMode: 'reference-paired',
+    referenceCandidateId: 'candidate-a',
     candidates: [
       { id: 'candidate-a', sourceFileSetSha256: candidateDigest },
       { id: 'candidate-b', sourceFileSetSha256: candidateDigest },

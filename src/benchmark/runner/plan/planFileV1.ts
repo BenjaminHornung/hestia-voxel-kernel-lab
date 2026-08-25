@@ -55,7 +55,7 @@ export function parseRunPlanInputJsonV1(bytes: Uint8Array): RunPlanInputV1 {
   const input = closed(parsed, [
     'expectedSourceCommitSha', 'expectedBuildSha256', 'fixtureContractId', 'fixtureSemanticSha256',
     'hardwareProfileId', 'hardwareBindingSha256', 'syntheticHardwareProfile', 'browser', 'orderSeed',
-    'candidates', 'scenarios', 'phases', 'retryPolicy',
+    'comparisonMode', 'referenceCandidateId', 'candidates', 'scenarios', 'phases', 'retryPolicy',
   ], '$');
   const browser = closed(input.browser, ['requestedChannel', 'headless', 'requestedArgs'], '$.browser');
   const candidates = array(input.candidates, '$.candidates').map((candidate, index) => {
@@ -88,6 +88,10 @@ export function parseRunPlanInputJsonV1(bytes: Uint8Array): RunPlanInputV1 {
       requestedArgs: array(browser.requestedArgs, '$.browser.requestedArgs').map((argument, index) => string(argument, `$.browser.requestedArgs[${index}]`)),
     },
     orderSeed: finiteNumber(input.orderSeed, '$.orderSeed'),
+    comparisonMode: string(input.comparisonMode, '$.comparisonMode') as RunPlanInputV1['comparisonMode'],
+    referenceCandidateId: input.referenceCandidateId === null
+      ? null
+      : string(input.referenceCandidateId, '$.referenceCandidateId') as RunPlanInputV1['referenceCandidateId'],
     candidates: candidates as unknown as RunPlanInputV1['candidates'],
     scenarios: scenarios as unknown as RunPlanInputV1['scenarios'],
     phases: {
@@ -120,7 +124,7 @@ export function parseBuiltRunPlanV1(bytes: Uint8Array): BuiltRunPlanV1 {
   const coreObject = closed(file.core, [
     'schemaVersion', 'expectedSourceCommitSha', 'expectedBuildSha256', 'fixtureContractId',
     'fixtureSemanticSha256', 'hardwareProfileId', 'hardwareBindingSha256', 'syntheticHardwareProfile',
-    'browser', 'orderSeed', 'candidates', 'scenarios', 'phases', 'balanceBlocks', 'processUnits', 'retryPolicy',
+    'browser', 'orderSeed', 'comparisonMode', 'referenceCandidateId', 'candidates', 'scenarios', 'phases', 'balanceBlocks', 'processUnits', 'retryPolicy',
   ], '$.core');
   if (coreObject.schemaVersion !== 'br03-run-plan-core-v1') throw new TypeError('Wrong run-plan core schema version.');
   parseRunPlanInputJsonV1(canonicalizeJsonV1({
@@ -133,6 +137,8 @@ export function parseBuiltRunPlanV1(bytes: Uint8Array): BuiltRunPlanV1 {
     syntheticHardwareProfile: coreObject.syntheticHardwareProfile,
     browser: coreObject.browser,
     orderSeed: coreObject.orderSeed,
+    comparisonMode: coreObject.comparisonMode,
+    referenceCandidateId: coreObject.referenceCandidateId,
     candidates: coreObject.candidates,
     scenarios: coreObject.scenarios,
     phases: coreObject.phases,

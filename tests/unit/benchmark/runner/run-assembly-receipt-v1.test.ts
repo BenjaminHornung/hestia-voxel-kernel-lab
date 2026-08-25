@@ -59,6 +59,7 @@ function setup() {
     fixtureContractId: template.source.fixture.id,
     fixtureSemanticSha256: fixtureDigest.value,
     hardwareProfileId: template.hardwareProfileId,
+    referenceCandidateId: template.source.candidate.id,
     candidates: [
       { id: template.source.candidate.id, sourceFileSetSha256: sourceDigest.value },
       { id: id('candidate-z'), sourceFileSetSha256: `sha256:${'f'.repeat(64)}` as Sha256DigestV1 },

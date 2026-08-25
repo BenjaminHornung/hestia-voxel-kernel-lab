@@ -3,10 +3,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BENCHMARK_WP04_SEMANTIC_SHA256_V1, type BenchmarkRunDocumentV1, type BenchmarkValidationContextV1, type CanonicalIdV1 } from '../contracts';
 import { canonicalizeJsonV1, parseCanonicalJsonV1, readFileBytesV1 } from '../provenance';
-import { ArtifactCleanupErrorV1, deriveBundleIdV1, readVerifiedBundleRunIdsV1, verifyInvocationControlV1, verifyLifecycleSmokeArtifactsV1, verifyWrittenBundleV1 } from './artifacts/artifactStoreV1';
-import { RunnerFailureErrorV1, type BuiltRunPlanV1, type RunInvocationV1, type RunPlanProcessUnitV1 } from './contractsV1';
+import { ArtifactCleanupErrorV1, createInvocationArtifactRootV1, deriveBundleIdV1, readVerifiedBundleRunIdsV1, verifyInvocationControlV1, verifyLifecycleSmokeArtifactsV1, verifyWrittenBundleV1, writeProcessUnitResultsV1 } from './artifacts/artifactStoreV1';
+import { RunnerFailureErrorV1, type BuiltRunPlanV1, type RunInvocationRerunOriginV1, type RunInvocationV1, type RunPlanProcessUnitV1 } from './contractsV1';
 import { CleanupGuardErrorV1 } from './process/cleanupGuardV1';
-import { verifyRunInvocationV1 } from './invocation/runInvocationV1';
+import { createRunInvocationV1, verifyRunInvocationV1 } from './invocation/runInvocationV1';
 import { parseLifecycleSmokePreflightConfigV1, runLifecycleSmokeV1 } from './live/lifecycleSmokeRunV1';
 import { encodeBuiltRunPlanV1, parseBuiltRunPlanV1, parseRunPlanInputJsonV1 } from './plan/planFileV1';
 import { buildRunPlanV1, RunPlanValidationErrorV1 } from './plan/runPlanV1';
@@ -75,7 +75,7 @@ function parseArguments(arguments_: readonly string[]): { readonly command: Comm
   const allowed = new Set(command === 'plan'
     ? ['input', 'output']
     : command === 'run'
-      ? ['plan', 'mode', 'slot-index', 'created-utc', 'output-root', 'preflight']
+      ? ['plan', 'mode', 'slot-index', 'created-utc', 'output-root', 'preflight', 'attempt', 'approval-id', 'replaces-invocation-root']
       : ['plan', 'invocation-root']);
   const values = new Map<string, string>();
   for (let index = 1; index < arguments_.length; index += 2) {
@@ -115,6 +115,60 @@ async function readCliInputV1<T>(path: string, parser: (bytes: Uint8Array) => T)
   } catch (error) {
     throw new CliInputErrorV1(`CLI input is invalid: ${error instanceof Error ? error.message : 'parse failure'}.`, { cause: error });
   }
+}
+
+function samePathV1(left: string, right: string): boolean {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+async function resolveInvocationDirectoryV1(path: string): Promise<string> {
+  if ((await lstat(path)).isSymbolicLink()) throw new TypeError('Invocation root must not be a symbolic link.');
+  const root = await realpath(path);
+  if (!(await lstat(root)).isDirectory()) throw new TypeError('Invocation root must be a real directory.');
+  return root;
+}
+
+async function readInvocationAtRootV1(root: string): Promise<RunInvocationV1> {
+  const invocation = parseCanonicalJsonV1(await readBounded(join(root, 'invocation.json'))) as unknown as RunInvocationV1;
+  if (invocation.outputRoot !== '<RESULTS>' || basename(root) !== invocation.invocationId) {
+    throw new TypeError('Invocation does not match its persisted root identity.');
+  }
+  return invocation;
+}
+
+async function readPredecessorLineageV1(
+  currentRoot: string,
+  current: RunInvocationV1,
+  plan: BuiltRunPlanV1,
+  runnerSourceSha: RunInvocationV1['runnerSourceSha'],
+): Promise<RunInvocationV1 | undefined> {
+  if (current.attempt === 0) return undefined;
+  if (!Number.isSafeInteger(current.attempt) || current.attempt < 1 || current.attempt > 1024 || current.rerunOrigin === null) {
+    throw new TypeError('Rerun invocation lineage is invalid.');
+  }
+  const expectedRoot = join(dirname(currentRoot), current.rerunOrigin.replacesInvocationId);
+  const predecessorRoot = await resolveInvocationDirectoryV1(expectedRoot);
+  if (!samePathV1(predecessorRoot, expectedRoot)) throw new TypeError('Rerun predecessor root identity is invalid.');
+  const predecessor = await readInvocationAtRootV1(predecessorRoot);
+  const earlier = await readPredecessorLineageV1(predecessorRoot, predecessor, plan, runnerSourceSha);
+  const issues = verifyRunInvocationV1(plan, predecessor, runnerSourceSha, earlier);
+  if (issues.length > 0) throw new TypeError(`Rerun predecessor verification failed: ${issues.join('; ')}`);
+  await assertPredecessorTerminalV1(predecessorRoot, plan, predecessor);
+  return predecessor;
+}
+
+async function assertPredecessorTerminalV1(
+  root: string,
+  plan: BuiltRunPlanV1,
+  invocation: RunInvocationV1,
+): Promise<void> {
+  const rawResults = parseCanonicalJsonV1(await readBounded(join(root, 'process-unit-results.json')));
+  if (!Array.isArray(rawResults)) throw new TypeError('Rerun predecessor process-unit results must be an array.');
+  const ledger = new ProcessUnitResultLedgerV1(plan, invocation);
+  for (const result of rawResults) ledger.record(parseProcessUnitResultV1(result));
+  const results = ledger.finalize();
+  const issues = await verifyInvocationControlV1(root, plan, invocation, results);
+  if (issues.length > 0) throw new TypeError(`Rerun predecessor terminal control is invalid: ${issues.join('; ')}`);
 }
 
 async function resolveRepositoryRootV1(cwd: string): Promise<string> {
@@ -227,8 +281,9 @@ export function assertBundleDocumentBindingsV1(
         || run.execution.runPlanSha256 !== plan.runPlanSha256
         || run.execution.processContainer !== unit.processContainer
         || run.execution.processOrdinal !== unit.processOrdinal
-        || run.execution.iteration !== expectedRun.runOrdinal
-        || run.execution.order.scheme !== expectedScheme
+         || run.execution.iteration !== expectedRun.runOrdinal
+         || !canonicalBytesEqualV1(run.execution.origin, expectedRun.origin)
+         || run.execution.order.scheme !== expectedScheme
         || run.execution.order.orderSeed !== plan.core.orderSeed
         || run.execution.order.blockId !== unit.balanceBlockId
         || run.execution.order.sequencePosition !== unit.sequencePosition
@@ -318,7 +373,18 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
   if (unit === undefined || unit.processContainer !== 'cold' || unit.processOrdinal !== 0) {
     throw new CliInputErrorV1('slot-index must select the first cold process of a candidate cell.');
   }
-  assertRunModeCompatibilityV1(mode, plan, unit);
+  const attemptValue = values.get('attempt') ?? '0';
+  if (!/^(0|[1-9][0-9]*)$/.test(attemptValue) || !Number.isSafeInteger(Number(attemptValue))) {
+    throw new CliInputErrorV1('attempt must be a canonical non-negative safe integer.');
+  }
+  const attempt = Number(attemptValue);
+  if (attempt > 1024) throw new CliInputErrorV1('attempt must not exceed 1024.');
+  const approvalId = values.get('approval-id');
+  const predecessorPath = values.get('replaces-invocation-root');
+  if ((attempt === 0 && (approvalId !== undefined || predecessorPath !== undefined))
+    || (attempt > 0 && (approvalId === undefined || predecessorPath === undefined))) {
+    throw new CliInputErrorV1('Reruns require --attempt, --approval-id and --replaces-invocation-root together; attempt 0 accepts none of them.');
+  }
   const createdUtc = values.get('created-utc')!;
   const createdDate = new Date(createdUtc);
   if (!Number.isFinite(createdDate.getTime()) || createdDate.toISOString() !== createdUtc) {
@@ -326,6 +392,28 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
   }
   const projectRoot = await resolveRepositoryRootV1(process.cwd());
   const authority = await createRunnerAuthorityV1(projectRoot, plan.core.expectedSourceCommitSha);
+  let predecessorInvocation: RunInvocationV1 | undefined;
+  let rerunOrigin: RunInvocationRerunOriginV1 | undefined;
+  if (attempt > 0) {
+    let predecessorRoot: string;
+    try {
+      predecessorRoot = await resolveInvocationDirectoryV1(predecessorPath!);
+      const resultsRoot = await realpath(values.get('output-root')!);
+      if (!samePathV1(dirname(predecessorRoot), resultsRoot)) throw new TypeError('Rerun predecessor must be a direct child of the selected results root.');
+      predecessorInvocation = await readInvocationAtRootV1(predecessorRoot);
+      const earlier = await readPredecessorLineageV1(predecessorRoot, predecessorInvocation, plan, authority.runnerSourceSha);
+      const predecessorIssues = verifyRunInvocationV1(plan, predecessorInvocation, authority.runnerSourceSha, earlier);
+      if (predecessorIssues.length > 0) throw new TypeError(predecessorIssues.join('; '));
+      await assertPredecessorTerminalV1(predecessorRoot, plan, predecessorInvocation);
+    } catch (error) {
+      throw new CliInputErrorV1(`Rerun predecessor is invalid: ${error instanceof Error ? error.message : 'invalid predecessor'}.`, { cause: error });
+    }
+    rerunOrigin = {
+      reason: 'infrastructure-failure',
+      replacesInvocationId: predecessorInvocation.invocationId,
+      approvalId: approvalId as CanonicalIdV1,
+    };
+  }
   const common = {
     plan,
     slotIndex,
@@ -333,7 +421,46 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
     outputRoot: values.get('output-root')!,
     projectRoot,
     runnerAuthority: authority,
+    attempt,
+    rerunOrigin,
+    predecessorInvocation,
   };
+  if (mode === 'lifecycle-smoke-v1') {
+    let route: ReturnType<typeof resolveScenarioRouteV1>;
+    try {
+      route = resolveScenarioRouteV1(unit.scenarioId, unit.scenarioParameters);
+    } catch (error) {
+      throw new CliInputErrorV1(`Lifecycle-smoke slot parameters are invalid: ${error instanceof Error ? error.message : 'invalid route'}.`, { cause: error });
+    }
+    if (route.status === 'unavailable') {
+      const invocation = createRunInvocationV1(plan, {
+        createdUtc,
+        outputRoot: values.get('output-root')!,
+        attempt,
+        rerunOrigin,
+        predecessorInvocation,
+        selectedSlotIds: [unit.ids.slotId],
+        runnerSourceSha: authority.runnerSourceSha,
+      });
+      const invocationRoot = await createInvocationArtifactRootV1(values.get('output-root')!, projectRoot, plan, invocation);
+      const ledger = new ProcessUnitResultLedgerV1(plan, invocation);
+      ledger.record({
+        schemaVersion: 'br03-process-unit-result-v1',
+        slotId: unit.ids.slotId,
+        browserProcessId: unit.ids.browserProcessId,
+        disposition: 'unsupported',
+        failureClass: 'unsupported',
+        failureCode: 'scenario-unavailable',
+        runIds: [],
+      });
+      const results = ledger.finalize();
+      await writeProcessUnitResultsV1(invocationRoot, results);
+      output({ status: 'completed', mode, invocationId: invocation.invocationId, invocationRoot, disposition: 'unsupported' });
+      process.exitCode = 7;
+      return;
+    }
+  }
+  assertRunModeCompatibilityV1(mode, plan, unit);
   const result = mode === 'synthetic-contract-v1'
     ? await runSyntheticContractV1({ ...common, preflight: await readCliInputV1(values.get('preflight')!, parseSyntheticContractPreflightConfigV1) })
     : await runLifecycleSmokeV1({ ...common, preflight: await readCliInputV1(values.get('preflight')!, parseLifecycleSmokePreflightConfigV1) });
@@ -347,10 +474,7 @@ async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void>
   const authority = await createRunnerAuthorityV1(projectRoot, plan.core.expectedSourceCommitSha);
   let invocationRoot: string;
   try {
-    const suppliedInvocationRoot = values.get('invocation-root')!;
-    if ((await lstat(suppliedInvocationRoot)).isSymbolicLink()) throw new Error('Invocation root must not be a symbolic link.');
-    invocationRoot = await realpath(suppliedInvocationRoot);
-    if (!(await lstat(invocationRoot)).isDirectory()) throw new Error('Invocation root must be a real directory.');
+    invocationRoot = await resolveInvocationDirectoryV1(values.get('invocation-root')!);
   } catch (error) {
     throw new CliInputErrorV1(`CLI invocation input is invalid: ${error instanceof Error ? error.message : 'invalid invocation root'}.`, { cause: error });
   }
@@ -359,9 +483,9 @@ async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void>
   if (rootEntries.length !== expectedRootEntries.size || rootEntries.some((entry) => !expectedRootEntries.has(entry.name) || entry.isSymbolicLink())) {
     throw new TypeError('Invocation root contains missing or unexpected entries.');
   }
-  const invocation = parseCanonicalJsonV1(await readBounded(join(invocationRoot, 'invocation.json'))) as unknown as RunInvocationV1;
-  if (invocation.outputRoot !== '<RESULTS>') throw new TypeError('Persisted invocation output root is not redacted.');
-  const invocationIssues = verifyRunInvocationV1(plan, invocation, authority.runnerSourceSha);
+  const invocation = await readInvocationAtRootV1(invocationRoot);
+  const predecessor = await readPredecessorLineageV1(invocationRoot, invocation, plan, authority.runnerSourceSha);
+  const invocationIssues = verifyRunInvocationV1(plan, invocation, authority.runnerSourceSha, predecessor);
   if (invocationIssues.length > 0 || basename(invocationRoot) !== invocation.invocationId) throw new TypeError('Invocation does not match its plan or root identity.');
   const rawResults = parseCanonicalJsonV1(await readBounded(join(invocationRoot, 'process-unit-results.json')));
   if (!Array.isArray(rawResults)) throw new TypeError('Process-unit results must be an array.');

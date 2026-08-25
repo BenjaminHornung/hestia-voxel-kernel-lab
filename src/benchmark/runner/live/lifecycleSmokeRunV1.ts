@@ -33,7 +33,7 @@ import {
   writeProcessUnitResultsV1,
 } from '../artifacts/artifactStoreV1';
 import { Br02HandoffDriverErrorV1, runBr02HandoffV1 } from '../browser/br02HandoffDriverV1';
-import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitFailureCodeV1, type ProcessUnitResultV1 } from '../contractsV1';
+import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitFailureCodeV1, type ProcessUnitResultV1, type RunInvocationRerunOriginV1, type RunInvocationV1 } from '../contractsV1';
 import { collectEnvironmentV1 } from '../environment/environmentCollectorV1';
 import { deriveHardwareCellIdV1 } from '../ids/orchestrationIdsV1';
 import { createRunInvocationV1 } from '../invocation/runInvocationV1';
@@ -92,6 +92,9 @@ export interface LifecycleSmokeRunOptionsV1 {
   readonly projectRoot: string;
   readonly preflight: LifecycleSmokePreflightConfigV1;
   readonly runnerAuthority: RunnerAuthorityV1;
+  readonly attempt?: number;
+  readonly rerunOrigin?: RunInvocationRerunOriginV1;
+  readonly predecessorInvocation?: RunInvocationV1;
 }
 
 export interface LifecycleSmokeRunResultV1 {
@@ -196,7 +199,15 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
   if (unit === undefined || unit.processContainer !== 'cold' || unit.processOrdinal !== 0) {
     throw new TypeError('Lifecycle-smoke mode supports the first cold process of one candidate cell.');
   }
-  const invocation = createRunInvocationV1(options.plan, { createdUtc: options.createdUtc, outputRoot: options.outputRoot, selectedSlotIds: [unit.ids.slotId], runnerSourceSha: options.runnerAuthority.runnerSourceSha });
+  const invocation = createRunInvocationV1(options.plan, {
+    createdUtc: options.createdUtc,
+    outputRoot: options.outputRoot,
+    attempt: options.attempt,
+    rerunOrigin: options.rerunOrigin,
+    predecessorInvocation: options.predecessorInvocation,
+    selectedSlotIds: [unit.ids.slotId],
+    runnerSourceSha: options.runnerAuthority.runnerSourceSha,
+  });
   const invocationUnit = invocation.processUnits.find(({ slotId }) => slotId === unit.ids.slotId)!;
   const plannedRun = invocationUnit.runs[0]!;
   let stage: ProcessUnitFailureCodeV1 = 'source-preflight-rejected';
@@ -621,7 +632,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     environment: environment.manifest,
     telemetryExport: handoff.telemetryExport,
     pageState: { visibility: runtime.visibility, focus: runtime.focused ? 'focused' : 'unfocused', backgroundTabs: ownedBrowser.context.pages().length - 1 },
-    origin: { kind: 'planned' },
+    origin: plannedRun.origin,
      measurementEligibilityReasons: [{ code: 'environment-incomplete', detail: environmentReasonDetail, phase: plannedRun.phase }],
     telemetryAdapter,
   });

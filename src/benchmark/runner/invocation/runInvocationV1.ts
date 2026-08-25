@@ -23,6 +23,7 @@ export interface CreateRunInvocationOptionsV1 {
   readonly outputRoot: string;
   readonly attempt?: number;
   readonly rerunOrigin?: RunInvocationRerunOriginV1;
+  readonly predecessorInvocation?: RunInvocationV1;
   readonly selectedSlotIds?: readonly CanonicalIdV1[];
   readonly runnerSourceSha: Sha256DigestV1;
 }
@@ -35,7 +36,10 @@ function assertInvocationOptions(options: CreateRunInvocationOptionsV1): void {
   if (options.outputRoot.length === 0 || options.outputRoot.includes('\0')) throw new TypeError('outputRoot must be non-empty.');
   if (!SHA256_DIGEST.test(options.runnerSourceSha) || /^sha256:0{64}$/.test(options.runnerSourceSha)) throw new TypeError('runnerSourceSha must identify a non-empty runner executable.');
   if (attempt === 0 && options.rerunOrigin !== undefined) throw new TypeError('Initial invocations cannot declare rerun metadata.');
-  if (attempt > 0 && options.rerunOrigin === undefined) throw new TypeError('Reruns require explicit approval metadata.');
+  if (attempt === 0 && options.predecessorInvocation !== undefined) throw new TypeError('Initial invocations cannot declare a predecessor.');
+  if (attempt > 0 && (options.rerunOrigin === undefined || options.predecessorInvocation === undefined)) {
+    throw new TypeError('Reruns require explicit approval metadata and an existing predecessor invocation.');
+  }
   if (options.rerunOrigin !== undefined
     && (!CANONICAL_ID.test(options.rerunOrigin.approvalId) || !CANONICAL_ID.test(options.rerunOrigin.replacesInvocationId))) {
     throw new TypeError('Rerun approval IDs must be canonical IDs.');
@@ -43,13 +47,30 @@ function assertInvocationOptions(options: CreateRunInvocationOptionsV1): void {
 }
 
 function runShapes(unit: RunPlanProcessUnitV1): readonly { readonly phase: PlannedInvocationRunV1['phase']; readonly iterations: number }[] {
-  if (unit.processContainer === 'warm-measurement') {
-    return [
-      ...Array.from({ length: BENCHMARK_WARMUP_RULE_V1.maximumWarmupIterations }, () => ({ phase: 'warmup' as const, iterations: 1 })),
-      { phase: 'measurement', iterations: unit.measurementIterations },
-    ];
-  }
+  if (unit.processContainer === 'warm-measurement') return [];
   return [{ phase: unit.processContainer, iterations: unit.measurementIterations }];
+}
+
+function sameIds(left: readonly CanonicalIdV1[], right: readonly CanonicalIdV1[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function assertRerunLineage(
+  plan: BuiltRunPlanV1,
+  attempt: number,
+  selectedSlotIds: readonly CanonicalIdV1[],
+  options: CreateRunInvocationOptionsV1,
+): void {
+  if (attempt === 0) return;
+  const predecessor = options.predecessorInvocation!;
+  const origin = options.rerunOrigin!;
+  if (predecessor.invocationId !== origin.replacesInvocationId
+    || predecessor.runPlanId !== plan.runPlanId
+    || predecessor.runPlanSha256 !== plan.runPlanSha256
+    || predecessor.attempt !== attempt - 1
+    || !sameIds(predecessor.selectedSlotIds, selectedSlotIds)) {
+    throw new TypeError('Rerun predecessor must bind the same plan and selected slots at the exact prior attempt.');
+  }
 }
 
 export function createRunInvocationV1(
@@ -68,20 +89,30 @@ export function createRunInvocationV1(
   }
   const selected = new Set(selectedSlotIds);
   const selectedUnits = plan.core.processUnits.filter(({ ids }) => selected.has(ids.slotId));
-  const invocationId = idFromDigestV1('br03-invocation-', hashCanonicalV1('br03/invocation/v1', {
-    attempt,
-    createdUtc: options.createdUtc,
-    rerunOrigin,
-    runnerSourceSha,
-    selectedSlotIds: selectedUnits.map(({ ids }) => ids.slotId),
-    runPlanSha256: plan.runPlanSha256,
-  }));
+  const canonicalSelectedSlotIds = selectedUnits.map(({ ids }) => ids.slotId);
+  assertRerunLineage(plan, attempt, canonicalSelectedSlotIds, options);
+  const invocationId = idFromDigestV1('br03-invocation-', hashCanonicalV1('br03/invocation/v1', attempt === 0
+    ? { attempt, selectedSlotIds: canonicalSelectedSlotIds, runPlanSha256: plan.runPlanSha256 }
+    : {
+      approvalId: rerunOrigin!.approvalId,
+      attempt,
+      replacesInvocationId: rerunOrigin!.replacesInvocationId,
+      selectedSlotIds: canonicalSelectedSlotIds,
+      runPlanSha256: plan.runPlanSha256,
+    }));
   const runIds = new Set<string>();
   const iterationIds = new Set<string>();
-  const processUnits = selectedUnits.map((unit) => ({
-    slotId: unit.ids.slotId,
-    browserProcessId: unit.ids.browserProcessId,
-    runs: runShapes(unit).map(({ phase, iterations }, runOrdinal) => {
+  const processUnits = selectedUnits.map((unit) => {
+    const predecessorUnit = options.predecessorInvocation?.processUnits.find(({ slotId }) => slotId === unit.ids.slotId);
+    return {
+      slotId: unit.ids.slotId,
+      browserProcessId: unit.ids.browserProcessId,
+      adaptiveWarmup: unit.processContainer === 'warm-measurement' ? {
+        schemaVersion: 'br03-adaptive-warmup-schedule-v1' as const,
+        maximumWarmupRuns: BENCHMARK_WARMUP_RULE_V1.maximumWarmupIterations,
+        measurementIterations: unit.measurementIterations,
+      } : null,
+      runs: runShapes(unit).map(({ phase, iterations }, runOrdinal) => {
       const runId = deriveInvocationRunIdV1(invocationId, plan.runPlanSha256, unit.ids.slotId, runOrdinal, attempt);
       if (runIds.has(runId)) throw new Error('Digest collision in invocation run IDs.');
       runIds.add(runId);
@@ -91,9 +122,23 @@ export function createRunInvocationV1(
         iterationIds.add(iterationId);
         return iterationId;
       });
-      return { runOrdinal, runId, phase, iterationIds: plannedIterationIds };
-    }),
-  }));
+        const previousRun = predecessorUnit?.runs.find((run) => run.runOrdinal === runOrdinal && run.phase === phase);
+        if (attempt > 0 && previousRun === undefined) throw new TypeError('Rerun predecessor is missing the replaced planned run.');
+        return {
+          runOrdinal,
+          runId,
+          phase,
+          iterationIds: plannedIterationIds,
+          origin: previousRun === undefined ? { kind: 'planned' as const } : {
+            kind: 'infrastructure-rerun' as const,
+            replacesRunId: previousRun.runId,
+            approvalId: rerunOrigin!.approvalId,
+            reason: 'infrastructure-failure' as const,
+          },
+        };
+      }),
+    };
+  });
   return {
     schemaVersion: 'br03-run-invocation-v1',
     invocationId,
@@ -104,12 +149,17 @@ export function createRunInvocationV1(
     outputRoot: options.outputRoot,
     attempt,
     rerunOrigin,
-    selectedSlotIds: selectedUnits.map(({ ids }) => ids.slotId),
+    selectedSlotIds: canonicalSelectedSlotIds,
     processUnits,
   };
 }
 
-export function verifyRunInvocationV1(plan: BuiltRunPlanV1, invocation: RunInvocationV1, runnerSourceSha: Sha256DigestV1): readonly string[] {
+export function verifyRunInvocationV1(
+  plan: BuiltRunPlanV1,
+  invocation: RunInvocationV1,
+  runnerSourceSha: Sha256DigestV1,
+  predecessorInvocation?: RunInvocationV1,
+): readonly string[] {
   if (invocation.runnerSourceSha !== runnerSourceSha) return ['Invocation runner source digest does not match the executing runner.'];
   let expected: RunInvocationV1;
   try {
@@ -118,6 +168,7 @@ export function verifyRunInvocationV1(plan: BuiltRunPlanV1, invocation: RunInvoc
       outputRoot: invocation.outputRoot,
       attempt: invocation.attempt,
       rerunOrigin: invocation.rerunOrigin ?? undefined,
+      predecessorInvocation,
       selectedSlotIds: invocation.selectedSlotIds,
       runnerSourceSha,
     });

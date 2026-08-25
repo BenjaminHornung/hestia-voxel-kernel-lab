@@ -22,6 +22,8 @@
       "sourceFileSetSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     }
   ],
+  "comparisonMode": "reference-paired",
+  "referenceCandidateId": "synthetic-a",
   "scenarios": [
     {
       "id": "backend-fixture-v1",

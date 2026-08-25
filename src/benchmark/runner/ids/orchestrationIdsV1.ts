@@ -88,3 +88,16 @@ export function deriveInvocationIterationIdV1(
     runId,
   }));
 }
+
+export function deriveInvocationSampleIdV1(
+  runId: CanonicalIdV1,
+  iterationId: CanonicalIdV1,
+  sourceSampleId: CanonicalIdV1,
+  hash: HashCanonicalV1 = hashCanonicalV1,
+): CanonicalIdV1 {
+  return idFromDigestV1('br03-sample-', hash('br03/invocation-sample/v1', {
+    iterationId,
+    runId,
+    sourceSampleId,
+  }));
+}
