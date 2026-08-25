@@ -30,7 +30,7 @@ export interface CreateRunInvocationOptionsV1 {
 
 function assertInvocationOptions(options: CreateRunInvocationOptionsV1): void {
   const attempt = options.attempt ?? 0;
-  if (!Number.isSafeInteger(attempt) || attempt < 0) throw new RangeError('Invocation attempt must be a non-negative safe integer.');
+  if (!Number.isSafeInteger(attempt) || attempt < 0 || attempt > 1024) throw new RangeError('Invocation attempt must be a non-negative safe integer no greater than 1024.');
   const createdDate = new Date(options.createdUtc);
   if (!Number.isFinite(createdDate.getTime()) || createdDate.toISOString() !== options.createdUtc) throw new TypeError('createdUtc must be a canonical UTC timestamp.');
   if (options.outputRoot.length === 0 || options.outputRoot.includes('\0')) throw new TypeError('outputRoot must be non-empty.');

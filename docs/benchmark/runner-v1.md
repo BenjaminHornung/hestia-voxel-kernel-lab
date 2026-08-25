@@ -91,6 +91,8 @@ Cold slots use a fresh process and profile. Warm-measurement plans allow a deter
 
 Warm-measurement invocation units do not predeclare 50 phantom runs. `AdaptiveWarmupControllerV1` allocates one warmup run and its iteration/sample identities only when execution starts, accepts exactly one BR02-adapted control sample, and calls BR01 `recomputeWarmupStabilityV1` after each completion. It allocates measurement only at the first accepted stable boundary, retains exact evidence, and becomes invalid without a measurement at 50. Only allocated runs belong in terminal results and BR01 documents.
 
+No current BR03 ScenarioDriver reaches this adaptive path. Before a future driver enables it, F2 must wire the controller's executed-run IDs into both ledger construction and CLI verification, persist its warmup evidence, and bind the exact sample IDs into the assembled BR01 runs. Until then, warm-measurement data is neither fabricated nor treated as a valid result.
+
 ## Artifacts
 
 Each invocation root is created exclusively under `.benchmark-results/<invocation-id>/` and contains canonical plan, invocation and terminal process-unit results plus closed bundle and lifecycle-smoke directories. Files are written with create-new semantics. Paths are confined to the invocation root.

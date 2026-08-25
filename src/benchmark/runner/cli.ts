@@ -18,6 +18,7 @@ import { runNoReplaceGitV1 } from './provenance/gitCommandV1';
 import { assertWp04SyntheticRouteV1, resolveScenarioRouteV1 } from './scenarios/scenarioDriverRegistryV1';
 
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
+const CANONICAL_ID_V1 = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
 type CommandV1 = 'plan' | 'run' | 'verify';
 export type RunnerExitCodeV1 = 0 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
@@ -146,6 +147,7 @@ async function readPredecessorLineageV1(
   if (!Number.isSafeInteger(current.attempt) || current.attempt < 1 || current.attempt > 1024 || current.rerunOrigin === null) {
     throw new TypeError('Rerun invocation lineage is invalid.');
   }
+  if (!CANONICAL_ID_V1.test(current.rerunOrigin.replacesInvocationId)) throw new TypeError('Rerun predecessor ID is not canonical.');
   const expectedRoot = join(dirname(currentRoot), current.rerunOrigin.replacesInvocationId);
   const predecessorRoot = await resolveInvocationDirectoryV1(expectedRoot);
   if (!samePathV1(predecessorRoot, expectedRoot)) throw new TypeError('Rerun predecessor root identity is invalid.');
@@ -380,6 +382,7 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
   const attempt = Number(attemptValue);
   if (attempt > 1024) throw new CliInputErrorV1('attempt must not exceed 1024.');
   const approvalId = values.get('approval-id');
+  if (approvalId !== undefined && !CANONICAL_ID_V1.test(approvalId)) throw new CliInputErrorV1('approval-id must be a canonical ID.');
   const predecessorPath = values.get('replaces-invocation-root');
   if ((attempt === 0 && (approvalId !== undefined || predecessorPath !== undefined))
     || (attempt > 0 && (approvalId === undefined || predecessorPath === undefined))) {

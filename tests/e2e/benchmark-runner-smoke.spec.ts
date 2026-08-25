@@ -234,7 +234,7 @@ test('runs the clean built CLI through a real WP04 diagnostic receipt and reject
     })),
   }));
   const lifecycleOutcome = runNodeOutcome(repositoryRoot, [
-    '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'lifecycle-smoke-v1', '--slot-index', '0',
+    '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'lifecycle-smoke-v1', '--slot-index', '1',
     '--created-utc', '2026-08-24T18:00:30.000Z', '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', lifecyclePreflightPath,
   ]);
   expect(lifecycleOutcome.status).toBe(7);
@@ -251,9 +251,10 @@ test('runs the clean built CLI through a real WP04 diagnostic receipt and reject
   const poisonedRun = withPoisonedGitEnvironment(() => {
     const run = runNodeOutcome(repositoryRoot, [
       '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'synthetic-contract-v1', '--slot-index', '0',
-      '--created-utc', '2026-08-24T18:00:45.000Z', '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', preflightPath,
+      '--created-utc', '2026-08-24T18:00:45.000Z', '--attempt', '1', '--approval-id', 'poison-approval', '--replaces-invocation-root', runResult.invocationRoot,
+      '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', preflightPath,
     ]);
-    const verify = JSON.parse(runNode(repositoryRoot, ['.benchmark-runner/runner.mjs', 'verify', '--plan', planPath, '--invocation-root', runResult.invocationRoot]));
+    const verify = JSON.parse(runNode(repositoryRoot, ['.benchmark-runner/runner.mjs', 'verify', '--plan', planPath, '--invocation-root', JSON.parse(run.stdout).invocationRoot]));
     return { run, verify };
   });
   expect(poisonedRun.run.status).toBe(0);

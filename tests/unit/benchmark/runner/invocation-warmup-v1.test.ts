@@ -10,6 +10,7 @@ import { createRunInvocationV1, verifyRunInvocationV1 } from '../../../../src/be
 import { buildRunPlanV1 } from '../../../../src/benchmark/runner/plan/runPlanV1';
 import {
   AdaptiveWarmupControllerV1,
+  bindAdaptiveWarmupControlSampleV1,
   WarmupControllerV1,
   type AdaptedWarmupControlSampleV1,
   type WarmupControlSampleV1,
@@ -142,14 +143,14 @@ function adaptControlSample(
   expect(adapted.invalidReasons).toEqual([]);
   const sample = adapted.samples.find(({ metricRef }) => metricRef === 'chunk.mesh.cpu.ms@1');
   if (sample?.result.status !== 'valid') throw new Error('Expected one valid BR02-adapted warmup control sample.');
-  return {
-    sampleId: id(`bound-${run.runId}`),
+  return bindAdaptiveWarmupControlSampleV1({
+    sampleId: sample.sampleId,
     runId: run.runId,
     iterationId,
     metricRef: sample.metricRef,
     ordinal: sample.ordinal,
     result: sample.result,
-  };
+  }, run.runId, iterationId);
 }
 
 describe('BR03 adaptive warmup controller v1', () => {

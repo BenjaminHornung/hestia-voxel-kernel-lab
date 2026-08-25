@@ -219,6 +219,8 @@ describe('BR03 run plan v1', () => {
       buildRunPlanV1({ ...input, phases: { ...input.phases, cold: { ...input.phases.cold, extra: true } as never } }),
     ];
     for (const plan of forged) expect(() => parseBuiltRunPlanV1(encodeBuiltRunPlanV1(plan))).toThrow(/must be boolean|missing or unknown fields/);
+    const invalidComparison = { ...buildRunPlanV1(input), core: { ...buildRunPlanV1(input).core, comparisonMode: 'banana' as never } };
+    expect(() => parseBuiltRunPlanV1(encodeBuiltRunPlanV1(invalidComparison))).toThrow(/comparisonMode is invalid/);
   });
 
   it('rejects duplicate keys before plan input values are interpreted', () => {

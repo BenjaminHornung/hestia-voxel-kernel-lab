@@ -4,6 +4,7 @@ import type { BuiltRunPlanV1, RunPlanCoreV1, RunPlanInputV1 } from '../contracts
 import { verifyBuiltRunPlanV1 } from './runPlanV1';
 
 type JsonObjectV1 = Record<string, unknown>;
+const CANONICAL_ID_V1 = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
 function object(value: unknown, label: string): JsonObjectV1 {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${label} must be an object.`);
@@ -74,6 +75,10 @@ export function parseRunPlanInputJsonV1(bytes: Uint8Array): RunPlanInputV1 {
   const phases = closed(input.phases, ['cold', 'warmMeasurement', 'stress', 'trace', 'leak'], '$.phases');
   const warm = closed(phases.warmMeasurement, ['enabled', 'minimumProcessesPerCandidate', 'measurementIterationsPerProcess'], '$.phases.warmMeasurement');
   if (input.retryPolicy !== 'none') throw new TypeError('retryPolicy must be none.');
+  const comparisonMode = string(input.comparisonMode, '$.comparisonMode');
+  if (comparisonMode !== 'reference-paired' && comparisonMode !== 'unpaired-only') throw new TypeError('comparisonMode is invalid.');
+  const referenceCandidateId = input.referenceCandidateId === null ? null : string(input.referenceCandidateId, '$.referenceCandidateId');
+  if (referenceCandidateId !== null && !CANONICAL_ID_V1.test(referenceCandidateId)) throw new TypeError('referenceCandidateId must be a canonical ID.');
   return {
     expectedSourceCommitSha: string(input.expectedSourceCommitSha, '$.expectedSourceCommitSha') as RunPlanInputV1['expectedSourceCommitSha'],
     expectedBuildSha256: string(input.expectedBuildSha256, '$.expectedBuildSha256') as RunPlanInputV1['expectedBuildSha256'],
@@ -88,10 +93,8 @@ export function parseRunPlanInputJsonV1(bytes: Uint8Array): RunPlanInputV1 {
       requestedArgs: array(browser.requestedArgs, '$.browser.requestedArgs').map((argument, index) => string(argument, `$.browser.requestedArgs[${index}]`)),
     },
     orderSeed: finiteNumber(input.orderSeed, '$.orderSeed'),
-    comparisonMode: string(input.comparisonMode, '$.comparisonMode') as RunPlanInputV1['comparisonMode'],
-    referenceCandidateId: input.referenceCandidateId === null
-      ? null
-      : string(input.referenceCandidateId, '$.referenceCandidateId') as RunPlanInputV1['referenceCandidateId'],
+    comparisonMode: comparisonMode as RunPlanInputV1['comparisonMode'],
+    referenceCandidateId: referenceCandidateId as RunPlanInputV1['referenceCandidateId'],
     candidates: candidates as unknown as RunPlanInputV1['candidates'],
     scenarios: scenarios as unknown as RunPlanInputV1['scenarios'],
     phases: {

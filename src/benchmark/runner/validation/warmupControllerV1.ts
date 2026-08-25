@@ -12,6 +12,7 @@ import type { PlannedInvocationRunV1, RunInvocationV1, RunPlanProcessUnitV1 } fr
 import {
   deriveInvocationIterationIdV1,
   deriveInvocationRunIdV1,
+  deriveInvocationSampleIdV1,
 } from '../ids/orchestrationIdsV1';
 
 export type WarmupControlSampleV1 = BenchmarkWarmMeasurementEvidenceV1['controlSamples'][number];
@@ -107,6 +108,15 @@ export interface AdaptedWarmupControlSampleV1 {
   readonly result: { readonly status: 'valid'; readonly value: number };
 }
 
+export function bindAdaptiveWarmupControlSampleV1(
+  sample: AdaptedWarmupControlSampleV1,
+  runId: CanonicalIdV1,
+  iterationId: CanonicalIdV1,
+): AdaptedWarmupControlSampleV1 {
+  if (sample.runId !== runId || sample.iterationId !== iterationId) throw new TypeError('Warmup sample binding does not match its run and iteration.');
+  return { ...sample, sampleId: deriveInvocationSampleIdV1(runId, iterationId, sample.sampleId) };
+}
+
 export interface CompletedAdaptiveWarmupRunV1 {
   readonly run: PlannedInvocationRunV1;
   readonly boundSampleId: CanonicalIdV1;
@@ -141,7 +151,9 @@ export class AdaptiveWarmupControllerV1 {
 
   readonly #origin = (phase: PlannedInvocationRunV1['phase'], runOrdinal: number): PlannedInvocationRunV1['origin'] => {
     if (this.options.invocation.attempt === 0) return { kind: 'planned' };
-    const predecessor = this.options.predecessorRuns?.find((run) => run.runOrdinal === runOrdinal && run.phase === phase);
+    const predecessor = phase === 'measurement'
+      ? this.options.predecessorRuns?.find((run) => run.phase === 'measurement')
+      : this.options.predecessorRuns?.filter((run) => run.phase === 'warmup')[runOrdinal];
     const approvalId = this.options.invocation.rerunOrigin?.approvalId;
     if (predecessor === undefined || approvalId === undefined) throw new TypeError('Adaptive rerun is missing its exact predecessor run.');
     return { kind: 'infrastructure-rerun', replacesRunId: predecessor.runId, approvalId, reason: 'infrastructure-failure' };
@@ -178,6 +190,7 @@ export class AdaptiveWarmupControllerV1 {
     if (sample.runId !== run.runId || sample.iterationId !== run.iterationIds[0] || sample.metricRef !== this.#controller.controlMetricRef) {
       throw new TypeError('Adapted warmup control sample is not bound to the pending run, iteration, or metric.');
     }
+    if (sample.result.status !== 'valid') throw new TypeError('Adapted warmup control sample must be valid.');
     if (!Number.isSafeInteger(sample.ordinal) || sample.ordinal < 0 || !Number.isFinite(sample.result.value)
       || sample.result.value < 0 || Object.is(sample.result.value, -0)) {
       throw new TypeError('Adapted warmup control sample is invalid.');
