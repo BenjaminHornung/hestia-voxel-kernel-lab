@@ -196,7 +196,8 @@ export class AdaptiveWarmupControllerV1 {
       throw new TypeError('Adapted warmup control sample is invalid.');
     }
     const iterationId = run.iterationIds[0]!;
-    const boundSampleId = sample.sampleId;
+    const boundSample = bindAdaptiveWarmupControlSampleV1(sample, run.runId, iterationId);
+    const boundSampleId = boundSample.sampleId;
     const controlSample: WarmupControlSampleV1 = {
       sampleId: boundSampleId,
       runId: run.runId,

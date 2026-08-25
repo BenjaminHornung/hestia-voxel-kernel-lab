@@ -248,6 +248,23 @@ test('runs the clean built CLI through a real WP04 diagnostic receipt and reject
   expect((await readFile(join(lifecycleResult.artifactRoot, 'telemetry-export.json'))).byteLength).toBeGreaterThan(0);
   await expect(readdir(join(dirname(lifecycleResult.invocationRoot), '.profiles', lifecycleResult.invocationId))).rejects.toThrow();
 
+  const duplicateAttempt = runNodeOutcome(repositoryRoot, [
+    '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'synthetic-contract-v1', '--slot-index', '0',
+    '--created-utc', '2026-08-24T18:00:15.000Z', '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', preflightPath,
+  ]);
+  expect(duplicateAttempt.status).toBe(4);
+  expect(JSON.parse(runNode(repositoryRoot, ['.benchmark-runner/runner.mjs', 'verify', '--plan', planPath, '--invocation-root', runResult.invocationRoot])).status).toBe('verified');
+
+  expect(runNodeOutcome(repositoryRoot, [
+    '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'synthetic-contract-v1', '--slot-index', '0',
+    '--attempt', '1', '--created-utc', '2026-08-24T18:00:20.000Z', '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', preflightPath,
+  ]).status).toBe(2);
+  expect(runNodeOutcome(repositoryRoot, [
+    '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'synthetic-contract-v1', '--slot-index', '0',
+    '--attempt', '1025', '--approval-id', 'approval', '--replaces-invocation-root', runResult.invocationRoot, '--created-utc', '2026-08-24T18:00:25.000Z',
+    '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', preflightPath,
+  ]).status).toBe(2);
+
   const poisonedRun = withPoisonedGitEnvironment(() => {
     const run = runNodeOutcome(repositoryRoot, [
       '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'synthetic-contract-v1', '--slot-index', '0',
