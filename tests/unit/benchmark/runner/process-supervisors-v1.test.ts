@@ -40,6 +40,58 @@ describe('BR03 cleanup and preview supervision v1', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it('removes only SIGTERM listeners installed by the preview factory', async () => {
+    const before = process.rawListeners('SIGTERM');
+    const stdinBefore = process.stdin.rawListeners('end');
+    const existing = vi.fn();
+    const existingStdin = vi.fn();
+    function parentSigtermCallback() {}
+    const unrelated = vi.fn();
+    process.on('SIGTERM', existing);
+    process.stdin.on('end', existingStdin);
+    const close = vi.fn((callback: (error?: Error) => void) => callback());
+    const factory: PreviewFactoryV1 = async () => {
+      process.once('SIGTERM', parentSigtermCallback);
+      process.stdin.on('end', parentSigtermCallback);
+      process.on('SIGTERM', unrelated);
+      return { httpServer: { address: () => ({ port: 43210 }), close, on: () => undefined } };
+    };
+    try {
+      const handle = await startPreviewServerV1(
+        { projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256: sha256BytesV1(new TextEncoder().encode('ok')) },
+        factory,
+        vi.fn(async () => new Response('ok')) as unknown as typeof fetch,
+      );
+      expect(process.rawListeners('SIGTERM')).toEqual([...before, existing, unrelated]);
+      expect(process.stdin.rawListeners('end')).toEqual([...stdinBefore, existingStdin]);
+      await handle.close();
+    } finally {
+      process.removeListener('SIGTERM', existing);
+      process.removeListener('SIGTERM', parentSigtermCallback);
+      process.removeListener('SIGTERM', unrelated);
+      process.stdin.removeListener('end', existingStdin);
+      process.stdin.removeListener('end', parentSigtermCallback);
+    }
+  });
+
+  it('removes a preview SIGTERM listener when preview startup rejects', async () => {
+    const before = process.rawListeners('SIGTERM');
+    function parentSigtermCallback() {}
+    const factory: PreviewFactoryV1 = async () => {
+      process.once('SIGTERM', parentSigtermCallback);
+      throw new Error('preview failed');
+    };
+    try {
+      await expect(startPreviewServerV1(
+        { projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256: sha256BytesV1(new TextEncoder().encode('ok')) },
+        factory,
+      )).rejects.toThrow(/preview failed/);
+      expect(process.rawListeners('SIGTERM')).toEqual(before);
+    } finally {
+      process.removeListener('SIGTERM', parentSigtermCallback);
+    }
+  });
+
   it('fails closed when preview health is not successful', async () => {
     const close = vi.fn((callback: (error?: Error) => void) => callback());
     const factory: PreviewFactoryV1 = async () => ({ httpServer: {

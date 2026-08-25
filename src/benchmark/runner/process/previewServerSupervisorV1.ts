@@ -1,4 +1,3 @@
-import { preview } from 'vite';
 import type { Sha256DigestV1 } from '../../contracts';
 import { sha256BytesV1 } from '../../provenance';
 
@@ -54,6 +53,11 @@ export type PreviewFactoryV1 = (config: {
   readonly preview: { readonly host: '127.0.0.1'; readonly port: 0; readonly strictPort: true };
 }) => Promise<PreviewServerV1>;
 
+const vitePreviewFactoryV1: PreviewFactoryV1 = async (config) => {
+  const { preview } = await import('vite');
+  return await preview(config) as unknown as PreviewServerV1;
+};
+
 export interface PreviewServerOptionsV1 {
   readonly projectRoot: string;
   readonly buildRoot: string;
@@ -69,6 +73,31 @@ export interface PreviewServerHandleV1 {
   readonly failure: Promise<never>;
   assertHealthy(): Promise<void>;
   close(): Promise<void>;
+}
+
+function addedListenersV1(before: readonly Function[], after: readonly Function[]): readonly Function[] {
+  const retained = new Map<Function, number>();
+  for (const listener of before) retained.set(listener, (retained.get(listener) ?? 0) + 1);
+  const added: Function[] = [];
+  for (const listener of after) {
+    const count = retained.get(listener) ?? 0;
+    if (count > 0) retained.set(listener, count - 1);
+    else added.push(listener);
+  }
+  return added;
+}
+
+function removeViteProcessListenersV1(sigtermBefore: readonly Function[], stdinEndBefore: readonly Function[]): void {
+  const addedSigterm = addedListenersV1(sigtermBefore, process.rawListeners('SIGTERM'));
+  const addedStdinEnd = addedListenersV1(stdinEndBefore, process.stdin.rawListeners('end'));
+  for (const rawListener of addedSigterm) {
+    const listener = (rawListener as Function & { readonly listener?: Function }).listener ?? rawListener;
+    if (!addedStdinEnd.includes(listener) && !listener.name.startsWith('parentSigtermCallback')) continue;
+    process.removeListener('SIGTERM', listener as NodeJS.SignalsListener);
+    for (const stdinListener of addedStdinEnd) {
+      if (stdinListener === listener) process.stdin.removeListener('end', listener as () => void);
+    }
+  }
 }
 
 async function closeServer(server: PreviewServerV1, isClosed: () => boolean = () => false): Promise<void> {
@@ -91,16 +120,23 @@ async function closeServer(server: PreviewServerV1, isClosed: () => boolean = ()
 
 export async function startPreviewServerV1(
   options: PreviewServerOptionsV1,
-  previewFactory: PreviewFactoryV1 = preview as unknown as PreviewFactoryV1,
+  previewFactory: PreviewFactoryV1 = vitePreviewFactoryV1,
   fetchImplementation: typeof fetch = fetch,
 ): Promise<PreviewServerHandleV1> {
-  const server = await previewFactory({
-    root: options.projectRoot,
-    configFile: false,
-    logLevel: 'silent',
-    build: { outDir: options.buildRoot },
-    preview: { host: '127.0.0.1', port: 0, strictPort: true },
-  });
+  const sigtermListeners = process.rawListeners('SIGTERM');
+  const stdinEndListeners = process.stdin.rawListeners('end');
+  let server: PreviewServerV1;
+  try {
+    server = await previewFactory({
+      root: options.projectRoot,
+      configFile: false,
+      logLevel: 'silent',
+      build: { outDir: options.buildRoot },
+      preview: { host: '127.0.0.1', port: 0, strictPort: true },
+    });
+  } finally {
+    removeViteProcessListenersV1(sigtermListeners, stdinEndListeners);
+  }
   const address = server.httpServer.address();
   if (address === null || typeof address === 'string' || !Number.isSafeInteger(address.port) || address.port < 1) {
     try {
