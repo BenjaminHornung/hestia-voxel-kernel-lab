@@ -235,6 +235,9 @@ describe('BR03 run plan v1', () => {
     expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: ['--user-data-dir=C:/other'] } })).toThrow(/channel and requested arguments/);
     expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: ['--remote-debugging-port=9222'] } })).toThrow(/channel and requested arguments/);
     expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: ['--password-file=C:/private/credentials.txt'] } })).toThrow(/channel and requested arguments/);
+    expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: ['--trace-output=C:/Users/private/trace.json'] } })).toThrow(/channel and requested arguments/);
+    expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: ['--trace-output', 'C:/Users/private/trace.json'] } })).toThrow(/channel and requested arguments/);
+    expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: ['--trace-output', '/home/private/trace.json'] } })).toThrow(/channel and requested arguments/);
     expect(() => buildRunPlanV1({ ...input, browser: { ...input.browser, requestedArgs: [urlWithCredentials] } })).toThrow(/channel and requested arguments/);
   });
 });

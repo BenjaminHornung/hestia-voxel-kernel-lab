@@ -33,6 +33,8 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const CREDENTIAL_ARGUMENT = /^--[^=]*(?:password|passwd|token|secret|credential|api[-_]?key|access[-_]?key|auth(?:entication)?|username)(?:[-_](?:file|path))?(?==|$)/i;
 const OWNERSHIP_ARGUMENT = /^--(?:user-data-dir|profile-directory|remote-debugging-(?:port|pipe|address|host)|remote-debugging|disk-cache-dir|data-path|crash-dumps-dir|log-file|load-extension|disable-extensions-except|renderer-cmd-prefix|utility-cmd-prefix|proxy-server)(?:=|$)/i;
 const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/[^\s/@]+(?::[^\s/@]*)?@/i;
+const PRIVATE_ABSOLUTE_ARGUMENT = /^--[^=]+=(?:[a-z]:[\\/]|\\\\|\/)/i;
+const PRIVATE_ABSOLUTE_VALUE = /^(?:[a-z]:[\\/]|\\\\|\/)/i;
 
 export class RunPlanValidationErrorV1 extends TypeError {
   public constructor(public readonly issues: readonly string[]) {
@@ -236,7 +238,8 @@ export function buildRunPlanV1(
   if (!GIT_SHA.test(input.expectedSourceCommitSha)) throw new RunPlanValidationErrorV1(['expectedSourceCommitSha is not a canonical Git SHA.']);
   if (input.browser.requestedChannel.length === 0
     || input.browser.requestedArgs.some((argument) => argument.length === 0 || argument.includes('\0')
-      || CREDENTIAL_ARGUMENT.test(argument) || OWNERSHIP_ARGUMENT.test(argument) || URL_USERINFO.test(argument))
+      || CREDENTIAL_ARGUMENT.test(argument) || OWNERSHIP_ARGUMENT.test(argument) || URL_USERINFO.test(argument)
+      || PRIVATE_ABSOLUTE_ARGUMENT.test(argument) || PRIVATE_ABSOLUTE_VALUE.test(argument))
     || new Set(input.browser.requestedArgs).size !== input.browser.requestedArgs.length) {
     throw new RunPlanValidationErrorV1(['Browser channel and requested arguments must be non-empty and unique.']);
   }

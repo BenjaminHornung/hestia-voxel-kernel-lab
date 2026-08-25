@@ -12,23 +12,9 @@ import {
   validateTelemetryExportV1,
   type Br02TelemetryExportV1,
 } from '../../../diagnostics/telemetry/contractV1';
+import type { Br02HandoffFailureCodeV1 } from '../contractsV1';
 
-export type Br02HandoffFailureCodeV1 =
-  | 'console-error'
-  | 'page-error'
-  | 'request-failure'
-  | 'http-error'
-  | 'process-crash'
-  | 'ui-lifecycle-failure'
-  | 'status-mismatch'
-  | 'download-missing'
-  | 'download-duplicate'
-  | 'download-name-mismatch'
-  | 'download-read-failure'
-  | 'download-size-invalid'
-  | 'telemetry-invalid'
-  | 'telemetry-noncanonical'
-  | 'telemetry-binding-mismatch';
+export type { Br02HandoffFailureCodeV1 } from '../contractsV1';
 
 export class Br02HandoffDriverErrorV1 extends Error {
   public constructor(public readonly code: Br02HandoffFailureCodeV1, options?: ErrorOptions) {
@@ -40,6 +26,7 @@ export class Br02HandoffDriverErrorV1 extends Error {
 export interface Br02HandoffResultV1 {
   readonly rawBytes: Uint8Array;
   readonly telemetryExport: Br02TelemetryExportV1;
+  completeObservation(): void;
 }
 
 interface ParsedStatusV1 {
@@ -126,29 +113,72 @@ async function readDownload(download: Download): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-function trackFailures(page: Page): { readonly failures: Br02HandoffFailureCodeV1[]; readonly stop: () => void } {
+async function trackFailures(page: Page, expectedOrigin: string): Promise<{ readonly failures: Br02HandoffFailureCodeV1[]; readonly failure: Promise<never>; readonly stop: () => void }> {
   const failures: Br02HandoffFailureCodeV1[] = [];
-  const consoleListener = (message: ConsoleMessage) => { if (message.type() === 'error') failures.push('console-error'); };
-  const pageErrorListener = () => { failures.push('page-error'); };
-  const requestFailureListener = (_request: Request) => { failures.push('request-failure'); };
-  const responseListener = (response: Response) => { if (response.status() >= 400) failures.push('http-error'); };
-  const crashListener = () => { failures.push('process-crash'); };
-  const contextCloseListener = () => { failures.push('process-crash'); };
+  let rejectFailure: ((error: Br02HandoffDriverErrorV1) => void) | undefined;
+  const failure = new Promise<never>((_, reject) => { rejectFailure = reject; });
+  void failure.catch(() => undefined);
+  const record = (code: Br02HandoffFailureCodeV1) => {
+    failures.push(code);
+    rejectFailure?.(new Br02HandoffDriverErrorV1(code));
+  };
+  await page.exposeBinding('__br03RuntimeFailureV1', (_source, code: unknown) => {
+    if (code === 'runtime-state-change' || code === 'telemetry-terminal-invalid') record(code);
+  });
+  await page.addInitScript(() => {
+    (globalThis as unknown as { __br03RuntimeStateArmedV1: boolean }).__br03RuntimeStateArmedV1 = false;
+    const report = (code: 'runtime-state-change' | 'telemetry-terminal-invalid') => {
+      void (globalThis as unknown as { __br03RuntimeFailureV1: (value: string) => Promise<void> }).__br03RuntimeFailureV1(code);
+    };
+    const reportRuntimeChange = () => {
+      if ((globalThis as unknown as { __br03RuntimeStateArmedV1: boolean }).__br03RuntimeStateArmedV1) report('runtime-state-change');
+    };
+    document.addEventListener('visibilitychange', reportRuntimeChange);
+    window.addEventListener('blur', reportRuntimeChange);
+    const observer = new MutationObserver(() => {
+      const state = document.querySelector('[data-testid="voxel-app"]')?.getAttribute('data-telemetry-state');
+      if (state === 'invalid' || state === 'disabled') report('telemetry-terminal-invalid');
+    });
+    const observeStatus = () => observer.observe(document.documentElement, { attributes: true, childList: true, subtree: true });
+    if (document.documentElement === null) document.addEventListener('DOMContentLoaded', observeStatus, { once: true });
+    else observeStatus();
+  });
+  const consoleListener = (message: ConsoleMessage) => { if (message.type() === 'error') record('console-error'); };
+  const pageErrorListener = () => { record('page-error'); };
+  const requestFailureListener = (_request: Request) => { record('request-failure'); };
+  const responseListener = (response: Response) => {
+    const status = response.status();
+    if (status >= 200 && status < 400 && new URL(response.url()).origin !== expectedOrigin) record('unexpected-external-origin');
+    else if (status >= 400 || status === 204) record('http-error');
+  };
+  const crashListener = () => { record('process-crash'); };
+  const contextCloseListener = () => { record('context-lost'); };
+  const popupListener = () => { record('popup-opened'); };
+  const pageCloseListener = () => { record('page-closed'); };
+  const browser = page.context().browser();
+  const disconnectListener = () => { record('browser-disconnected'); };
   page.on('console', consoleListener);
   page.on('pageerror', pageErrorListener);
   page.on('requestfailed', requestFailureListener);
   page.on('response', responseListener);
   page.on('crash', crashListener);
+  page.on('popup', popupListener);
+  page.on('close', pageCloseListener);
   page.context().on('close', contextCloseListener);
+  browser?.on('disconnected', disconnectListener);
   return {
     failures,
+    failure,
     stop: () => {
       page.off('console', consoleListener);
       page.off('pageerror', pageErrorListener);
       page.off('requestfailed', requestFailureListener);
       page.off('response', responseListener);
       page.off('crash', crashListener);
+      page.off('popup', popupListener);
+      page.off('close', pageCloseListener);
       page.context().off('close', contextCloseListener);
+      browser?.off('disconnected', disconnectListener);
     },
   };
 }
@@ -159,10 +189,11 @@ function assertNoFailures(failures: readonly Br02HandoffFailureCodeV1[]): void {
 }
 
 async function waitForState(page: Page, state: ParsedStatusV1['state']): Promise<void> {
-  await page.locator(`[data-testid="voxel-app"][data-telemetry-state="${state}"]`).waitFor({ state: 'attached' });
+  await page.locator(`[data-testid="voxel-app"][data-telemetry-state="${state}"], [data-testid="voxel-app"][data-telemetry-state="invalid"], [data-testid="voxel-app"][data-telemetry-state="disabled"]`).waitFor({ state: 'attached' });
   const value = await page.getByTestId('telemetry-contract-status').textContent();
   if (value === null) throw new Br02HandoffDriverErrorV1('status-mismatch');
   const parsed = parseBr02ContractStatusV1(value);
+  if (parsed.state === 'invalid' || parsed.state === 'disabled') throw new Br02HandoffDriverErrorV1('telemetry-terminal-invalid');
   if (parsed.state !== state || parsed.reason !== 'none') throw new Br02HandoffDriverErrorV1('status-mismatch');
 }
 
@@ -181,11 +212,14 @@ export async function runBr02HandoffV1(
   const url = new URL(route, baseUrl);
   if (url.searchParams.has(BR02_BROWSER_HANDOFF_QUERY_KEY)) throw new Br02HandoffDriverErrorV1('ui-lifecycle-failure');
   url.searchParams.set(BR02_BROWSER_HANDOFF_QUERY_KEY, encodeBrowserTelemetryHandoffV1(envelope));
-  const tracker = trackFailures(page);
+  const tracker = await trackFailures(page, new URL(baseUrl).origin);
+  let retainObservation = false;
   try {
+    return await Promise.race([(async () => {
     await page.goto(url.toString(), { waitUntil: 'load' });
     await page.locator('[data-testid="voxel-app"][data-ready="true"]').waitFor({ state: 'attached' });
     await page.getByTestId('telemetry-panel').waitFor({ state: 'visible' });
+    await page.evaluate(() => { (globalThis as unknown as { __br03RuntimeStateArmedV1: boolean }).__br03RuntimeStateArmedV1 = true; });
     await waitForState(page, 'ready');
     assertNoFailures(tracker.failures);
     for (const [index, iteration] of envelope.iterations.entries()) {
@@ -213,20 +247,30 @@ export async function runBr02HandoffV1(
       const downloadPromise = page.waitForEvent('download');
       await page.getByTestId('telemetry-export').click();
       download = await downloadPromise;
-      await page.waitForTimeout(0);
     } finally {
-      page.off('download', downloadListener);
+      if (downloads.length === 0) page.off('download', downloadListener);
     }
     if (downloads.length === 0) throw new Br02HandoffDriverErrorV1('download-missing');
     if (downloads.length !== 1 || downloads[0] !== download) throw new Br02HandoffDriverErrorV1('download-duplicate');
     const rawBytes = await readDownload(download);
     const telemetryExport = validateDownloadedTelemetryV1(rawBytes, envelope);
     assertNoFailures(tracker.failures);
-    return { rawBytes, telemetryExport };
+    retainObservation = true;
+    let observationComplete = false;
+    return { rawBytes, telemetryExport, completeObservation: () => {
+      if (observationComplete) return;
+      observationComplete = true;
+      page.off('download', downloadListener);
+      tracker.stop();
+      if (downloads.length !== 1 || downloads[0] !== download) throw new Br02HandoffDriverErrorV1('download-duplicate');
+      assertNoFailures(tracker.failures);
+    } };
+    })(), tracker.failure]);
   } catch (error) {
     if (error instanceof Br02HandoffDriverErrorV1) throw error;
+    assertNoFailures(tracker.failures);
     throw new Br02HandoffDriverErrorV1('ui-lifecycle-failure', { cause: error });
   } finally {
-    tracker.stop();
+    if (!retainObservation) tracker.stop();
   }
 }

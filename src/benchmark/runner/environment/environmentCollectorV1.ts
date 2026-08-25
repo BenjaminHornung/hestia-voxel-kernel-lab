@@ -12,7 +12,7 @@ import type {
   SafePositiveIntegerV1,
   Sha256DigestV1,
 } from '../../contracts';
-import { compareUtf16 } from '../../provenance';
+import { canonicalizeJsonV1, compareUtf16, sha256BytesV1 } from '../../provenance';
 
 export interface CdpSessionV1 {
   send(method: string): Promise<unknown>;
@@ -38,7 +38,7 @@ export interface RuntimeEnvironmentObservationV1 {
 
 export interface EnvironmentCapabilityObservationV1 {
   readonly id: CanonicalIdV1;
-  readonly supported: boolean;
+  readonly supported: boolean | null;
   readonly sourceRef: CanonicalIdV1;
 }
 
@@ -65,6 +65,21 @@ export interface EnvironmentCaptureV1 {
   readonly effectiveArgs: AvailabilityV1<readonly NonEmptyString[]>;
   readonly measurementEligible: boolean;
   readonly ineligibilityReasons: readonly ('synthetic-hardware-profile' | 'headless-browser' | 'environment-incomplete' | 'runtime-state-invalid')[];
+  readonly cdpProbes: readonly CdpProbeOutcomeV1[];
+  readonly browserVersion: {
+    readonly product: string | null;
+    readonly protocolVersion: string | null;
+    readonly revision: string | null;
+    readonly userAgent: string | null;
+    readonly jsVersion: string | null;
+  };
+}
+
+export interface CdpProbeOutcomeV1 {
+  readonly method: 'Browser.getVersion' | 'SystemInfo.getInfo' | 'Browser.getBrowserCommandLine';
+  readonly status: 'observed' | 'unknown' | 'unsupported' | 'error' | 'blocked' | 'permission-denied';
+  readonly responseSha256: Sha256DigestV1 | null;
+  readonly value: Record<string, unknown> | null;
 }
 
 const source = (value: string): CanonicalIdV1 => value as CanonicalIdV1;
@@ -98,14 +113,24 @@ function nonEmpty(value: unknown, sourceRef: string, stability: AvailabilityObse
     : unavailable(sourceRef, 'value-not-observed');
 }
 
-async function safeSend(cdp: CdpSessionV1, method: string): Promise<Record<string, unknown> | null> {
+async function safeSend(cdp: CdpSessionV1, method: CdpProbeOutcomeV1['method']): Promise<CdpProbeOutcomeV1> {
   try {
     const response = await cdp.send(method);
-    return response !== null && typeof response === 'object' && !Array.isArray(response)
-      ? response as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
+    const value = response !== null && typeof response === 'object' && !Array.isArray(response) ? response as Record<string, unknown> : null;
+    if (value === null) return { method, status: 'unknown', responseSha256: null, value: null };
+    const observed = method === 'Browser.getVersion'
+      ? ['product', 'protocolVersion', 'revision', 'userAgent', 'jsVersion'].every((field) => typeof value[field] === 'string')
+      : method === 'SystemInfo.getInfo'
+        ? systemInfoObservedV1(value)
+        : Array.isArray(value.arguments) && value.arguments.every((argument) => typeof argument === 'string');
+    return { method, status: observed ? 'observed' : 'unsupported', responseSha256: null, value: observed ? value : null };
+  } catch (error) {
+    const code = typeof (error as { readonly code?: unknown })?.code === 'number' ? (error as { readonly code: number }).code : undefined;
+    const message = error instanceof Error ? error.message.toLowerCase() : '';
+    const status = code === -32_601 || /method.*not found|unsupported/.test(message) ? 'unsupported'
+      : /permission|not allowed|access denied/.test(message) ? 'permission-denied'
+        : /blocked|forbidden/.test(message) ? 'blocked' : 'error';
+    return { method, status, responseSha256: null, value: null };
   }
 }
 
@@ -153,22 +178,30 @@ function privateEffectiveArgs(arguments_: readonly unknown[], profilePath: strin
   if (arguments_.some((value) => typeof value === 'string' && urlUserInfo.test(value))) {
     throw new TypeError('Credential-like browser argument is not allowed in runner artifacts.');
   }
-  const redacted = arguments_
-    .filter((value): value is string => typeof value === 'string' && value.startsWith('--') && value.length > 2)
-    .map((argument) => {
+  const absoluteLocalPath = /^(?:[a-z]:[\\/]|\\\\|\/)/i;
+  const effective = arguments_.slice(1).filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const redacted = effective.map((argument, index) => {
       const separator = argument.indexOf('=');
       const name = separator < 0 ? argument : argument.slice(0, separator);
       if (credentialArgument.test(argument) || urlUserInfo.test(argument)) throw new TypeError('Credential-like browser argument is not allowed in runner artifacts.');
       const value = separator >= 0 ? argument.slice(separator + 1) : '';
       const comparableValue = comparablePath(value);
-      const privateLabel = name === '--user-data-dir' || comparableValue === profileRoot || comparableValue.startsWith(`${profileRoot}/`)
+      const separateValueOwner = effective[index - 1];
+      const standaloneComparableValue = separator < 0 ? comparablePath(argument) : comparableValue;
+      const privateLabel = (separator >= 0 && name === '--user-data-dir') || separateValueOwner === '--user-data-dir'
+        || standaloneComparableValue === profileRoot || standaloneComparableValue.startsWith(`${profileRoot}/`)
         ? '<PROFILE>'
-        : name === '--output' || comparableValue === resultsRoot || comparableValue.startsWith(`${resultsRoot}/`)
+        : (separator >= 0 && name === '--output') || separateValueOwner === '--output'
+          || standaloneComparableValue === resultsRoot || standaloneComparableValue.startsWith(`${resultsRoot}/`)
           ? '<RESULTS>'
           : undefined;
-      return text(separator >= 0 && privateLabel !== undefined ? `${name}=${privateLabel}` : argument);
+      const pathValue = separator < 0 ? argument : value;
+      if (privateLabel === undefined && absoluteLocalPath.test(pathValue.replace(/^['"]|['"]$/g, ''))) {
+        throw new TypeError('Private absolute browser argument paths are not allowed in runner artifacts.');
+      }
+      return text(privateLabel === undefined ? argument : separator >= 0 ? `${name}=${privateLabel}` : privateLabel);
     });
-  return [...new Set(redacted)].sort(compareUtf16);
+  return redacted;
 }
 
 function gpuDevice(systemInfo: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -188,6 +221,65 @@ function gpuAttributes(systemInfo: Record<string, unknown> | null): Record<strin
     : null;
 }
 
+function stringDictionaryV1(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.values(value as Record<string, unknown>).every((entry) => typeof entry === 'string');
+}
+
+function sizeV1(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Number.isFinite((value as Record<string, unknown>).width)
+    && Number.isFinite((value as Record<string, unknown>).height);
+}
+
+function videoDecodeV1(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).profile === 'string'
+    && sizeV1((value as Record<string, unknown>).maxResolution)
+    && sizeV1((value as Record<string, unknown>).minResolution);
+}
+
+function videoEncodeV1(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).profile === 'string'
+    && sizeV1((value as Record<string, unknown>).maxResolution)
+    && Number.isFinite((value as Record<string, unknown>).maxFramerateNumerator)
+    && Number.isFinite((value as Record<string, unknown>).maxFramerateDenominator);
+}
+
+function systemInfoObservedV1(value: Record<string, unknown>): boolean {
+  const gpu = value.gpu;
+  if (gpu === null || typeof gpu !== 'object' || Array.isArray(gpu)) return false;
+  const record = gpu as Record<string, unknown>;
+  return Array.isArray(record.devices) && record.devices.every((device) => device !== null && typeof device === 'object' && !Array.isArray(device)
+      && ['vendorId', 'deviceId'].every((field) => typeof (device as Record<string, unknown>)[field] === 'number')
+      && ['vendorString', 'deviceString', 'driverVendor', 'driverVersion'].every((field) => typeof (device as Record<string, unknown>)[field] === 'string'))
+    && (record.auxAttributes === undefined || stringDictionaryV1(record.auxAttributes))
+    && (record.featureStatus === undefined || stringDictionaryV1(record.featureStatus))
+    && Array.isArray(record.driverBugWorkarounds) && record.driverBugWorkarounds.every((entry) => typeof entry === 'string')
+    && Array.isArray(record.videoDecoding) && record.videoDecoding.every(videoDecodeV1)
+    && Array.isArray(record.videoEncoding) && record.videoEncoding.every(videoEncodeV1)
+    && typeof value.modelName === 'string' && typeof value.modelVersion === 'string' && typeof value.commandLine === 'string';
+}
+
+function sanitizedSystemInfoV1(value: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (value === null || !systemInfoObservedV1(value)) return null;
+  const gpu = value.gpu as Record<string, unknown>;
+  return {
+    gpu: {
+      devices: gpu.devices,
+      auxAttributes: gpu.auxAttributes ?? null,
+      featureStatus: gpu.featureStatus ?? null,
+      driverBugWorkarounds: gpu.driverBugWorkarounds,
+      videoDecoding: gpu.videoDecoding,
+      videoEncoding: gpu.videoEncoding,
+    },
+    modelName: value.modelName,
+    modelVersion: value.modelVersion,
+    commandLine: '<REDACTED>',
+  };
+}
+
 export async function collectEnvironmentV1(options: EnvironmentCollectorOptionsV1): Promise<EnvironmentCaptureV1> {
   if (options.requestedChannel.length === 0 || options.requestedArgs.some((argument) => argument.length === 0)) {
     throw new TypeError('Browser run configuration contains an empty value.');
@@ -195,16 +287,24 @@ export async function collectEnvironmentV1(options: EnvironmentCollectorOptionsV
   if (new Set(options.capabilities.map(({ id }) => id)).size !== options.capabilities.length) {
     throw new TypeError('Environment capability IDs must be unique.');
   }
-  const [browserVersion, systemInfo, commandLine] = await Promise.all([
+  const [browserVersionProbe, systemInfoProbe, commandLineProbe] = await Promise.all([
     safeSend(options.cdp, 'Browser.getVersion'),
     safeSend(options.cdp, 'SystemInfo.getInfo'),
     safeSend(options.cdp, 'Browser.getBrowserCommandLine'),
   ]);
+  const browserVersion = browserVersionProbe.value;
+  const systemInfo = systemInfoProbe.value;
+  const commandLine = commandLineProbe.value;
   const host = options.host ?? defaultHost();
   const productValue = typeof browserVersion?.product === 'string' ? browserVersion.product : '';
   const separator = productValue.indexOf('/');
   const product = separator > 0 ? productValue.slice(0, separator) : productValue;
   const version = separator > 0 ? productValue.slice(separator + 1) : '';
+  const expectedProduct = options.requestedChannel === 'msedge' ? 'Edg'
+    : options.requestedChannel === 'chrome' || options.requestedChannel === 'chromium' ? 'Chrome' : null;
+  if (expectedProduct !== null && browserVersionProbe.status === 'observed' && product !== expectedProduct) {
+    throw new TypeError('Observed browser product does not match the requested channel.');
+  }
   const device = gpuDevice(systemInfo);
   const attributes = gpuAttributes(systemInfo);
   const driverParts = [device?.driverVendor, device?.driverVersion].filter((value): value is string => typeof value === 'string' && value.length > 0);
@@ -212,11 +312,12 @@ export async function collectEnvironmentV1(options: EnvironmentCollectorOptionsV
   const systemInfoCommandLine = systemInfo?.commandLine;
   const rawEffectiveArgs = Array.isArray(commandArguments) ? commandArguments : Array.isArray(systemInfoCommandLine) ? systemInfoCommandLine : undefined;
   if (rawEffectiveArgs !== undefined) assertOwnedProfilePathV1(rawEffectiveArgs, options.profilePath);
-  const effectiveArgs = rawEffectiveArgs === undefined
+  const sanitizedEffectiveArgs = rawEffectiveArgs === undefined ? null : privateEffectiveArgs(rawEffectiveArgs, options.profilePath, options.outputRoot);
+  const effectiveArgs = sanitizedEffectiveArgs === null
     ? unavailable<readonly NonEmptyString[]>('cdp-browser-command-line-v1', 'command-line-not-observed')
     : Array.isArray(commandArguments)
-    ? observed(privateEffectiveArgs(commandArguments, options.profilePath, options.outputRoot), 'cdp-browser-command-line-v1', 'experimental')
-    : observed(privateEffectiveArgs(systemInfoCommandLine as readonly unknown[], options.profilePath, options.outputRoot), 'cdp-system-info-command-line-v1', 'experimental');
+    ? observed([...new Set(sanitizedEffectiveArgs)].sort(compareUtf16), 'cdp-browser-command-line-v1', 'experimental')
+    : observed([...new Set(sanitizedEffectiveArgs)].sort(compareUtf16), 'cdp-system-info-command-line-v1', 'experimental');
   const requestedArgs = declared(options.requestedArgs.map(text), 'br03-run-config-v1', 'run-config');
   const runtimeSource = 'browser-runtime-state-v1';
   const model = host.cpuModels.find((value) => value.length > 0);
@@ -283,7 +384,11 @@ export async function collectEnvironmentV1(options: EnvironmentCollectorOptionsV
       .sort((left, right) => compareUtf16(left.id, right.id))
       .map(({ id, sourceRef, supported }) => ({
         id,
-        value: supported ? observed(true as const, sourceRef, 'experimental') : unavailable(sourceRef, 'capability-unsupported', 'unsupported'),
+        value: supported === true
+          ? observed(true as const, sourceRef, 'experimental')
+          : supported === false
+            ? unavailable(sourceRef, 'capability-unsupported', 'unsupported')
+            : unavailable(sourceRef, 'capability-not-observed'),
       })),
   };
   const ineligibilityReasons: EnvironmentCaptureV1['ineligibilityReasons'][number][] = [];
@@ -296,5 +401,18 @@ export async function collectEnvironmentV1(options: EnvironmentCollectorOptionsV
     manifest.power.source, manifest.power.profile, manifest.runtimeState.competingLoad, manifest.runtimeState.thermalState,
   ];
   if (requiredEvidence.some(({ status }) => status !== 'observed')) ineligibilityReasons.push('environment-incomplete');
-  return { manifest, requestedArgs, effectiveArgs, measurementEligible: ineligibilityReasons.length === 0, ineligibilityReasons };
+  const safeVersion = {
+    product: typeof browserVersion?.product === 'string' ? browserVersion.product : null,
+    protocolVersion: typeof browserVersion?.protocolVersion === 'string' ? browserVersion.protocolVersion : null,
+    revision: typeof browserVersion?.revision === 'string' ? browserVersion.revision : null,
+    userAgent: typeof browserVersion?.userAgent === 'string' ? browserVersion.userAgent : null,
+    jsVersion: typeof browserVersion?.jsVersion === 'string' ? browserVersion.jsVersion : null,
+  };
+  const probeDigest = (value: unknown): Sha256DigestV1 => sha256BytesV1(canonicalizeJsonV1(value));
+  const cdpProbes: CdpProbeOutcomeV1[] = [
+    { ...browserVersionProbe, value: null, responseSha256: browserVersionProbe.status === 'observed' ? probeDigest(safeVersion) : null },
+    { ...systemInfoProbe, value: null, responseSha256: systemInfoProbe.status === 'observed' ? probeDigest(sanitizedSystemInfoV1(systemInfo)) : null },
+    { ...commandLineProbe, value: null, responseSha256: commandLineProbe.status === 'observed' && sanitizedEffectiveArgs !== null ? probeDigest(sanitizedEffectiveArgs) : null },
+  ];
+  return { manifest, requestedArgs, effectiveArgs, measurementEligible: ineligibilityReasons.length === 0, ineligibilityReasons, cdpProbes, browserVersion: safeVersion };
 }

@@ -15,7 +15,7 @@ import {
   type NonEmptyString,
   type SafePositiveIntegerV1,
 } from '../../contracts';
-import { canonicalizeJsonV1, compareUtf16, parseCanonicalJsonV1, sourcePreflightV1, verifyBuildHandoffV1 } from '../../provenance';
+import { canonicalizeJsonV1, compareUtf16, parseCanonicalJsonV1, sha256BytesV1, sourcePreflightV1, verifyBuildHandoffV1 } from '../../provenance';
 import { createTelemetryBufferV1 } from '../../../diagnostics/telemetry/bufferV1';
 import {
   BR02_BROWSER_HANDOFF_CONTRACT_ID,
@@ -36,6 +36,8 @@ import {
   deriveBundleIdV1,
   verifyWrittenBundleV1,
   writeBundleClosureExclusiveV1,
+  writeFailureDiagnosticV1,
+  writeInvocationClosureV1,
   writeProcessUnitResultsV1,
 } from '../artifacts/artifactStoreV1';
 import { validateDownloadedTelemetryV1 } from '../browser/br02HandoffDriverV1';
@@ -399,6 +401,7 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
     const bundleVerification = verifyWrittenBundleV1(bundleRoot, validationContext);
     if (!bundleVerification.valid) throw new Error('Synthetic artifact verification failed.');
     await writeProcessUnitResultsV1(invocationRoot, results);
+    await writeInvocationClosureV1(invocationRoot, plan, invocation, results);
     return {
       invocationId: invocation.invocationId,
       bundleId,
@@ -411,7 +414,24 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
     let terminalError = error;
     let failureCode = error instanceof ArtifactCleanupErrorV1 ? 'cleanup-failed' as const : 'artifact-write-failed' as const;
     try {
-      await writeProcessUnitResultsV1(invocationRoot, failureResults(failureCode));
+      const terminalResults = failureResults(failureCode);
+      await writeFailureDiagnosticV1(invocationRoot, unit.ids.slotId, failureCode, terminalError, {
+        handoffCode: null,
+        timeoutOwner: 'none', exitCode: null, signal: null, childSignal: null,
+        cleanupState: failureCode === 'cleanup-failed' ? 'failed' : 'complete',
+        expected: [
+          { field: 'source-commit', sha256: sha256BytesV1(new TextEncoder().encode(plan.core.expectedSourceCommitSha)) },
+          { field: 'build', sha256: plan.core.expectedBuildSha256 },
+          { field: 'runner-bundle', sha256: options.runnerAuthority.runnerSourceSha },
+        ],
+        observed: [
+          { field: 'source-commit', sha256: sha256BytesV1(new TextEncoder().encode(options.runnerAuthority.sourceCommitSha)) },
+          { field: 'build', sha256: source.build.sha256 },
+          { field: 'runner-bundle', sha256: options.runnerAuthority.runnerSourceSha },
+        ],
+      });
+      await writeProcessUnitResultsV1(invocationRoot, terminalResults);
+      await writeInvocationClosureV1(invocationRoot, plan, invocation, terminalResults);
     } catch (resultError) {
       if (resultError instanceof ArtifactCleanupErrorV1) failureCode = 'cleanup-failed';
       terminalError = new AggregateError([error, resultError], 'Synthetic artifact failure and terminal-result publication failed.');

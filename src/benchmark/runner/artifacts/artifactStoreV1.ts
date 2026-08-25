@@ -1,4 +1,6 @@
-import { mkdir, open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { closeSync, fsyncSync, linkSync, openSync } from 'node:fs';
+import { mkdir, open, readdir, realpath, rm, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   BENCHMARK_PROTOCOL_VERSION,
@@ -41,6 +43,10 @@ import {
 } from '../../provenance';
 import type {
   BuiltRunPlanV1,
+  FailureDiagnosticV1,
+  InvocationClosureFileV1,
+  InvocationClosureV1,
+  LifecycleOwnershipReceiptV1,
   ProcessUnitResultV1,
   RunInvocationV1,
 } from '../contractsV1';
@@ -99,6 +105,16 @@ async function readControlFileBoundedV1(path: string): Promise<Uint8Array> {
   }
   if (bytes.byteLength < 1) throw new TypeError('Invocation control file is missing or outside its size bound.');
   return bytes;
+}
+
+async function assertMissingV1(path: string, label: string): Promise<void> {
+  try {
+    await stat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(`${label} already exists.`);
 }
 
 const PERSISTED_OUTPUT_ROOT = '<RESULTS>';
@@ -232,12 +248,42 @@ function assertArtifactOutputRoot(projectRoot: string, outputRoot: string): void
   if (resolve(outputRoot) !== ownedRoot) throw new Error('Runner artifact output is restricted to the exact runner-owned .benchmark-results/. root.');
 }
 
-async function writeExclusive(path: string, bytes: Uint8Array): Promise<void> {
+function sameFilesystemPathV1(left: string, right: string): boolean {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function syncParentDirectoryV1(path: string): void {
+  if (process.platform === 'win32') return;
+  const descriptor = openSync(dirname(path), 'r');
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+async function writeExclusive(
+  path: string,
+  bytes: Uint8Array,
+  ownedRoot?: string,
+  beforePublish?: () => void,
+  afterPublish?: () => void,
+  afterLink?: () => void,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const file = await open(path, 'wx');
+  if (ownedRoot !== undefined) {
+    assertWithin(ownedRoot, path, 'Runner artifact path');
+    const [realRoot, realParent] = await Promise.all([realpath(ownedRoot), realpath(dirname(path))]);
+    if (!sameFilesystemPathV1(realRoot, resolve(ownedRoot)) || !sameFilesystemPathV1(realParent, resolve(dirname(path)))) {
+      throw new Error('Runner artifact path contains a symbolic-link or junction parent substitution.');
+    }
+  }
+  const pendingPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.pending`);
+  const file = await open(pendingPath, 'wx');
   let writeError: unknown;
   try {
     await file.writeFile(bytes);
+    await file.sync();
   } catch (error) {
     writeError = error;
     throw error;
@@ -248,6 +294,24 @@ async function writeExclusive(path: string, bytes: Uint8Array): Promise<void> {
       throw new ArtifactCleanupErrorV1('Artifact file close failed.', { cause: writeError === undefined ? closeError : new AggregateError([writeError, closeError], 'Artifact write and close failed.') });
     }
   }
+  try {
+    beforePublish?.();
+    // Hard-link creation is the atomic no-replace publication point on NTFS and POSIX filesystems.
+    linkSync(pendingPath, path);
+    afterLink?.();
+    syncParentDirectoryV1(path);
+    afterPublish?.();
+  } catch (error) {
+    await boundedArtifactCleanupV1(unlink(pendingPath).catch((cleanupError) => {
+      throw new ArtifactCleanupErrorV1('Artifact staging cleanup failed.', { cause: new AggregateError([error, cleanupError], 'Artifact publication and staging cleanup failed.') });
+    }), 'Artifact staging cleanup');
+    throw error;
+  }
+  try {
+    await boundedArtifactCleanupV1(unlink(pendingPath), 'Published artifact staging cleanup');
+  } catch (error) {
+    throw new ArtifactCleanupErrorV1('Published artifact staging cleanup failed.', { cause: error });
+  }
 }
 
 export async function createInvocationArtifactRootV1(
@@ -257,6 +321,7 @@ export async function createInvocationArtifactRootV1(
   invocation: RunInvocationV1,
 ): Promise<string> {
   if (invocation.runPlanId !== plan.runPlanId || invocation.outputRoot !== outputRoot) throw new TypeError('Invocation artifact root does not match the accepted plan or output root.');
+  if (outputRoot.split(/[\\/]/u).includes('..')) throw new TypeError('Runner artifact output must not contain parent traversal.');
   const realProjectRoot = await realpath(projectRoot);
   const ownedRoot = resolve(realProjectRoot, '.benchmark-results');
   await mkdir(ownedRoot, { recursive: true });
@@ -269,12 +334,15 @@ export async function createInvocationArtifactRootV1(
   const invocationRoot = join(realOutputRoot, invocation.invocationId);
   assertChild(realOutputRoot, invocationRoot);
   await mkdir(invocationRoot, { recursive: false });
+  syncParentDirectoryV1(invocationRoot);
   if (!(await stat(invocationRoot)).isDirectory()) throw new Error('Invocation artifact root is not a directory.');
-  await writeExclusive(join(invocationRoot, 'run-plan.json'), plan.canonicalBytes);
-  await writeExclusive(join(invocationRoot, 'invocation.json'), canonicalizeJsonV1(persistedInvocationV1(invocation)));
+  await writeExclusive(join(invocationRoot, 'run-plan.json'), plan.canonicalBytes, invocationRoot);
+  await writeExclusive(join(invocationRoot, 'invocation.json'), canonicalizeJsonV1(persistedInvocationV1(invocation)), invocationRoot);
   await mkdir(join(invocationRoot, 'bundles'));
   await mkdir(join(invocationRoot, 'bundle-contexts'));
   await mkdir(join(invocationRoot, 'lifecycle-smoke'));
+  await mkdir(join(invocationRoot, 'failure-diagnostics'));
+  syncParentDirectoryV1(join(invocationRoot, 'owned-child'));
   return invocationRoot;
 }
 
@@ -284,35 +352,26 @@ export async function writeLifecycleSmokeArtifactsV1(
   run: BenchmarkRunV1,
   environment: BenchmarkEnvironmentManifestV1,
   telemetryExportRawBytes: Uint8Array,
+  ownership: LifecycleOwnershipReceiptV1,
 ): Promise<string> {
   const root = await realpath(invocationRoot);
   const smokeRoot = join(root, 'lifecycle-smoke', slotId);
-  const stagingRoot = `${smokeRoot}.pending`;
   assertChild(root, smokeRoot);
-  assertChild(root, stagingRoot);
-  await mkdir(stagingRoot, { recursive: false });
+  await mkdir(smokeRoot, { recursive: false });
+  syncParentDirectoryV1(smokeRoot);
   const files = [
     { path: 'environment.json', bytes: canonicalizeJsonV1(environment) },
+    { path: 'ownership.json', bytes: canonicalizeJsonV1(ownership) },
     { path: 'run.json', bytes: canonicalizeJsonV1(run) },
     { path: 'telemetry-export.json', bytes: telemetryExportRawBytes },
   ];
-  try {
-    for (const file of files) await writeExclusive(join(stagingRoot, file.path), file.bytes);
-    await writeExclusive(join(stagingRoot, 'manifest.json'), canonicalizeJsonV1({
+  for (const file of files) await writeExclusive(join(smokeRoot, file.path), file.bytes, smokeRoot);
+  await writeExclusive(join(smokeRoot, 'manifest.json'), canonicalizeJsonV1({
       schemaVersion: 'br03-lifecycle-smoke-artifact-v1',
       slotId,
       runId: run.runId,
       files: files.map(({ path, bytes }) => ({ path, byteLength: bytes.byteLength, sha256: sha256BytesV1(bytes) })),
-    }));
-    await rename(stagingRoot, smokeRoot);
-  } catch (error) {
-    try {
-      await boundedArtifactCleanupV1(rm(stagingRoot, { recursive: true, force: true }), 'Lifecycle-smoke artifact rollback');
-    } catch (cleanupError) {
-      throw new ArtifactCleanupErrorV1('Lifecycle-smoke artifact rollback failed.', { cause: new AggregateError([error, cleanupError], 'Lifecycle-smoke artifact publication and rollback failed.') });
-    }
-    throw error;
-  }
+    }), smokeRoot);
   return smokeRoot;
 }
 
@@ -328,21 +387,21 @@ export async function verifyLifecycleSmokeArtifactsV1(
   const smokeRoot = join(invocationRoot, 'lifecycle-smoke');
   const entries = await readdir(smokeRoot, { withFileTypes: true });
   if (entries.length !== expectedArtifacts.length || entries.some((entry) => !entry.isDirectory() || entry.isSymbolicLink())) {
-    return ['Lifecycle-smoke artifact directories do not match terminal results.'];
+    return [`Lifecycle-smoke artifact directories do not match terminal results (expected ${expectedArtifacts.length}, observed ${entries.length}: ${entries.map(({ name }) => name).join(',') || 'none'}).`];
   }
   for (const result of expectedArtifacts) {
     const directory = join(smokeRoot, result.slotId);
     try {
       const names = await readdir(directory, { withFileTypes: true });
-      const expectedNames = ['environment.json', 'manifest.json', 'run.json', 'telemetry-export.json'];
+      const expectedNames = ['environment.json', 'manifest.json', 'ownership.json', 'run.json', 'telemetry-export.json'];
       if (names.length !== expectedNames.length || names.some((entry) => entry.isSymbolicLink() || !entry.isFile() || !expectedNames.includes(entry.name))) {
         throw new Error('Lifecycle-smoke artifact closure is invalid.');
       }
       const manifest = closedLifecycleManifestV1(parseCanonicalJsonV1(await readControlFileBoundedV1(join(directory, 'manifest.json'))));
       const manifestPaths = manifest.files.map(({ path }) => path);
       if (manifest.slotId !== result.slotId || manifest.runId !== result.runIds[0]
-        || new Set(manifestPaths).size !== 3
-        || !['environment.json', 'run.json', 'telemetry-export.json'].every((path) => manifestPaths.includes(path as typeof manifestPaths[number]))) {
+        || new Set(manifestPaths).size !== 4
+        || !['environment.json', 'ownership.json', 'run.json', 'telemetry-export.json'].every((path) => manifestPaths.includes(path as typeof manifestPaths[number]))) {
         throw new Error('Lifecycle-smoke manifest binding is invalid.');
       }
       const bytesByPath = new Map<string, Uint8Array>();
@@ -352,8 +411,21 @@ export async function verifyLifecycleSmokeArtifactsV1(
         bytesByPath.set(file.path, bytes);
       }
       const environment = parseCanonicalJsonV1(bytesByPath.get('environment.json')!) as BenchmarkEnvironmentManifestV1;
+      const ownership = parseCanonicalJsonV1(bytesByPath.get('ownership.json')!) as LifecycleOwnershipReceiptV1;
       const run = parseCanonicalJsonV1(bytesByPath.get('run.json')!) as BenchmarkRunDocumentV1['browserProcesses'][number]['runs'][number];
-      if (run.runId !== manifest.runId || !sameBytes(canonicalizeJsonV1(environment), canonicalizeJsonV1(run.environment))) throw new Error('Lifecycle-smoke environment/run binding mismatch.');
+      const expectedCdpMethods = ['Browser.getVersion', 'SystemInfo.getInfo', 'Browser.getBrowserCommandLine'];
+      const invalidCdp = !Array.isArray(ownership.cdp?.probes) || ownership.cdp.probes.length !== expectedCdpMethods.length
+        || new Set(ownership.cdp.probes.map(({ method }) => method)).size !== expectedCdpMethods.length
+        || ownership.cdp.probes.some(({ method, status, responseSha256 }) => !expectedCdpMethods.includes(method)
+          || !['observed', 'unknown', 'unsupported', 'error', 'blocked', 'permission-denied'].includes(status)
+          || (status === 'observed') !== (typeof responseSha256 === 'string' && /^sha256:[0-9a-f]{64}$/.test(responseSha256)));
+      if (run.runId !== manifest.runId || !sameBytes(canonicalizeJsonV1(environment), canonicalizeJsonV1(run.environment))
+        || ownership.schemaVersion !== 'br03-lifecycle-ownership-v1' || ownership.slotId !== result.slotId || ownership.cleanupState !== 'complete'
+        || ownership.preview.host !== '127.0.0.1' || !Number.isSafeInteger(ownership.preview.port) || ownership.preview.port < 1
+        || ownership.preview.expectedHealthSha256 !== ownership.preview.observedHealthSha256
+        || (ownership.browser.exitCode === null && ownership.browser.signal === null)
+        || ownership.browser.executableName.length === 0 || invalidCdp
+        || environment.browser.executableSha256.status !== 'observed' || environment.browser.executableSha256.value !== ownership.browser.executableSha256) throw new Error('Lifecycle-smoke environment/run/ownership binding mismatch.');
       if (expected !== undefined) {
         const invocationUnit = expected.invocation.processUnits.find(({ slotId }) => slotId === result.slotId);
         const expectedUnit = expected.plan.core.processUnits.find(({ ids }) => ids.slotId === result.slotId);
@@ -375,20 +447,20 @@ function closedLifecycleManifestV1(value: unknown): {
   readonly schemaVersion: 'br03-lifecycle-smoke-artifact-v1';
   readonly slotId: CanonicalIdV1;
   readonly runId: CanonicalIdV1;
-  readonly files: readonly { readonly path: 'environment.json' | 'run.json' | 'telemetry-export.json'; readonly byteLength: number; readonly sha256: string }[];
+  readonly files: readonly { readonly path: 'environment.json' | 'ownership.json' | 'run.json' | 'telemetry-export.json'; readonly byteLength: number; readonly sha256: string }[];
 } {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Lifecycle-smoke manifest must be an object.');
   const object = value as Record<string, unknown>;
   const keys = ['schemaVersion', 'slotId', 'runId', 'files'];
   if (Object.keys(object).length !== keys.length || Object.keys(object).some((key) => !keys.includes(key))) throw new TypeError('Lifecycle-smoke manifest has unexpected fields.');
-  if (object.schemaVersion !== 'br03-lifecycle-smoke-artifact-v1' || typeof object.slotId !== 'string' || typeof object.runId !== 'string' || !Array.isArray(object.files) || object.files.length !== 3) throw new TypeError('Lifecycle-smoke manifest header is invalid.');
+  if (object.schemaVersion !== 'br03-lifecycle-smoke-artifact-v1' || typeof object.slotId !== 'string' || typeof object.runId !== 'string' || !Array.isArray(object.files) || object.files.length !== 4) throw new TypeError('Lifecycle-smoke manifest header is invalid.');
   const files = object.files.map((value) => {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Lifecycle-smoke manifest file is invalid.');
     const file = value as Record<string, unknown>;
     const fileKeys = ['path', 'byteLength', 'sha256'];
     if (Object.keys(file).length !== fileKeys.length || Object.keys(file).some((key) => !fileKeys.includes(key))) throw new TypeError('Lifecycle-smoke manifest file has unexpected fields.');
-    if (!['environment.json', 'run.json', 'telemetry-export.json'].includes(file.path as string) || !Number.isSafeInteger(file.byteLength) || (file.byteLength as number) < 1 || typeof file.sha256 !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(file.sha256)) throw new TypeError('Lifecycle-smoke manifest file values are invalid.');
-    return { path: file.path as 'environment.json' | 'run.json' | 'telemetry-export.json', byteLength: file.byteLength as number, sha256: file.sha256 };
+    if (!['environment.json', 'ownership.json', 'run.json', 'telemetry-export.json'].includes(file.path as string) || !Number.isSafeInteger(file.byteLength) || (file.byteLength as number) < 1 || typeof file.sha256 !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(file.sha256)) throw new TypeError('Lifecycle-smoke manifest file values are invalid.');
+    return { path: file.path as 'environment.json' | 'ownership.json' | 'run.json' | 'telemetry-export.json', byteLength: file.byteLength as number, sha256: file.sha256 };
   });
   return { schemaVersion: object.schemaVersion, slotId: object.slotId as CanonicalIdV1, runId: object.runId as CanonicalIdV1, files };
 }
@@ -396,28 +468,66 @@ function closedLifecycleManifestV1(value: unknown): {
 export async function writeProcessUnitResultsV1(
   invocationRoot: string,
   results: readonly ProcessUnitResultV1[],
+  beforePublish?: () => void,
 ): Promise<void> {
-  const resultPath = join(invocationRoot, 'process-unit-results.json');
-  const pendingPath = `${resultPath}.pending`;
-  await writeExclusive(pendingPath, canonicalizeJsonV1(results));
-  try {
-    await rename(pendingPath, resultPath);
-  } catch (error) {
-    try {
-      await boundedArtifactCleanupV1(rm(pendingPath, { force: true }), 'Process-unit result rollback');
-    } catch (cleanupError) {
-      throw new ArtifactCleanupErrorV1('Process-unit result rollback failed.', { cause: new AggregateError([error, cleanupError], 'Process-unit result publication and rollback failed.') });
-    }
-    throw error;
-  }
+  await writeExclusive(join(invocationRoot, 'process-unit-results.json'), canonicalizeJsonV1(results), invocationRoot, beforePublish);
 }
 
-export async function writeBundleValidationContextV1(
+function diagnosticErrorTypeV1(error: unknown): FailureDiagnosticV1['nativeErrorType'] {
+  if (error instanceof AggregateError) return 'aggregate-error';
+  if (error instanceof TypeError) return 'type-error';
+  if (error instanceof RangeError) return 'range-error';
+  if (error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string') return 'system-error';
+  if (error instanceof Error) return 'error';
+  return 'unknown';
+}
+
+function diagnosticCauseChainV1(error: unknown): readonly { readonly type: FailureDiagnosticV1['nativeErrorType']; readonly code: string | null }[] {
+  const chain: { type: FailureDiagnosticV1['nativeErrorType']; code: string | null }[] = [];
+  const seen = new Set<unknown>();
+  const collect = (value: unknown): void => {
+    if (seen.has(value)) return;
+    seen.add(value);
+    const code = value instanceof Error && typeof (value as NodeJS.ErrnoException).code === 'string'
+      ? (value as NodeJS.ErrnoException).code!
+      : null;
+    chain.push({ type: diagnosticErrorTypeV1(value), code: code !== null && /^[A-Z0-9_-]{1,64}$/.test(code) ? code : null });
+    if (value instanceof Error) collect(value.cause);
+    if (value instanceof AggregateError) for (const nested of value.errors) collect(nested);
+  };
+  collect(error);
+  return chain;
+}
+
+export async function writeFailureDiagnosticV1(
   invocationRoot: string,
-  bundleId: CanonicalIdV1,
-  context: BenchmarkValidationContextV1,
+  slotId: CanonicalIdV1,
+  stage: FailureDiagnosticV1['stage'],
+  error: unknown,
+  options: Pick<FailureDiagnosticV1, 'handoffCode' | 'timeoutOwner' | 'exitCode' | 'signal' | 'childSignal' | 'cleanupState' | 'expected' | 'observed'>,
+  beforePublish?: () => void,
 ): Promise<void> {
-  await writeExclusive(join(invocationRoot, 'bundle-contexts', `${bundleId}.json`), canonicalizeJsonV1(context));
+  const chain = diagnosticCauseChainV1(error);
+  const code = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+    && /^[A-Z0-9_-]{1,64}$/.test((error as NodeJS.ErrnoException).code!) ? (error as NodeJS.ErrnoException).code! : null;
+  const diagnostic: FailureDiagnosticV1 = {
+    schemaVersion: 'br03-failure-diagnostic-v1',
+    slotId,
+    stage,
+    nativeErrorType: diagnosticErrorTypeV1(error),
+    nativeCode: code,
+    handoffCode: options.handoffCode,
+    timeoutOwner: options.timeoutOwner,
+    exitCode: options.exitCode,
+    signal: options.signal,
+    childSignal: options.childSignal,
+    cleanupState: options.cleanupState,
+    expected: options.expected,
+    observed: options.observed,
+    causeChainSha256: hashCanonicalV1('br03/failure-diagnostic-cause/v1', chain),
+  };
+  const diagnosticRoot = join(invocationRoot, 'failure-diagnostics');
+  await writeExclusive(join(diagnosticRoot, `${slotId}.json`), canonicalizeJsonV1(diagnostic), diagnosticRoot, beforePublish);
 }
 
 async function stageBundleFilesV1(
@@ -438,7 +548,7 @@ async function stageBundleFilesV1(
     for (const file of files) {
       const path = join(pendingRoot, ...file.path.split('/'));
       assertChild(pendingRoot, path);
-      await writeExclusive(path, file.bytes);
+      await writeExclusive(path, file.bytes, pendingRoot);
     }
   } catch (error) {
     try {
@@ -456,6 +566,7 @@ export async function writeBundleClosureExclusiveV1(
   bundleId: CanonicalIdV1,
   context: BenchmarkValidationContextV1,
   files: readonly BundleFileV1[],
+  afterBundleClaim?: () => void,
 ): Promise<string> {
   const root = await realpath(invocationRoot);
   const contextRoot = join(root, 'bundle-contexts');
@@ -465,17 +576,30 @@ export async function writeBundleClosureExclusiveV1(
   assertChild(root, contextPath);
   assertChild(root, pendingContextPath);
   await mkdir(contextRoot, { recursive: true });
+  await Promise.all([
+    assertMissingV1(join(root, 'bundles', bundleId), 'Bundle closure'),
+    assertMissingV1(contextPath, 'Bundle validation context'),
+  ]);
   const staged = await stageBundleFilesV1(root, bundleId, files);
-  let publishedContext = false;
-  let publishedBundle = false;
+  let bundlePromoted = false;
+  let contextPublished = false;
   try {
-    await writeExclusive(pendingContextPath, canonicalizeJsonV1(context));
-    const verification = verifyWrittenBundleV1(staged.pendingRoot, context);
-    if (!verification.valid) throw new Error(`Bundle verification failed before publication: ${verification.error ?? 'unknown error'}.`);
-    await rename(pendingContextPath, contextPath);
-    publishedContext = true;
-    await rename(staged.pendingRoot, staged.bundleRoot);
-    publishedBundle = true;
+    await writeExclusive(pendingContextPath, canonicalizeJsonV1(context), contextRoot);
+    const stagedVerification = verifyWrittenBundleV1(staged.pendingRoot, context);
+    if (!stagedVerification.valid) throw new Error(`Bundle verification failed before publication: ${stagedVerification.error ?? 'unknown error'}.`);
+    // mkdir is the atomic no-replace claim for the final bundle identity on NTFS and POSIX.
+    await mkdir(staged.bundleRoot, { recursive: false });
+    bundlePromoted = true;
+    syncParentDirectoryV1(staged.bundleRoot);
+    afterBundleClaim?.();
+    for (const file of files) await writeExclusive(join(staged.bundleRoot, ...file.path.split('/')), file.bytes, staged.bundleRoot);
+    syncParentDirectoryV1(join(staged.bundleRoot, 'owned-child'));
+    const finalVerification = verifyWrittenBundleV1(staged.bundleRoot, context);
+    if (!finalVerification.valid) throw new Error(`Bundle verification failed before context publication: ${finalVerification.error ?? 'unknown error'}.`);
+    await boundedArtifactCleanupV1(rm(staged.pendingRoot, { recursive: true, force: true }), 'Bundle pending-root cleanup');
+    await boundedArtifactCleanupV1(rm(pendingContextPath, { force: true }), 'Bundle pending-context cleanup');
+    // The immutable context is the bundle publish-last linearization point.
+    await writeExclusive(contextPath, canonicalizeJsonV1(context), contextRoot, undefined, undefined, () => { contextPublished = true; });
     return staged.bundleRoot;
   } catch (error) {
     const cleanupErrors: Error[] = [];
@@ -488,30 +612,10 @@ export async function writeBundleClosureExclusiveV1(
     };
     await cleanup(boundedArtifactCleanupV1(rm(staged.pendingRoot, { recursive: true, force: true }), 'Bundle pending-root rollback'));
     await cleanup(boundedArtifactCleanupV1(rm(pendingContextPath, { force: true }), 'Bundle pending-context rollback'));
-    if (publishedContext) await cleanup(boundedArtifactCleanupV1(rm(contextPath, { force: true }), 'Bundle context rollback'));
-    if (publishedBundle) await cleanup(boundedArtifactCleanupV1(rm(staged.bundleRoot, { recursive: true, force: true }), 'Bundle root rollback'));
+    if (bundlePromoted && !contextPublished) await cleanup(boundedArtifactCleanupV1(rm(staged.bundleRoot, { recursive: true, force: true }), 'Unpublished bundle rollback'));
     if (cleanupErrors.length > 0) throw new ArtifactCleanupErrorV1('Bundle publication and rollback failed.', { cause: new AggregateError([error, ...cleanupErrors], 'Bundle publication and rollback failed.') });
     throw error;
   }
-}
-
-export async function writeBundleExclusiveV1(
-  invocationRoot: string,
-  bundleId: CanonicalIdV1,
-  files: readonly BundleFileV1[],
-): Promise<string> {
-  const staged = await stageBundleFilesV1(invocationRoot, bundleId, files);
-  try {
-    await rename(staged.pendingRoot, staged.bundleRoot);
-  } catch (error) {
-    try {
-      await boundedArtifactCleanupV1(rm(staged.pendingRoot, { recursive: true, force: true }), 'Bundle rollback');
-    } catch (cleanupError) {
-      throw new ArtifactCleanupErrorV1('Bundle rollback failed.', { cause: new AggregateError([error, cleanupError], 'Bundle publication and rollback failed.') });
-    }
-    throw error;
-  }
-  return staged.bundleRoot;
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -626,6 +730,135 @@ export async function readVerifiedBundleRunIdsV1(bundleRoot: string): Promise<re
   const manifest = parseCanonicalJsonV1(await readControlFileBoundedV1(join(bundleRoot, 'bundle-manifest.json'))) as Partial<BenchmarkBundleManifestV1>;
   if (!Array.isArray(manifest.runs) || manifest.runs.length === 0 || manifest.runs.some((run) => run === null || typeof run !== 'object' || typeof run.runId !== 'string')) throw new TypeError('Bundle manifest runs are invalid.');
   return manifest.runs.map(({ runId }) => runId);
+}
+
+const INVOCATION_CLOSURE_PATH = 'invocation-closure.json';
+
+function closureRoleV1(path: string): InvocationClosureFileV1['role'] {
+  if (path === 'run-plan.json') return 'plan';
+  if (path === 'invocation.json') return 'invocation';
+  if (path === 'process-unit-results.json') return 'terminal-results';
+  if (path.startsWith('bundles/')) return 'bundle';
+  if (path.startsWith('bundle-contexts/')) return 'bundle-context';
+  if (path.startsWith('lifecycle-smoke/')) return 'lifecycle-smoke';
+  if (path.startsWith('failure-diagnostics/')) return 'failure-diagnostic';
+  throw new TypeError(`Invocation contains an unowned closure path: ${path}.`);
+}
+
+async function invocationFilesV1(root: string, current = root): Promise<readonly { readonly path: string; readonly bytes: Uint8Array }[]> {
+  const files: { path: string; bytes: Uint8Array }[] = [];
+  for (const entry of await readdir(current, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) throw new TypeError('Invocation closure cannot contain symbolic links or junction aliases.');
+    const absolutePath = join(current, entry.name);
+    const relativePath = relative(root, absolutePath).split(sep).join('/');
+    if (relativePath === INVOCATION_CLOSURE_PATH) continue;
+    if (entry.isDirectory()) files.push(...await invocationFilesV1(root, absolutePath));
+    else if (entry.isFile()) files.push({ path: relativePath, bytes: await readControlFileBoundedV1(absolutePath) });
+    else throw new TypeError('Invocation closure contains an unsupported filesystem entry.');
+  }
+  return files.sort((left, right) => compareUtf16(left.path, right.path));
+}
+
+function buildInvocationClosureV1(
+  plan: BuiltRunPlanV1,
+  invocation: RunInvocationV1,
+  results: readonly ProcessUnitResultV1[],
+  files: readonly { readonly path: string; readonly bytes: Uint8Array }[],
+): InvocationClosureV1 {
+  const resultSlots = new Set(results.map(({ slotId }) => slotId));
+  return {
+    schemaVersion: 'br03-invocation-closure-v1',
+    invocationId: invocation.invocationId,
+    runPlanId: plan.runPlanId,
+    runPlanSha256: plan.runPlanSha256,
+    runnerSourceSha: invocation.runnerSourceSha,
+    selectedSlotIds: [...invocation.selectedSlotIds],
+    missingSlotIds: invocation.selectedSlotIds.filter((slotId) => !resultSlots.has(slotId)),
+    terminalResults: results,
+    files: files.map(({ path, bytes }) => ({
+      path,
+      byteLength: bytes.byteLength,
+      sha256: sha256BytesV1(bytes),
+      role: closureRoleV1(path),
+    })),
+  };
+}
+
+export async function writeInvocationClosureV1(
+  invocationRoot: string,
+  plan: BuiltRunPlanV1,
+  invocation: RunInvocationV1,
+  results: readonly ProcessUnitResultV1[],
+  beforePublish?: () => void,
+  afterPublish?: () => void,
+): Promise<void> {
+  const root = await realpath(invocationRoot);
+  const files = await invocationFilesV1(root);
+  const closure = buildInvocationClosureV1(plan, invocation, results, files);
+  if (closure.missingSlotIds.length > 0) throw new TypeError('A terminal invocation closure cannot omit selected slots.');
+  await writeExclusive(join(root, INVOCATION_CLOSURE_PATH), canonicalizeJsonV1(closure), root, beforePublish, afterPublish);
+}
+
+function parseInvocationClosureV1(value: unknown): InvocationClosureV1 {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invocation closure must be an object.');
+  const object = value as Record<string, unknown>;
+  const keys = ['schemaVersion', 'invocationId', 'runPlanId', 'runPlanSha256', 'runnerSourceSha', 'selectedSlotIds', 'missingSlotIds', 'terminalResults', 'files'];
+  if (Object.keys(object).length !== keys.length || Object.keys(object).some((key) => !keys.includes(key))) throw new TypeError('Invocation closure has missing or unexpected fields.');
+  if (object.schemaVersion !== 'br03-invocation-closure-v1' || typeof object.invocationId !== 'string' || typeof object.runPlanId !== 'string'
+    || typeof object.runPlanSha256 !== 'string' || typeof object.runnerSourceSha !== 'string'
+    || !Array.isArray(object.selectedSlotIds) || !Array.isArray(object.missingSlotIds)
+    || !Array.isArray(object.terminalResults) || !Array.isArray(object.files)) throw new TypeError('Invocation closure header is invalid.');
+  const files = object.files.map((value) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invocation closure file entry is invalid.');
+    const file = value as Record<string, unknown>;
+    const fileKeys = ['path', 'byteLength', 'sha256', 'role'];
+    if (Object.keys(file).length !== fileKeys.length || Object.keys(file).some((key) => !fileKeys.includes(key))
+      || typeof file.path !== 'string' || file.path.length === 0 || file.path.includes('\\') || file.path.startsWith('/') || file.path.split('/').includes('..')
+      || !Number.isSafeInteger(file.byteLength) || (file.byteLength as number) < 1
+      || typeof file.sha256 !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(file.sha256)
+      || !['plan', 'invocation', 'terminal-results', 'bundle', 'bundle-context', 'lifecycle-smoke', 'failure-diagnostic'].includes(file.role as string)
+      || closureRoleV1(file.path) !== file.role) throw new TypeError('Invocation closure file entry values are invalid.');
+    return file as unknown as InvocationClosureFileV1;
+  });
+  return {
+    schemaVersion: 'br03-invocation-closure-v1',
+    invocationId: object.invocationId as CanonicalIdV1,
+    runPlanId: object.runPlanId as CanonicalIdV1,
+    runPlanSha256: object.runPlanSha256 as InvocationClosureV1['runPlanSha256'],
+    runnerSourceSha: object.runnerSourceSha as InvocationClosureV1['runnerSourceSha'],
+    selectedSlotIds: object.selectedSlotIds as CanonicalIdV1[],
+    missingSlotIds: object.missingSlotIds as CanonicalIdV1[],
+    terminalResults: object.terminalResults.map(parseProcessUnitResultForClosureV1),
+    files,
+  };
+}
+
+export async function readInvocationClosureV1(invocationRoot: string): Promise<InvocationClosureV1> {
+  return parseInvocationClosureV1(parseCanonicalJsonV1(await readControlFileBoundedV1(join(invocationRoot, INVOCATION_CLOSURE_PATH))));
+}
+
+function parseProcessUnitResultForClosureV1(value: unknown): ProcessUnitResultV1 {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invocation closure terminal result is invalid.');
+  return value as ProcessUnitResultV1;
+}
+
+export async function verifyInvocationClosureV1(
+  invocationRoot: string,
+  plan: BuiltRunPlanV1,
+  invocation: RunInvocationV1,
+  results: readonly ProcessUnitResultV1[],
+): Promise<readonly string[]> {
+  const issues: string[] = [];
+  try {
+    const root = await realpath(invocationRoot);
+    const closure = await readInvocationClosureV1(root);
+    const files = await invocationFilesV1(root);
+    const expected = buildInvocationClosureV1(plan, invocation, results, files);
+    if (!sameBytes(canonicalizeJsonV1(closure), canonicalizeJsonV1(expected))) issues.push('Invocation closure does not match its complete immutable file set.');
+  } catch (error) {
+    issues.push(`Invocation closure is invalid: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+  return issues;
 }
 
 export async function verifyInvocationControlV1(

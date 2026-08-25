@@ -1,4 +1,6 @@
 import { preview } from 'vite';
+import type { Sha256DigestV1 } from '../../contracts';
+import { sha256BytesV1 } from '../../provenance';
 
 interface PreviewHttpServerV1 {
   address(): string | { readonly port: number } | null;
@@ -18,6 +20,16 @@ export class PreviewStartupCleanupErrorV1 extends Error {
   public constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'PreviewStartupCleanupErrorV1';
+  }
+}
+
+export class PreviewHealthMismatchErrorV1 extends Error {
+  public constructor(
+    public readonly expectedSha256: Sha256DigestV1,
+    public readonly observedSha256: Sha256DigestV1,
+  ) {
+    super('Benchmark preview health body does not match the expected verified build marker.');
+    this.name = 'PreviewHealthMismatchErrorV1';
   }
 }
 
@@ -46,10 +58,15 @@ export interface PreviewServerOptionsV1 {
   readonly projectRoot: string;
   readonly buildRoot: string;
   readonly healthPath?: string;
+  readonly expectedHealthSha256: Sha256DigestV1;
 }
 
 export interface PreviewServerHandleV1 {
   readonly baseUrl: string;
+  readonly host: '127.0.0.1';
+  readonly port: number;
+  readonly healthSha256: Sha256DigestV1;
+  readonly failure: Promise<never>;
   assertHealthy(): Promise<void>;
   close(): Promise<void>;
 }
@@ -96,18 +113,26 @@ export async function startPreviewServerV1(
   const baseUrl = `http://127.0.0.1:${address.port}`;
   let state: 'running' | 'closing' | 'closed' | 'failed' = 'running';
   let failure: Error | null = null;
+  let rejectFailure: ((error: Error) => void) | undefined;
+  const failureSignal = new Promise<never>((_, reject) => { rejectFailure = reject; });
+  void failureSignal.catch(() => undefined);
   let serverClosed = false;
   server.httpServer.on('error', (error) => {
     state = 'failed';
     failure = error;
+    rejectFailure?.(error);
   });
   server.httpServer.on('close', () => {
     serverClosed = true;
-    if (state !== 'closing') state = 'failed';
+    if (state !== 'closing') {
+      state = 'failed';
+      rejectFailure?.(new Error('Benchmark preview closed unexpectedly.'));
+    }
     else state = 'closed';
   });
   let closePromise: Promise<void> | null = null;
 
+  let observedHealthSha256: Sha256DigestV1 | null = null;
   const assertHealthy = async (): Promise<void> => {
     if (state !== 'running') throw new Error('Benchmark preview is not running.', { cause: failure });
     const controller = new AbortController();
@@ -119,6 +144,9 @@ export async function startPreviewServerV1(
       clearTimeout(timer);
     }
     if (!response.ok) throw new Error(`Benchmark preview health check returned HTTP ${response.status}.`);
+    const healthSha256 = sha256BytesV1(new Uint8Array(await response.arrayBuffer()));
+    if (healthSha256 !== options.expectedHealthSha256) throw new PreviewHealthMismatchErrorV1(options.expectedHealthSha256, healthSha256);
+    observedHealthSha256 = healthSha256;
     if (state !== 'running') throw new Error('Benchmark preview stopped during its health check.', { cause: failure });
   };
   try {
@@ -136,6 +164,10 @@ export async function startPreviewServerV1(
   }
   return {
     baseUrl,
+    host: '127.0.0.1',
+    port: address.port,
+    healthSha256: observedHealthSha256!,
+    failure: failureSignal,
     assertHealthy,
       close: () => {
         if (closePromise !== null) return closePromise;

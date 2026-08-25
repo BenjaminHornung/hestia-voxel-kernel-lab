@@ -1,14 +1,20 @@
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
+import { createHash } from 'node:crypto';
+import type { ChildProcess } from 'node:child_process';
+import { createReadStream } from 'node:fs';
+import { mkdir, realpath, rm } from 'node:fs/promises';
+import { basename, relative, resolve } from 'node:path';
+import { chromium, type Browser, type BrowserContext, type BrowserServer, type CDPSession, type Page } from '@playwright/test';
+import type { Sha256DigestV1 } from '../../contracts';
 
-type PersistentContextOptionsV1 = NonNullable<Parameters<typeof chromium.launchPersistentContext>[1]>;
+type BrowserServerOptionsV1 = NonNullable<Parameters<typeof chromium.launchServer>[0]>;
 
-export interface PersistentContextLauncherV1 {
-  launchPersistentContext(userDataDir: string, options: PersistentContextOptionsV1): Promise<BrowserContext>;
+export interface OwnedBrowserLauncherV1 {
+  launchServer(options: BrowserServerOptionsV1): Promise<BrowserServer>;
+  connect(wsEndpoint: string): Promise<Browser>;
 }
 
 export interface BrowserProcessOptionsV1 {
+  readonly ownedResultsRoot: string;
   readonly profileRoot: string;
   readonly channel: string;
   readonly headless: boolean;
@@ -22,6 +28,11 @@ export interface BrowserProcessHandleV1 {
   readonly page: Page;
   readonly cdp: CDPSession | null;
   readonly profilePath: string;
+  readonly executableName: string;
+  readonly executableSha256: Sha256DigestV1;
+  readonly processId: number;
+  readonly exitCode: number | null;
+  readonly signalCode: string | null;
   assertRunning(): void;
   close(): Promise<void>;
 }
@@ -33,6 +44,19 @@ export class BrowserStartupCleanupErrorV1 extends Error {
   }
 }
 
+export class BrowserInitializationErrorV1 extends Error {
+  public constructor(
+    cause: unknown,
+    public readonly executableName: string | null,
+    public readonly executableSha256: Sha256DigestV1 | null,
+    public readonly exitCode: number | null,
+    public readonly signalCode: string | null,
+  ) {
+    super('Benchmark browser initialization failed; observed child provenance is attached.', { cause });
+    this.name = 'BrowserInitializationErrorV1';
+  }
+}
+
 const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
 
 async function waitForBrowserDisconnect(browser: Browser): Promise<void> {
@@ -41,6 +65,17 @@ async function waitForBrowserDisconnect(browser: Browser): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
   }
   if (browser.isConnected()) throw new Error('Benchmark browser process did not terminate within the cleanup bound.');
+}
+
+async function digestExecutableV1(path: string): Promise<Sha256DigestV1> {
+  const hash = createHash('sha256');
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', resolve);
+  });
+  return `sha256:${hash.digest('hex')}` as Sha256DigestV1;
 }
 
 export async function boundedCleanupV1<T>(operation: Promise<T>, label: string): Promise<T> {
@@ -56,28 +91,50 @@ export async function boundedCleanupV1<T>(operation: Promise<T>, label: string):
   }
 }
 
-async function closeOwnedBrowser(context: BrowserContext, browser: Browser | null): Promise<void> {
+async function closeOwnedBrowser(context: BrowserContext, browser: Browser, server: BrowserServer): Promise<void> {
   const errors: Error[] = [];
   try {
     await boundedCleanupV1(context.close(), 'Benchmark browser context close');
   } catch (error) {
     errors.push(error instanceof Error ? error : new Error('Benchmark browser context close failed.', { cause: error }));
   }
-  if (browser === null) {
-    errors.push(new Error('Owned browser process handle is unavailable; profile cleanup is not proven safe.'));
-  } else {
+  try {
+    await boundedCleanupV1(browser.close(), 'Benchmark browser connection close');
+  } catch (error) {
+    errors.push(error instanceof Error ? error : new Error('Benchmark browser connection close failed.', { cause: error }));
+  }
+  try {
+    await waitForBrowserDisconnect(browser);
+  } catch (error) {
+    errors.push(error instanceof Error ? error : new Error('Benchmark browser disconnect was not proven.', { cause: error }));
+  }
+  try {
+    await boundedCleanupV1(server.close(), 'Benchmark browser server close');
+  } catch (error) {
     try {
-      await boundedCleanupV1(browser.close(), 'Benchmark browser close');
-    } catch (error) {
-      errors.push(error instanceof Error ? error : new Error('Benchmark browser close failed.', { cause: error }));
-    }
-    try {
-      await waitForBrowserDisconnect(browser);
-    } catch (error) {
-      errors.push(error instanceof Error ? error : new Error('Benchmark browser disconnect was not proven.', { cause: error }));
+      await boundedCleanupV1(server.kill(), 'Benchmark browser server kill');
+    } catch (killError) {
+      errors.push(new AggregateError([error, killError], 'Benchmark browser process termination was not proven.'));
     }
   }
+  const child = server.process();
+  try {
+    await waitForExactChildExitV1(child);
+  } catch (error) {
+    errors.push(error instanceof Error ? error : new Error('Exact owned browser child exit was not proven.', { cause: error }));
+  }
   if (errors.length > 0) throw new AggregateError(errors, 'Benchmark browser cleanup was not proven complete.');
+}
+
+async function waitForExactChildExitV1(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await boundedCleanupV1(new Promise<void>((resolve) => child.once('exit', () => resolve())), 'Exact owned browser child exit');
+  if (child.exitCode === null && child.signalCode === null) throw new Error('Exact owned browser child exit was not proven.');
+}
+
+async function killOwnedBrowserServerV1(server: BrowserServer): Promise<void> {
+  await boundedCleanupV1(server.kill(), 'Benchmark browser server startup cleanup');
+  await waitForExactChildExitV1(server.process());
 }
 
 function assertOwnedPath(root: string, candidate: string): void {
@@ -87,54 +144,96 @@ function assertOwnedPath(root: string, candidate: string): void {
   }
 }
 
+async function launchServerInOwnedTempRoot(
+  launcher: OwnedBrowserLauncherV1,
+  root: string,
+  options: BrowserServerOptionsV1,
+): Promise<BrowserServer> {
+  const keys = ['TMPDIR', 'TMP', 'TEMP'] as const;
+  const previous = keys.map((key) => process.env[key]);
+  try {
+    for (const key of keys) process.env[key] = root;
+    return await launcher.launchServer(options);
+  } finally {
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+  }
+}
+
 export async function startBrowserProcessV1(
   options: BrowserProcessOptionsV1,
-  launcher: PersistentContextLauncherV1 = chromium,
+  launcher: OwnedBrowserLauncherV1 = chromium,
 ): Promise<BrowserProcessHandleV1> {
   if (!Number.isSafeInteger(options.viewport.width) || options.viewport.width < 1
     || !Number.isSafeInteger(options.viewport.height) || options.viewport.height < 1
     || !Number.isFinite(options.deviceScaleFactor) || options.deviceScaleFactor <= 0) {
     throw new TypeError('Browser viewport is invalid.');
   }
-  await mkdir(options.profileRoot, { recursive: true });
+  if (options.args.some((argument) => argument === '--user-data-dir' || argument.startsWith('--user-data-dir='))) {
+    throw new TypeError('Browser profile ownership is runner-controlled.');
+  }
+  const requestedOwnedResultsRoot = resolve(options.ownedResultsRoot);
+  const requestedProfileRoot = resolve(options.profileRoot);
+  assertOwnedPath(requestedOwnedResultsRoot, requestedProfileRoot);
+  await mkdir(requestedProfileRoot, { recursive: true });
+  const ownedResultsRoot = await realpath(options.ownedResultsRoot);
   const root = await realpath(options.profileRoot);
-  const profilePath = await mkdtemp(join(root, 'br03-profile-'));
-  assertOwnedPath(root, profilePath);
-  let context: BrowserContext;
+  assertOwnedPath(ownedResultsRoot, root);
+  let server: BrowserServer;
   try {
-    context = await launcher.launchPersistentContext(profilePath, {
-      acceptDownloads: true,
-      args: options.args.includes('--enable-automation') ? [...options.args] : [...options.args, '--enable-automation'],
+    server = await launchServerInOwnedTempRoot(launcher, root, {
+      args: [...options.args, ...(options.args.includes('--enable-automation') ? [] : ['--enable-automation'])],
       channel: options.channel,
-      deviceScaleFactor: options.deviceScaleFactor,
+      handleSIGHUP: false,
+      handleSIGINT: false,
+      handleSIGTERM: false,
       headless: options.headless,
-      viewport: options.viewport,
     });
   } catch (error) {
-    try {
-      await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
-    } catch (cleanupError) {
-      throw new BrowserStartupCleanupErrorV1('Benchmark browser launch and profile cleanup failed.', { cause: new AggregateError([error, cleanupError], 'Benchmark browser launch and profile cleanup failed.') });
-    }
     throw error;
   }
   let browser: Browser | null = null;
+  let context: BrowserContext | null = null;
+  let profilePath: string | null = null;
+  const child = server.process();
+  let executableName: string | null = null;
+  let executableSha256: Sha256DigestV1 | null = null;
   try {
-    browser = typeof context.browser === 'function' ? context.browser() : null;
-    const existingPages = context.pages();
+    if (!Number.isSafeInteger(child.pid) || child.pid === undefined || child.pid < 1 || child.spawnfile.length === 0) throw new Error('Owned browser child identity is unavailable.');
+    const profileArgument = child.spawnargs.find((argument) => argument.startsWith('--user-data-dir='));
+    if (profileArgument === undefined) throw new Error('Owned browser profile identity is unavailable.');
+    const candidateProfilePath = await realpath(profileArgument.slice('--user-data-dir='.length));
+    assertOwnedPath(root, candidateProfilePath);
+    profilePath = candidateProfilePath;
+    const ownedProfilePath = candidateProfilePath;
+    const executablePath = await realpath(child.spawnfile);
+    executableName = basename(executablePath);
+    executableSha256 = await digestExecutableV1(executablePath);
+    browser = await launcher.connect(server.wsEndpoint());
+    context = browser.contexts()[0] ?? await browser.newContext({ acceptDownloads: true, deviceScaleFactor: options.deviceScaleFactor, viewport: options.viewport });
+    const ownedContext = context;
+    const existingPages = ownedContext.pages();
     if (existingPages.length > 1) throw new Error('Persistent benchmark context opened background tabs.');
     let cdp: CDPSession | null = null;
-    cdp = browser === null ? null : await browser.newBrowserCDPSession();
-    const page = existingPages[0] ?? await context.newPage();
+    cdp = await browser.newBrowserCDPSession();
+    const page = existingPages[0] ?? await ownedContext.newPage();
+    await page.setViewportSize(options.viewport);
     let state: 'running' | 'closing' | 'closed' | 'crashed' = 'running';
     page.on('crash', () => { state = 'crashed'; });
-    context.on('close', () => { state = state === 'closing' ? 'closed' : 'crashed'; });
+    ownedContext.on('close', () => { state = state === 'closing' ? 'closed' : 'crashed'; });
     let closePromise: Promise<void> | null = null;
     return {
-      context,
+      context: ownedContext,
       page,
       cdp,
-      profilePath,
+      profilePath: ownedProfilePath,
+      executableName,
+      executableSha256,
+      processId: child.pid,
+      get exitCode() { return child.exitCode; },
+      get signalCode() { return child.signalCode; },
       assertRunning: () => {
         if (state !== 'running') throw new Error(`Benchmark browser process is ${state}.`);
       },
@@ -145,35 +244,39 @@ export async function startBrowserProcessV1(
           const crashed = state === 'crashed';
           state = 'closing';
           try {
-            await closeOwnedBrowser(context, browser);
+            await closeOwnedBrowser(ownedContext, browser!, server);
           } finally {
             state = crashed ? 'crashed' : 'closed';
           }
-          assertOwnedPath(root, profilePath);
-          await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
+          assertOwnedPath(root, ownedProfilePath);
+          await boundedCleanupV1(rm(ownedProfilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
         })();
         return closePromise;
       },
     };
   } catch (error) {
+    const initializationError = () => new BrowserInitializationErrorV1(error, executableName, executableSha256, child.exitCode, child.signalCode);
     try {
-      await closeOwnedBrowser(context, browser);
+      if (context !== null && browser !== null) await closeOwnedBrowser(context, browser, server);
+      else await killOwnedBrowserServerV1(server);
     } catch (cleanupError) {
-      throw new BrowserStartupCleanupErrorV1('Benchmark browser initialization and cleanup failed.', { cause: new AggregateError([error, cleanupError], 'Benchmark browser initialization and cleanup failed.') });
+      throw new BrowserStartupCleanupErrorV1('Benchmark browser initialization and cleanup failed.', { cause: new AggregateError([initializationError(), cleanupError], 'Benchmark browser initialization and cleanup failed.') });
     }
-    try {
-      await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
-    } catch (cleanupError) {
-      throw new BrowserStartupCleanupErrorV1('Benchmark browser profile cleanup failed.', { cause: new AggregateError([error, cleanupError], 'Benchmark browser profile cleanup failed.') });
+    if (profilePath !== null) {
+      try {
+        await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
+      } catch (cleanupError) {
+        throw new BrowserStartupCleanupErrorV1('Benchmark browser profile cleanup failed.', { cause: new AggregateError([initializationError(), cleanupError], 'Benchmark browser profile cleanup failed.') });
+      }
     }
-    throw error;
+    throw initializationError();
   }
 }
 
 export async function withBrowserProcessV1<T>(
   options: BrowserProcessOptionsV1,
   operation: (handle: BrowserProcessHandleV1) => Promise<T>,
-  launcher: PersistentContextLauncherV1 = chromium,
+  launcher: OwnedBrowserLauncherV1 = chromium,
 ): Promise<T> {
   const handle = await startBrowserProcessV1(options, launcher);
   let operationError: unknown;

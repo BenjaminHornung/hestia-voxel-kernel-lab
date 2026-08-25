@@ -205,6 +205,98 @@ export interface ProcessUnitResultV1 {
   readonly runIds: readonly CanonicalIdV1[];
 }
 
+export interface InvocationClosureFileV1 {
+  readonly path: string;
+  readonly byteLength: number;
+  readonly sha256: Sha256DigestV1;
+  readonly role: 'plan' | 'invocation' | 'terminal-results' | 'bundle' | 'bundle-context' | 'lifecycle-smoke' | 'failure-diagnostic';
+}
+
+export interface InvocationClosureV1 {
+  readonly schemaVersion: 'br03-invocation-closure-v1';
+  readonly invocationId: CanonicalIdV1;
+  readonly runPlanId: CanonicalIdV1;
+  readonly runPlanSha256: Sha256DigestV1;
+  readonly runnerSourceSha: Sha256DigestV1;
+  readonly selectedSlotIds: readonly CanonicalIdV1[];
+  readonly missingSlotIds: readonly CanonicalIdV1[];
+  readonly terminalResults: readonly ProcessUnitResultV1[];
+  readonly files: readonly InvocationClosureFileV1[];
+}
+
+export type Br02HandoffFailureCodeV1 =
+  | 'console-error'
+  | 'page-error'
+  | 'request-failure'
+  | 'http-error'
+  | 'unexpected-external-origin'
+  | 'popup-opened'
+  | 'page-closed'
+  | 'browser-disconnected'
+  | 'runtime-state-change'
+  | 'context-lost'
+  | 'telemetry-terminal-invalid'
+  | 'process-crash'
+  | 'ui-lifecycle-failure'
+  | 'status-mismatch'
+  | 'download-missing'
+  | 'download-duplicate'
+  | 'download-name-mismatch'
+  | 'download-read-failure'
+  | 'download-size-invalid'
+  | 'telemetry-invalid'
+  | 'telemetry-noncanonical'
+  | 'telemetry-binding-mismatch';
+
+export interface FailureDiagnosticV1 {
+  readonly schemaVersion: 'br03-failure-diagnostic-v1';
+  readonly slotId: CanonicalIdV1;
+  readonly stage: ProcessUnitFailureCodeV1;
+  readonly nativeErrorType: 'error' | 'type-error' | 'range-error' | 'aggregate-error' | 'system-error' | 'unknown';
+  readonly nativeCode: string | null;
+  readonly handoffCode: Br02HandoffFailureCodeV1 | null;
+  readonly timeoutOwner: 'none' | 'inner' | 'outer';
+  readonly exitCode: number | null;
+  readonly signal: 'SIGINT' | 'SIGTERM' | null;
+  readonly childSignal: string | null;
+  readonly cleanupState: 'complete' | 'failed' | 'unproven';
+  readonly expected: readonly { readonly field: 'source-commit' | 'build' | 'runner-bundle' | 'preview-health' | 'browser-executable'; readonly sha256: Sha256DigestV1 }[];
+  readonly observed: readonly { readonly field: 'source-commit' | 'build' | 'runner-bundle' | 'preview-health' | 'browser-executable'; readonly sha256: Sha256DigestV1 }[];
+  readonly causeChainSha256: Sha256DigestV1;
+}
+
+export interface LifecycleOwnershipReceiptV1 {
+  readonly schemaVersion: 'br03-lifecycle-ownership-v1';
+  readonly slotId: CanonicalIdV1;
+  readonly preview: {
+    readonly host: '127.0.0.1';
+    readonly port: number;
+    readonly expectedHealthSha256: Sha256DigestV1;
+    readonly observedHealthSha256: Sha256DigestV1;
+  };
+  readonly browser: {
+    readonly executableName: string;
+    readonly executableSha256: Sha256DigestV1;
+    readonly exitCode: number | null;
+    readonly signal: string | null;
+  };
+  readonly cdp: {
+    readonly browserVersion: {
+      readonly product: string | null;
+      readonly protocolVersion: string | null;
+      readonly revision: string | null;
+      readonly userAgent: string | null;
+      readonly jsVersion: string | null;
+    };
+    readonly probes: readonly {
+      readonly method: 'Browser.getVersion' | 'SystemInfo.getInfo' | 'Browser.getBrowserCommandLine';
+      readonly status: 'observed' | 'unknown' | 'unsupported' | 'error' | 'blocked' | 'permission-denied';
+      readonly responseSha256: Sha256DigestV1 | null;
+    }[];
+  };
+  readonly cleanupState: 'complete';
+}
+
 export interface PopulationClassificationV1 {
   readonly technicallyAggregable: boolean;
   readonly standardProcessFloor: boolean;

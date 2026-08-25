@@ -237,7 +237,7 @@ test('runs the clean built CLI through a real WP04 diagnostic receipt and reject
     '.benchmark-runner/runner.mjs', 'run', '--plan', planPath, '--mode', 'lifecycle-smoke-v1', '--slot-index', '1',
     '--created-utc', '2026-08-24T18:00:30.000Z', '--output-root', join(repositoryRoot, '.benchmark-results'), '--preflight', lifecyclePreflightPath,
   ]);
-  expect(lifecycleOutcome.status).toBe(7);
+  expect(lifecycleOutcome.status, lifecycleOutcome.stderr).toBe(7);
   const lifecycleResult = JSON.parse(lifecycleOutcome.stdout) as { readonly status: string; readonly disposition: string; readonly invocationId: string; readonly invocationRoot: string; readonly artifactRoot: string };
   expect(lifecycleResult).toMatchObject({ status: 'completed', disposition: 'unsupported' });
   expect(JSON.parse(runNode(repositoryRoot, ['.benchmark-runner/runner.mjs', 'verify', '--plan', planPath, '--invocation-root', lifecycleResult.invocationRoot])).status).toBe('verified');

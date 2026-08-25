@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -19,11 +19,15 @@ import {
   buildBenchmarkBundleV1,
   createInvocationArtifactRootV1,
   deriveBundleIdV1,
+  verifyInvocationClosureV1,
   verifyInvocationControlV1,
   verifyWrittenBundleV1,
-  writeBundleExclusiveV1,
+  writeBundleClosureExclusiveV1,
+  writeFailureDiagnosticV1,
+  writeInvocationClosureV1,
   writeProcessUnitResultsV1,
 } from '../../../../src/benchmark/runner/artifacts/artifactStoreV1';
+import { Br02HandoffDriverErrorV1 } from '../../../../src/benchmark/runner/browser/br02HandoffDriverV1';
 import { createRunInvocationV1 } from '../../../../src/benchmark/runner/invocation/runInvocationV1';
 import { deriveHardwareCellIdV1 } from '../../../../src/benchmark/runner/ids/orchestrationIdsV1';
 import { buildRunPlanV1 } from '../../../../src/benchmark/runner/plan/runPlanV1';
@@ -84,7 +88,7 @@ function setup() {
     expectedBuildSha256: plan.core.expectedBuildSha256,
     scenarioId: unit.scenarioId as CanonicalIdV1,
   });
-  const invocation = createRunInvocationV1(plan, { createdUtc: '2026-08-20T12:00:00.000Z', outputRoot: '.benchmark-results', runnerSourceSha: testRunnerSourceShaV1 });
+  const invocation = createRunInvocationV1(plan, { createdUtc: '2026-08-20T12:00:00.000Z', outputRoot: '.benchmark-results', runnerSourceSha: testRunnerSourceShaV1, selectedSlotIds: [unit.ids.slotId] });
   const plannedRun = invocation.processUnits.find(({ slotId }) => slotId === unit.ids.slotId)!.runs[0]!;
   const capabilityIds = deriveTelemetryCapabilityIdsV1({ scenarioId: unit.scenarioId as CanonicalIdV1, phase: plannedRun.phase, backend: 'three-webgl2' });
   const buffer = createTelemetryBufferV1({
@@ -186,7 +190,19 @@ describe('BR03 run assembly and receipt integration v1', () => {
       const invocationForOutput = { ...invocation, outputRoot };
       const protectedOutputRoot = join(temporaryRoot, 'evidence');
       await expect(createInvocationArtifactRootV1(protectedOutputRoot, temporaryRoot, plan, { ...invocation, outputRoot: protectedOutputRoot })).rejects.toThrow(/restricted/);
+      const traversingOutputRoot = `${temporaryRoot}/.benchmark-results/../.benchmark-results`;
+      await expect(createInvocationArtifactRootV1(traversingOutputRoot, temporaryRoot, plan, { ...invocation, outputRoot: traversingOutputRoot })).rejects.toThrow(/parent traversal/);
       const invocationRoot = await createInvocationArtifactRootV1(outputRoot, temporaryRoot, plan, invocationForOutput);
+      const diagnosticPath = join(invocationRoot, 'failure-diagnostics', `${unit.ids.slotId}.json`);
+      await expect(writeFailureDiagnosticV1(invocationRoot, unit.ids.slotId, 'handoff-failed', new Br02HandoffDriverErrorV1('popup-opened'), {
+        handoffCode: 'popup-opened', timeoutOwner: 'none', exitCode: null, signal: null, childSignal: null, cleanupState: 'complete', expected: [], observed: [],
+      }, () => { throw new Error('signal'); })).rejects.toThrow(/signal/);
+      await expect(readFile(diagnosticPath)).rejects.toThrow();
+      await writeFailureDiagnosticV1(invocationRoot, unit.ids.slotId, 'handoff-failed', new Br02HandoffDriverErrorV1('popup-opened'), {
+        handoffCode: 'popup-opened', timeoutOwner: 'none', exitCode: null, signal: null, childSignal: null, cleanupState: 'complete', expected: [], observed: [],
+      });
+      expect(JSON.parse(await readFile(diagnosticPath, 'utf8'))).toMatchObject({ nativeCode: null, handoffCode: 'popup-opened' });
+      await rm(diagnosticPath);
       const results = [{
         schemaVersion: 'br03-process-unit-result-v1' as const,
         slotId: unit.ids.slotId,
@@ -196,6 +212,9 @@ describe('BR03 run assembly and receipt integration v1', () => {
         failureCode: 'none' as const,
         runIds: [plannedRun.runId],
       }];
+      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, [])).rejects.toThrow(/omit selected slots/);
+      await expect(writeProcessUnitResultsV1(invocationRoot, results, () => { throw new Error('signal'); })).rejects.toThrow(/signal/);
+      await expect(readFile(join(invocationRoot, 'process-unit-results.json'))).rejects.toThrow();
       await writeProcessUnitResultsV1(invocationRoot, results);
       const bundleId = deriveBundleIdV1(invocation.invocationId, hardwareCellId);
       const bundle = buildBenchmarkBundleV1({
@@ -205,12 +224,36 @@ describe('BR03 run assembly and receipt integration v1', () => {
         document,
         closures: [{ runId: plannedRun.runId, telemetryExportRawBytes: rawTelemetry, receipt: minted.receipt, receiptCanonicalBytes: minted.receiptCanonicalBytes }],
       });
-      const bundleRoot = await writeBundleExclusiveV1(invocationRoot, bundleId, bundle.files);
+      const persistedContext: BenchmarkValidationContextV1 = {
+        fixture: validationContext.fixture,
+        candidate: validationContext.candidate,
+        runPlan: validationContext.runPlan,
+        schemaSetSha256: validationContext.schemaSetSha256,
+        metricRegistrySha256: validationContext.metricRegistrySha256,
+      };
+      await expect(writeBundleClosureExclusiveV1(invocationRoot, id('interrupted-bundle'), persistedContext, bundle.files, () => { throw new Error('interrupted'); })).rejects.toThrow(/interrupted/);
+      expect(await readdir(join(invocationRoot, 'bundles'))).toEqual([]);
+      expect(await readdir(join(invocationRoot, 'bundle-contexts'))).toEqual([]);
+      const bundleRoot = await writeBundleClosureExclusiveV1(invocationRoot, bundleId, persistedContext, bundle.files);
+      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results, () => { throw new Error('signal'); })).rejects.toThrow(/signal/);
+      await expect(readFile(join(invocationRoot, 'invocation-closure.json'))).rejects.toThrow();
+      await writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results);
       expect(await verifyInvocationControlV1(invocationRoot, plan, invocationForOutput, results)).toEqual([]);
+      expect(await verifyInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).toEqual([]);
       expect(verifyWrittenBundleV1(bundleRoot, validationContext).valid).toBe(true);
+      const originalResults = await readFile(join(invocationRoot, 'process-unit-results.json'));
+      await expect(writeProcessUnitResultsV1(invocationRoot, [{ ...results[0]!, disposition: 'failed', failureClass: 'infrastructure', failureCode: 'artifact-write-failed', runIds: [] }])).rejects.toThrow();
+      expect(await readFile(join(invocationRoot, 'process-unit-results.json'))).toEqual(originalResults);
+      const originalContext = await readFile(join(invocationRoot, 'bundle-contexts', `${bundleId}.json`));
+      const originalManifest = await readFile(join(bundleRoot, 'bundle-manifest.json'));
+      await expect(writeBundleClosureExclusiveV1(invocationRoot, bundleId, persistedContext, bundle.files)).rejects.toThrow();
+      expect(await readFile(join(invocationRoot, 'bundle-contexts', `${bundleId}.json`))).toEqual(originalContext);
+      expect(await readFile(join(bundleRoot, 'bundle-manifest.json'))).toEqual(originalManifest);
+      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).rejects.toThrow();
       await expect(createInvocationArtifactRootV1(outputRoot, temporaryRoot, plan, invocationForOutput)).rejects.toThrow();
       await writeFile(join(bundleRoot, 'telemetry', `${plannedRun.runId}.json`), new Uint8Array([123, 125]));
       expect(verifyWrittenBundleV1(bundleRoot, validationContext).valid).toBe(false);
+      expect(await verifyInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).not.toEqual([]);
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
@@ -231,5 +274,25 @@ describe('BR03 run assembly and receipt integration v1', () => {
       origin: { kind: 'planned' },
       measurementEligibilityReasons: [{ code: 'fixture-contract-mismatch', detail: 'eligibility gate' as never, phase: 'cold' }],
     })).toThrow(/telemetry does not match/);
+  });
+
+  it('rejects symlink or junction parent substitution before artifact mutation', async () => {
+    const fixture = setup();
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'br03-artifact-link-test-'));
+    try {
+      const outputRoot = join(temporaryRoot, '.benchmark-results');
+      const invocation = { ...fixture.invocation, outputRoot };
+      const invocationRoot = await createInvocationArtifactRootV1(outputRoot, temporaryRoot, fixture.plan, invocation);
+      const external = join(temporaryRoot, 'external');
+      const contextRoot = join(invocationRoot, 'bundle-contexts');
+      await mkdir(external);
+      await rm(contextRoot, { recursive: true });
+      await symlink(external, contextRoot, process.platform === 'win32' ? 'junction' : 'dir');
+      const { warmMeasurementEvidence: _unused, ...persistedContext } = fixture.validationContext;
+      await expect(writeBundleClosureExclusiveV1(invocationRoot, id('bundle'), persistedContext, [])).rejects.toThrow(/symbolic-link|junction/);
+      expect(await readdir(external)).toEqual([]);
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
   });
 });

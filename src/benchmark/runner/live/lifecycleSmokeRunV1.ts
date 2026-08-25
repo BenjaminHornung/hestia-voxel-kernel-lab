@@ -12,6 +12,7 @@ import {
   parseCanonicalJsonV1,
   readFileBytesV1,
   repositoryRelativePathV1,
+  sha256BytesV1,
   sourcePreflightV1,
   verifyBuildHandoffV1,
 } from '../../provenance';
@@ -29,17 +30,19 @@ import {
   ArtifactCleanupErrorV1,
   verifyInvocationSetupV1,
   verifyLifecycleSmokeArtifactsV1,
+  writeInvocationClosureV1,
+  writeFailureDiagnosticV1,
   writeLifecycleSmokeArtifactsV1,
   writeProcessUnitResultsV1,
 } from '../artifacts/artifactStoreV1';
 import { Br02HandoffDriverErrorV1, runBr02HandoffV1 } from '../browser/br02HandoffDriverV1';
-import { RunnerFailureErrorV1, type BuiltRunPlanV1, type ProcessUnitFailureCodeV1, type ProcessUnitResultV1, type RunInvocationRerunOriginV1, type RunInvocationV1 } from '../contractsV1';
+import { RunnerFailureErrorV1, type BuiltRunPlanV1, type LifecycleOwnershipReceiptV1, type ProcessUnitFailureCodeV1, type ProcessUnitResultV1, type RunInvocationRerunOriginV1, type RunInvocationV1 } from '../contractsV1';
 import { collectEnvironmentV1 } from '../environment/environmentCollectorV1';
 import { deriveHardwareCellIdV1 } from '../ids/orchestrationIdsV1';
 import { createRunInvocationV1 } from '../invocation/runInvocationV1';
-import { boundedCleanupV1, BrowserStartupCleanupErrorV1, startBrowserProcessV1 } from '../process/browserProcessSupervisorV1';
+import { boundedCleanupV1, BrowserInitializationErrorV1, BrowserStartupCleanupErrorV1, startBrowserProcessV1 } from '../process/browserProcessSupervisorV1';
 import { CleanupGuardV1 } from '../process/cleanupGuardV1';
-import { PreviewStartupCleanupErrorV1, startPreviewServerV1 } from '../process/previewServerSupervisorV1';
+import { PreviewHealthMismatchErrorV1, PreviewStartupCleanupErrorV1, startPreviewServerV1 } from '../process/previewServerSupervisorV1';
 import { ProcessUnitResultLedgerV1 } from '../results/processUnitResultLedgerV1';
 import { resolveScenarioRouteV1 } from '../scenarios/scenarioDriverRegistryV1';
 import { parseCandidateBindingV1, parseFixtureBindingV1, closedPreflightObjectV1 } from '../preflight/preflightBindingsV1';
@@ -48,25 +51,6 @@ import { runNoReplaceGitCommandV1 } from '../provenance/gitCommandV1';
 
 const MAX_SEMANTIC_BYTES = 1024 * 1024;
 const LIFECYCLE_PROCESS_TIMEOUT_MS = 120_000;
-const RESOURCE_STARTUP_CLEANUP_TIMEOUT_MS = 5_000;
-
-type StartupOutcomeV1<T> =
-  | { readonly status: 'ready'; readonly value: T }
-  | { readonly status: 'rejected'; readonly error: unknown }
-  | { readonly status: 'timeout' };
-
-async function settleStartupV1<T>(operation: Promise<T>): Promise<StartupOutcomeV1<T>> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const outcome = await Promise.race<StartupOutcomeV1<T>>([
-    operation.then((value) => ({ status: 'ready' as const, value }), (error) => ({ status: 'rejected' as const, error })),
-    new Promise<StartupOutcomeV1<T>>((resolve) => {
-      timer = setTimeout(() => resolve({ status: 'timeout' }), RESOURCE_STARTUP_CLEANUP_TIMEOUT_MS);
-    }),
-  ]);
-  if (timer !== undefined) clearTimeout(timer);
-  return outcome;
-}
-
 function withTimeoutV1<T>(operation: Promise<T>, abortSignal: Promise<never>, timeoutMs: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   void operation.catch(() => undefined);
@@ -156,16 +140,27 @@ async function readFixtureSemanticBytesV1(projectRoot: string, semanticPath: str
 }
 
 async function runtimeObservation(page: Parameters<typeof runBr02HandoffV1>[0]) {
-  return page.evaluate(() => ({
-    cssWidth: window.innerWidth,
-    cssHeight: window.innerHeight,
-    devicePixelRatio: window.devicePixelRatio,
-    visibility: document.visibilityState === 'visible' ? 'visible' as const : 'hidden' as const,
-    focused: document.hasFocus(),
-    webgl2: document.createElement('canvas').getContext('webgl2') !== null,
-    webgpu: 'gpu' in navigator,
-    performanceTimeOrigin: Number.isFinite(performance.timeOrigin),
-  }));
+  return page.evaluate(async () => {
+    const gpu = (navigator as Navigator & { readonly gpu?: { requestAdapter(): Promise<unknown | null> } }).gpu;
+    let webgpu: boolean | null = null;
+    if (gpu !== undefined) {
+      try {
+        webgpu = await gpu.requestAdapter() !== null;
+      } catch {
+        webgpu = null;
+      }
+    }
+    return {
+      cssWidth: window.innerWidth,
+      cssHeight: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      visibility: document.visibilityState === 'visible' ? 'visible' as const : 'hidden' as const,
+      focused: document.hasFocus(),
+      webgl2: document.createElement('canvas').getContext('webgl2') !== null,
+      webgpu,
+      performanceTimeOrigin: Number.isFinite(performance.timeOrigin),
+    };
+  });
 }
 
 function failureClass(code: ProcessUnitFailureCodeV1): ProcessUnitResultV1['failureClass'] {
@@ -176,6 +171,50 @@ function failureClass(code: ProcessUnitFailureCodeV1): ProcessUnitResultV1['fail
   if (code === 'browser-crash' || code === 'handoff-failed' || code === 'warmup-not-stable' || code === 'validation-failed' || code === 'receipt-failed') return 'candidate';
   if (code === 'operator-abort') return 'candidate';
   return 'infrastructure';
+}
+
+function findPreviewHealthMismatchV1(error: unknown): PreviewHealthMismatchErrorV1 | undefined {
+  if (error instanceof PreviewHealthMismatchErrorV1) return error;
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      const found = findPreviewHealthMismatchV1(nested);
+      if (found !== undefined) return found;
+    }
+  }
+  return error instanceof Error ? findPreviewHealthMismatchV1(error.cause) : undefined;
+}
+
+function findBrowserInitializationErrorV1(error: unknown): BrowserInitializationErrorV1 | undefined {
+  if (error instanceof BrowserInitializationErrorV1) return error;
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      const found = findBrowserInitializationErrorV1(nested);
+      if (found !== undefined) return found;
+    }
+  }
+  return error instanceof Error ? findBrowserInitializationErrorV1(error.cause) : undefined;
+}
+
+function findHandoffErrorV1(error: unknown): Br02HandoffDriverErrorV1 | undefined {
+  if (error instanceof Br02HandoffDriverErrorV1) return error;
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      const found = findHandoffErrorV1(nested);
+      if (found !== undefined) return found;
+    }
+  }
+  return error instanceof Error ? findHandoffErrorV1(error.cause) : undefined;
+}
+
+function safeArtifactFailureDetailV1(error: unknown): string | undefined {
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      const found = safeArtifactFailureDetailV1(nested);
+      if (found !== undefined) return found;
+    }
+  }
+  if (error instanceof Error && (error.message.startsWith('Lifecycle-smoke') || error.message.startsWith('Artifact ') || error.message.startsWith('$.'))) return error.message;
+  return error instanceof Error ? safeArtifactFailureDetailV1(error.cause) : undefined;
 }
 
 export function lifecycleTerminalFailureCodeV1(
@@ -213,12 +252,17 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
   let stage: ProcessUnitFailureCodeV1 = 'source-preflight-rejected';
   let cleanupFailed = false;
   let aborted = false;
-  let terminalOutcome: 'open' | 'aborted' | 'claimed' = 'open';
+  let terminalOutcome: 'open' | 'aborted' | 'publishing' | 'claimed' = 'open';
+  let receivedSignal: 'SIGINT' | 'SIGTERM' | null = null;
   let execution: Awaited<ReturnType<typeof executeLifecycleSmokeProcessV1>> | undefined;
+  let browserExit: { readonly exitCode: number | null; readonly signal: string | null } | undefined;
+  let browserExecutableSha256: LifecycleOwnershipReceiptV1['browser']['executableSha256'] | undefined;
   let executionError: unknown;
   const recordFailure = (error: unknown, message: string): void => {
     executionError = executionError === undefined ? error : new AggregateError([executionError, error], message);
   };
+  const safeFailureDetail = () => executionError instanceof Br02HandoffDriverErrorV1 ? ` (${executionError.code})`
+    : safeArtifactFailureDetailV1(executionError) === undefined ? '' : ` (${safeArtifactFailureDetailV1(executionError)}).`;
   const setStage = (value: ProcessUnitFailureCodeV1): void => {
     if (!cleanupFailed) stage = value;
   };
@@ -235,7 +279,7 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
   const abortSignal = new Promise<never>((_, reject) => { rejectAbort = reject; });
   void abortSignal.catch(() => undefined);
   const requestAbort = (reason: unknown) => {
-    if (terminalOutcome === 'open') {
+    if (terminalOutcome !== 'claimed') {
       terminalOutcome = 'aborted';
       aborted = true;
       executionError ??= reason;
@@ -244,7 +288,13 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
     signalCleanup ??= guard.close();
   };
   const terminalOutcomeIsAborted = () => terminalOutcome === 'aborted';
-  const onSignal = () => {
+  const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
+    receivedSignal ??= signal;
+    if (terminalOutcome === 'claimed') {
+      process.exitCode = 4;
+      process.stderr.write(`${JSON.stringify({ status: 'error', message: 'Lifecycle-smoke signal received after terminal publication.' })}\n`);
+      return;
+    }
     requestAbort(new Error('Lifecycle-smoke execution was aborted by an operating-system signal.'));
   };
   process.on('SIGINT', onSignal);
@@ -254,8 +304,6 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       const message = reason instanceof Error ? reason.message : 'Lifecycle-smoke fatal event after terminal publication.';
       process.exitCode = 4;
       process.stderr.write(`${JSON.stringify({ status: 'error', message })}\n`);
-      const hardExit = setTimeout(() => process.exit(4), 250);
-      hardExit.unref();
       return;
     }
     requestAbort(reason);
@@ -315,7 +363,7 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       if (buildVerification.status === 'rejected') throw new Error(`Build handoff rejected: ${buildVerification.code}.`);
       setStage('preview-start-failed');
       if (aborted) throw new Error('Lifecycle-smoke execution was aborted before owned process startup.');
-      const processExecution = executeLifecycleSmokeProcessV1({ options, unit, route: route.route, plannedRun, preflight, invocationRoot, guard, isAborted: () => aborted, setStage });
+      const processExecution = executeLifecycleSmokeProcessV1({ options, unit, route: route.route, plannedRun, preflight, invocationRoot, guard, isAborted: () => aborted, setStage, setBrowserExit: (value) => { browserExit = value; }, setBrowserExecutableSha256: (value) => { browserExecutableSha256 = value; } });
       execution = await withTimeoutV1(processExecution, abortSignal, LIFECYCLE_PROCESS_TIMEOUT_MS, 'Lifecycle-smoke process');
     }
   } catch (error) {
@@ -399,11 +447,22 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
   };
   if (execution !== undefined) {
     try {
-      artifactRoot = await writeLifecycleSmokeArtifactsV1(invocationRoot, unit.ids.slotId, execution.run, execution.environment, execution.rawBytes);
+      artifactRoot = await writeLifecycleSmokeArtifactsV1(invocationRoot, unit.ids.slotId, execution.run, execution.environment, execution.rawBytes, {
+        ...execution.ownership,
+        browser: {
+          ...execution.ownership.browser,
+          exitCode: browserExit?.exitCode ?? null,
+          signal: browserExit?.signal ?? null,
+        },
+        cleanupState: 'complete',
+      });
       const issues = await verifyLifecycleSmokeArtifactsV1(invocationRoot, buildResults(true), { plan: options.plan, invocation });
       if (issues.length > 0) throw new Error(issues.join('; '));
     } catch (error) {
-      if (error instanceof ArtifactCleanupErrorV1) recordCleanupFailure(error);
+      if (terminalOutcomeIsAborted()) {
+        setStage('operator-abort');
+        recordFailure(error, 'Lifecycle-smoke terminal publication was aborted.');
+      } else if (error instanceof ArtifactCleanupErrorV1) recordCleanupFailure(error);
       else {
         setStage('artifact-write-failed');
         recordFailure(error, 'Lifecycle-smoke artifact publication failed.');
@@ -437,17 +496,51 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       await discardArtifact();
       results = buildResults(false);
     }
-    // The claim is the terminal publication linearization point; later signals cannot rewrite it.
-    terminalOutcome = 'claimed';
     try {
-      await writeProcessUnitResultsV1(invocationRoot, results);
+      terminalOutcome = 'publishing';
+      const assertPublicationNotAborted = () => {
+        if (terminalOutcomeIsAborted()) throw new RunnerFailureErrorV1('operator-abort', 'Lifecycle-smoke publication was aborted before its next terminal record.');
+      };
+      if (results.some(({ disposition }) => disposition === 'failed' || disposition === 'invalid' || disposition === 'aborted')) {
+        const previewMismatch = findPreviewHealthMismatchV1(executionError);
+        const browserInitialization = findBrowserInitializationErrorV1(executionError);
+        const handoffError = findHandoffErrorV1(executionError);
+        await writeFailureDiagnosticV1(invocationRoot, unit.ids.slotId, stage, executionError, {
+          handoffCode: handoffError?.code ?? null,
+          timeoutOwner: (stage as ProcessUnitFailureCodeV1) === 'timeout' ? 'outer' : 'none',
+          exitCode: browserExit?.exitCode ?? browserInitialization?.exitCode ?? null,
+          signal: receivedSignal,
+          childSignal: browserExit?.signal ?? browserInitialization?.signalCode ?? null,
+          cleanupState: cleanupFailed ? 'failed' : executionError === undefined ? 'unproven' : 'complete',
+          expected: [
+            { field: 'source-commit', sha256: sha256BytesV1(new TextEncoder().encode(options.plan.core.expectedSourceCommitSha)) },
+            { field: 'build', sha256: options.plan.core.expectedBuildSha256 },
+            { field: 'runner-bundle', sha256: options.runnerAuthority.runnerSourceSha },
+            ...(previewMismatch === undefined ? [] : [{ field: 'preview-health' as const, sha256: previewMismatch.expectedSha256 }]),
+          ],
+          observed: [
+            { field: 'source-commit', sha256: sha256BytesV1(new TextEncoder().encode(options.runnerAuthority.sourceCommitSha)) },
+            { field: 'runner-bundle', sha256: options.runnerAuthority.runnerSourceSha },
+            ...(acceptedPreflight === undefined ? [] : [{ field: 'build' as const, sha256: acceptedPreflight.provenance.build.sha256 }]),
+            ...(previewMismatch === undefined ? [] : [{ field: 'preview-health' as const, sha256: previewMismatch.observedSha256 }]),
+            ...(browserExecutableSha256 === undefined ? [] : [{ field: 'browser-executable' as const, sha256: browserExecutableSha256 }]),
+            ...(browserInitialization?.executableSha256 === null || browserInitialization?.executableSha256 === undefined ? [] : [{ field: 'browser-executable' as const, sha256: browserInitialization.executableSha256 }]),
+          ],
+        }, assertPublicationNotAborted);
+      }
+      await writeProcessUnitResultsV1(invocationRoot, results, assertPublicationNotAborted);
+      assertPublicationNotAborted();
+      await writeInvocationClosureV1(invocationRoot, options.plan, invocation, results, () => {
+        assertPublicationNotAborted();
+      }, () => { terminalOutcome = 'claimed'; });
+      // The immutable closure is the publish-last linearization point.
     } catch (error) {
       if (error instanceof ArtifactCleanupErrorV1) recordCleanupFailure(error);
       else {
         setStage('artifact-write-failed');
         recordFailure(error, 'Lifecycle-smoke terminal-result publication failed.');
       }
-      throw new RunnerFailureErrorV1(stage, `Lifecycle-smoke process failed at ${stage}.`, { cause: executionError });
+      throw new RunnerFailureErrorV1(stage, `Lifecycle-smoke process failed at ${stage}${safeFailureDetail()}.`, { cause: executionError });
     }
     removeHandlers();
     if (signalCleanup !== null) {
@@ -458,7 +551,7 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       }
     }
     if (cleanupFailed) throw new RunnerFailureErrorV1('cleanup-failed', 'Lifecycle-smoke cleanup failed after terminal publication.', { cause: executionError });
-    if (execution === undefined || artifactRoot === undefined) throw new RunnerFailureErrorV1(stage, `Lifecycle-smoke process failed at ${stage}.`, { cause: executionError });
+    if (execution === undefined || artifactRoot === undefined) throw new RunnerFailureErrorV1(stage, `Lifecycle-smoke process failed at ${stage}${safeFailureDetail()}.`, { cause: executionError });
     return { invocationId: invocation.invocationId, runId: plannedRun.runId, invocationRoot, artifactRoot, disposition: 'unsupported' };
   } finally {
     removeHandlers();
@@ -475,6 +568,8 @@ interface ExecuteProcessOptionsV1 {
   readonly guard: CleanupGuardV1;
   readonly isAborted: () => boolean;
   readonly setStage: (stage: ProcessUnitFailureCodeV1) => void;
+  readonly setBrowserExit: (value: { readonly exitCode: number | null; readonly signal: string | null }) => void;
+  readonly setBrowserExecutableSha256: (value: LifecycleOwnershipReceiptV1['browser']['executableSha256']) => void;
 }
 
 async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
@@ -483,18 +578,18 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   let previewStart: Promise<Awaited<ReturnType<typeof startPreviewServerV1>>> | undefined;
   guard.register('preview-server', async () => {
     if (previewStart === undefined) return;
-    const outcome = await settleStartupV1(previewStart);
-    if (outcome.status === 'timeout') {
-      void previewStart.then((handle) => handle.close().catch(() => undefined), () => undefined);
-      throw new Error('Preview startup cleanup timed out.');
-    }
-    if (outcome.status === 'rejected') {
-      if (outcome.error instanceof PreviewStartupCleanupErrorV1) throw outcome.error;
+    let handle: Awaited<typeof previewStart>;
+    try {
+      handle = await previewStart;
+    } catch (error) {
+      if (error instanceof PreviewStartupCleanupErrorV1) throw error;
       return;
     }
-    if (outcome.status === 'ready') await outcome.value.close();
+    await handle.close();
   });
-  previewStart = startPreviewServerV1({ projectRoot: options.projectRoot, buildRoot: preflight.buildHandoff.rootIdentity.buildRootPath });
+  const healthPath = '/index.html';
+  const expectedHealthSha256 = sha256BytesV1(readFileBytesV1(join(preflight.buildHandoff.rootIdentity.buildRootPath, 'index.html')));
+  previewStart = startPreviewServerV1({ projectRoot: options.projectRoot, buildRoot: preflight.buildHandoff.rootIdentity.buildRootPath, healthPath, expectedHealthSha256 });
   void previewStart.catch(() => undefined);
   preview = await previewStart;
   if (input.isAborted()) {
@@ -510,35 +605,28 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     if (browser === undefined) {
       if (browserStartAttempted) {
         if (browserStart === undefined) throw new Error('Owned browser startup promise is unavailable.');
-        const outcome = await settleStartupV1(browserStart);
-        if (outcome.status === 'timeout') {
-          void browserStart.then(async (handle) => {
-            try {
-              await handle.close();
-              await boundedCleanupV1(rm(profileRoot, { recursive: true, force: true }), 'Late browser profile cleanup');
-            } catch {
-              // Retain the owned profile when eventual closure is not proven.
-            }
-          }, () => undefined);
-          throw new Error('Browser startup cleanup timed out.');
-        }
-        if (outcome.status === 'rejected') {
-          const error = outcome.error;
+        try {
+          browser = await browserStart;
+        } catch (error) {
           if (error instanceof BrowserStartupCleanupErrorV1) throw error;
           await boundedCleanupV1(rm(profileRoot, { recursive: true, force: true }), 'Browser startup profile cleanup');
           return;
         }
-        browser = outcome.value;
         if (browser === undefined) throw new Error('Owned browser handle is unavailable; profile ownership is retained for cleanup review.');
       }
       return;
     }
-    await browser.close();
+    try {
+      await browser.close();
+    } finally {
+      input.setBrowserExit({ exitCode: browser.exitCode, signal: browser.signalCode });
+    }
     await boundedCleanupV1(rm(profileRoot, { recursive: true, force: true }), 'Browser profile cleanup');
   };
   browserStartAttempted = true;
   guard.register('browser-and-profile-root', closeBrowser);
   browserStart = startBrowserProcessV1({
+    ownedResultsRoot: dirname(invocationRoot),
     profileRoot,
     channel: options.plan.core.browser.requestedChannel,
     headless: options.plan.core.browser.headless,
@@ -554,13 +642,14 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   }
   if (browser === undefined) throw new Error('Browser process handle was not created.');
   const ownedBrowser = browser;
+  input.setBrowserExecutableSha256(ownedBrowser.executableSha256);
   if (ownedBrowser.cdp === null) throw new Error('Browser-wide CDP session is unavailable.');
   input.setStage('handoff-failed');
   const backendValue = unit.scenarioParameters.find(({ key }) => key === 'backend')?.value;
   const backend = backendValue === 'three-webgl2' || backendValue === 'raw-webgpu' ? backendValue : 'not-applicable';
   let handoff: Awaited<ReturnType<typeof runBr02HandoffV1>>;
   try {
-    handoff = await runBr02HandoffV1(ownedBrowser.page, preview.baseUrl, input.route, {
+    handoff = await Promise.race([runBr02HandoffV1(ownedBrowser.page, preview.baseUrl, input.route, {
       schemaVersion: BR02_BROWSER_HANDOFF_SCHEMA_VERSION,
       contractId: BR02_BROWSER_HANDOFF_CONTRACT_ID,
       runtimeActivation: BR02_BROWSER_RUNTIME_ACTIVATION,
@@ -571,11 +660,12 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
       backend,
       telemetryMode: 'telemetry-enabled-minimal',
       iterations: plannedRun.iterationIds.map((iterationId, iterationOrdinal) => ({ iterationId, iterationOrdinal })),
-    });
+    }), preview.failure]);
   } catch (error) {
     if (error instanceof Br02HandoffDriverErrorV1 && error.code === 'process-crash') input.setStage('browser-crash');
     throw error;
   }
+  guard.register('handoff-observation', () => handoff.completeObservation());
   input.setStage('browser-crash');
   ownedBrowser.assertRunning();
   input.setStage('preview-health-failed');
@@ -586,7 +676,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   input.setStage('browser-crash');
   ownedBrowser.assertRunning();
   const definition = BENCHMARK_SCENARIO_REGISTRY_V1[unit.scenarioId].definition;
-  const support = new Map<string, boolean>([
+  const support = new Map<string, boolean | null>([
     ['performance-time-origin', runtime.performanceTimeOrigin],
     ['webgl2', runtime.webgl2],
     ['webgpu', runtime.webgpu],
@@ -601,8 +691,9 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     requestedArgs: options.plan.core.browser.requestedArgs,
     profilePath: ownedBrowser.profilePath,
     outputRoot: options.outputRoot,
+    executableSha256: ownedBrowser.executableSha256,
     runtime: { cssWidth: runtime.cssWidth, cssHeight: runtime.cssHeight, devicePixelRatio: runtime.devicePixelRatio, visibility: runtime.visibility, focused: runtime.focused, backgroundTabs: ownedBrowser.context.pages().length - 1 },
-    capabilities: definition.capabilityContracts.map(({ id }) => ({ id, supported: support.get(id) ?? false, sourceRef: 'br03-browser-capability-v1' as CanonicalIdV1 })),
+    capabilities: definition.capabilityContracts.map(({ id }) => ({ id, supported: support.get(id) ?? null, sourceRef: 'br03-browser-capability-v1' as CanonicalIdV1 })),
     cdp: ownedBrowser.cdp,
   });
   input.setStage('browser-crash');
@@ -638,5 +729,29 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   });
   input.setStage('browser-crash');
   ownedBrowser.assertRunning();
-  return { run, environment: environment.manifest, rawBytes: handoff.rawBytes };
+  return {
+    run,
+    environment: environment.manifest,
+    rawBytes: handoff.rawBytes,
+    ownership: {
+      schemaVersion: 'br03-lifecycle-ownership-v1' as const,
+      slotId: unit.ids.slotId,
+      preview: {
+        host: preview.host,
+        port: preview.port,
+        expectedHealthSha256,
+        observedHealthSha256: preview.healthSha256,
+      },
+      browser: {
+        executableName: ownedBrowser.executableName,
+        executableSha256: ownedBrowser.executableSha256,
+        exitCode: null,
+        signal: null,
+      },
+      cdp: {
+        browserVersion: environment.browserVersion,
+        probes: environment.cdpProbes.map(({ method, status, responseSha256 }) => ({ method, status, responseSha256 })),
+      },
+    },
+  };
 }

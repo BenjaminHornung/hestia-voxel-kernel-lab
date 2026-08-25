@@ -7,7 +7,7 @@ const id = (value: string) => value as CanonicalIdV1;
 describe('BR03 environment collector v1', () => {
   const cdp: CdpSessionV1 = {
     send: async (method) => {
-      if (method === 'Browser.getVersion') return { product: 'Chrome/140.0.1.2', userAgent: 'test-agent' };
+      if (method === 'Browser.getVersion') return { product: 'Chrome/140.0.1.2', protocolVersion: '1.3', revision: 'r1', userAgent: 'test-agent', jsVersion: '14.0' };
       if (method === 'Browser.getBrowserCommandLine') return { arguments: [
         'C:/browser/chrome.exe',
         '--headless',
@@ -16,9 +16,10 @@ describe('BR03 environment collector v1', () => {
         '--output=C:/private/results',
       ] };
       return { gpu: {
-        devices: [{ vendorString: 'GPU Vendor', deviceString: 'GPU Device', driverVendor: 'Driver Vendor', driverVersion: '1.2.3' }],
+        devices: [{ vendorId: 1, deviceId: 2, vendorString: 'GPU Vendor', deviceString: 'GPU Device', driverVendor: 'Driver Vendor', driverVersion: '1.2.3' }],
         auxAttributes: { displayType: 'ANGLE_VULKAN' },
-      } };
+        driverBugWorkarounds: [], videoDecoding: [], videoEncoding: [],
+      }, modelName: 'test-model', modelVersion: '1', commandLine: 'redacted-by-collector' };
     },
   };
 
@@ -37,12 +38,31 @@ describe('BR03 environment collector v1', () => {
     expect(JSON.stringify(capture.effectiveArgs)).not.toContain('C:/private');
     expect(capture.effectiveArgs).toMatchObject({ value: expect.arrayContaining(['--user-data-dir=<PROFILE>', '--output=<RESULTS>']) });
     expect(capture.manifest.browser).toMatchObject({ product: { value: 'Chrome' }, version: { value: '140.0.1.2' } });
+    expect(capture.browserVersion).toEqual({ product: 'Chrome/140.0.1.2', protocolVersion: '1.3', revision: 'r1', userAgent: 'test-agent', jsVersion: '14.0' });
+    expect(capture.cdpProbes).toEqual([
+      expect.objectContaining({ method: 'Browser.getVersion', status: 'observed', responseSha256: expect.stringMatching(/^sha256:/), value: null }),
+      expect.objectContaining({ method: 'SystemInfo.getInfo', status: 'observed', responseSha256: expect.stringMatching(/^sha256:/), value: null }),
+      expect.objectContaining({ method: 'Browser.getBrowserCommandLine', status: 'observed', responseSha256: expect.stringMatching(/^sha256:/), value: null }),
+    ]);
     expect(capture.manifest.gpu).toMatchObject({ vendor: { value: 'GPU Vendor' }, graphicsBackend: { value: 'ANGLE_VULKAN' } });
     expect(capture.manifest.cpu.physicalCores.status).toBe('unknown');
     expect(capture.manifest.power.source.status).toBe('unknown');
     expect(capture.measurementEligible).toBe(false);
     expect(capture.ineligibilityReasons).toContain('synthetic-hardware-profile');
     expect(capture.ineligibilityReasons).toContain('headless-browser');
+  });
+
+  it('redacts the two-token profile form without changing argument order', async () => {
+    const capture = await collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'C:/private/profile', outputRoot: 'C:/private/results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => method === 'Browser.getBrowserCommandLine'
+        ? { arguments: ['C:/browser/chrome.exe', '--alpha', '--user-data-dir', 'C:/private/profile', '--omega'] }
+        : {} },
+    });
+    expect(capture.effectiveArgs).toMatchObject({ value: ['--alpha', '--omega', '--user-data-dir', '<PROFILE>'] });
+    expect(JSON.stringify(capture.effectiveArgs)).not.toContain('C:/private');
   });
 
   it('fails closed to unknown when CDP evidence cannot be observed', async () => {
@@ -57,8 +77,52 @@ describe('BR03 environment collector v1', () => {
     expect(capture.manifest.browser.product.status).toBe('unknown');
     expect(capture.manifest.gpu.vendor.status).toBe('unknown');
     expect(capture.effectiveArgs.status).toBe('unknown');
+    expect(capture.cdpProbes.every(({ status }) => status === 'error')).toBe(true);
     expect(capture.ineligibilityReasons).toContain('runtime-state-invalid');
     expect(capture.measurementEligible).toBe(false);
+  });
+
+  it('keeps unsupported, permission-denied, blocked, and unknown CDP outcomes distinct', async () => {
+    const capture = await collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'profile', outputRoot: 'results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => {
+        if (method === 'Browser.getVersion') throw Object.assign(new Error('Method not found'), { code: -32_601 });
+        if (method === 'SystemInfo.getInfo') throw new Error('Permission denied');
+        throw new Error('Blocked by policy');
+      } },
+    });
+    expect(capture.cdpProbes.map(({ status }) => status)).toEqual(['unsupported', 'permission-denied', 'blocked']);
+
+    const unknown = await collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'profile', outputRoot: 'results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async () => null },
+    });
+    expect(unknown.cdpProbes.every(({ status }) => status === 'unknown')).toBe(true);
+
+    const partial = await collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'profile', outputRoot: 'results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => method === 'Browser.getVersion' ? { product: 'Chrome/140' } : {} },
+    });
+    expect(partial.cdpProbes.every(({ status }) => status === 'unsupported')).toBe(true);
+  });
+
+  it('classifies malformed nested SystemInfo capabilities as unsupported', async () => {
+    const capture = await collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'profile', outputRoot: 'results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => method === 'SystemInfo.getInfo' ? { gpu: {
+        devices: [{ vendorId: 1, deviceId: 2, vendorString: 'vendor', deviceString: 'device', driverVendor: 'driver', driverVersion: '1' }],
+        driverBugWorkarounds: [], videoDecoding: [{ profile: 'vp9', maxResolution: { width: 'bad', height: 1 }, minResolution: { width: 1, height: 1 } }], videoEncoding: [],
+      }, modelName: 'model', modelVersion: '1', commandLine: '' } : null },
+    });
+    expect(capture.cdpProbes.find(({ method }) => method === 'SystemInfo.getInfo')?.status).toBe('unsupported');
   });
 
   it('rejects an effective browser profile outside the owned path', async () => {
@@ -74,6 +138,15 @@ describe('BR03 environment collector v1', () => {
       runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 },
       capabilities: [], cdp: mismatch,
     })).rejects.toThrow(/profile path/);
+  });
+
+  it('rejects an observed browser product that does not match the requested channel', async () => {
+    await expect(collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'msedge', requestedHeadless: true, requestedArgs: [], profilePath: 'profile', outputRoot: 'results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => method === 'Browser.getVersion' ? { product: 'Chrome/140', protocolVersion: '1.3', revision: 'r1', userAgent: 'agent', jsVersion: '14' } : null },
+    })).rejects.toThrow(/requested channel/);
   });
 
   it('rejects ambiguous effective browser profile flags', async () => {
@@ -104,5 +177,25 @@ describe('BR03 environment collector v1', () => {
       runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 },
       capabilities: [], cdp: credentialFlag,
     })).rejects.toThrow(/Credential-like/);
+  });
+
+  it('rejects unowned absolute paths in effective browser flags', async () => {
+    await expect(collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'C:/private/profile', outputRoot: 'C:/private/results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => method === 'Browser.getBrowserCommandLine'
+        ? { arguments: ['C:/browser/chrome.exe', '--trace-output=C:/Users/private/trace.json', '--user-data-dir=C:/private/profile'] }
+        : method === 'Browser.getVersion' ? { product: 'Chrome/140' } : {} },
+    })).rejects.toThrow(/Private absolute/);
+
+    await expect(collectEnvironmentV1({
+      hardwareProfileId: id('synthetic-ci'), gateRole: 'correctness-only', syntheticHardwareProfile: true,
+      requestedChannel: 'chromium', requestedHeadless: true, requestedArgs: [], profilePath: 'C:/private/profile', outputRoot: 'C:/private/results',
+      runtime: { cssWidth: 1, cssHeight: 1, devicePixelRatio: 1, visibility: 'visible', focused: true, backgroundTabs: 0 }, capabilities: [],
+      cdp: { send: async (method) => method === 'Browser.getBrowserCommandLine'
+        ? { arguments: ['C:/browser/chrome.exe', '--trace-output', '/home/private/trace.json', '--user-data-dir=C:/private/profile'] }
+        : method === 'Browser.getVersion' ? { product: 'Chrome/140' } : {} },
+    })).rejects.toThrow(/Private absolute/);
   });
 });

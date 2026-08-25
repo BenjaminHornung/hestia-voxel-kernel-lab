@@ -1,9 +1,11 @@
-import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { closeSync, fsyncSync, linkSync, openSync } from 'node:fs';
+import { lstat, mkdir, open, readdir, realpath, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BENCHMARK_WP04_SEMANTIC_SHA256_V1, type BenchmarkRunDocumentV1, type BenchmarkValidationContextV1, type CanonicalIdV1 } from '../contracts';
 import { canonicalizeJsonV1, parseCanonicalJsonV1, readFileBytesV1 } from '../provenance';
-import { ArtifactCleanupErrorV1, createInvocationArtifactRootV1, deriveBundleIdV1, readVerifiedBundleRunIdsV1, verifyInvocationControlV1, verifyLifecycleSmokeArtifactsV1, verifyWrittenBundleV1, writeProcessUnitResultsV1 } from './artifacts/artifactStoreV1';
+import { ArtifactCleanupErrorV1, createInvocationArtifactRootV1, deriveBundleIdV1, readInvocationClosureV1, readVerifiedBundleRunIdsV1, verifyInvocationClosureV1, verifyInvocationControlV1, verifyLifecycleSmokeArtifactsV1, verifyWrittenBundleV1, writeInvocationClosureV1, writeProcessUnitResultsV1 } from './artifacts/artifactStoreV1';
 import { RunnerFailureErrorV1, type BuiltRunPlanV1, type RunInvocationRerunOriginV1, type RunInvocationV1, type RunPlanProcessUnitV1 } from './contractsV1';
 import { CleanupGuardErrorV1 } from './process/cleanupGuardV1';
 import { createRunInvocationV1, verifyRunInvocationV1 } from './invocation/runInvocationV1';
@@ -129,6 +131,13 @@ async function resolveInvocationDirectoryV1(path: string): Promise<string> {
   return root;
 }
 
+async function assertOwnedInvocationRootV1(projectRoot: string, invocationRoot: string): Promise<void> {
+  const expectedResultsRoot = await realpath(join(projectRoot, '.benchmark-results'));
+  if (!samePathV1(dirname(invocationRoot), expectedResultsRoot) || !CANONICAL_ID_V1.test(basename(invocationRoot))) {
+    throw new TypeError('Invocation root must be a direct canonical child of the runner-owned .benchmark-results root.');
+  }
+}
+
 async function readInvocationAtRootV1(root: string): Promise<RunInvocationV1> {
   const invocation = parseCanonicalJsonV1(await readBounded(join(root, 'invocation.json'))) as unknown as RunInvocationV1;
   if (invocation.outputRoot !== '<RESULTS>' || basename(root) !== invocation.invocationId) {
@@ -170,7 +179,8 @@ async function assertPredecessorTerminalV1(
   for (const result of rawResults) ledger.record(parseProcessUnitResultV1(result));
   const results = ledger.finalize();
   const issues = await verifyInvocationControlV1(root, plan, invocation, results);
-  if (issues.length > 0) throw new TypeError(`Rerun predecessor terminal control is invalid: ${issues.join('; ')}`);
+  const closureIssues = await verifyInvocationClosureV1(root, plan, invocation, results);
+  if (issues.length > 0 || closureIssues.length > 0) throw new TypeError(`Rerun predecessor terminal control is invalid: ${[...issues, ...closureIssues].join('; ')}`);
 }
 
 async function resolveRepositoryRootV1(cwd: string): Promise<string> {
@@ -194,10 +204,12 @@ async function resolveRepositoryRootV1(cwd: string): Promise<string> {
 
 async function writeExclusive(path: string, bytes: Uint8Array): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const file = await open(path, 'wx');
+  const pendingPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.pending`);
+  const file = await open(pendingPath, 'wx');
   let writeError: unknown;
   try {
     await file.writeFile(bytes);
+    await file.sync();
   } catch (error) {
     writeError = error;
     throw error;
@@ -208,6 +220,17 @@ async function writeExclusive(path: string, bytes: Uint8Array): Promise<void> {
       throw new ArtifactCleanupErrorV1('CLI artifact file close failed.', { cause: writeError === undefined ? closeError : new AggregateError([writeError, closeError], 'CLI artifact write and close failed.') });
     }
   }
+  try {
+    linkSync(pendingPath, path);
+    if (process.platform !== 'win32') {
+      const descriptor = openSync(dirname(path), 'r');
+      try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+    }
+  } catch (error) {
+    await boundedFileCleanupV1(unlink(pendingPath), 'CLI staging cleanup');
+    throw error;
+  }
+  await boundedFileCleanupV1(unlink(pendingPath), 'CLI published staging cleanup');
 }
 
 async function boundedFileCleanupV1<T>(operation: Promise<T>, label: string): Promise<T> {
@@ -401,8 +424,9 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
     let predecessorRoot: string;
     try {
       predecessorRoot = await resolveInvocationDirectoryV1(predecessorPath!);
+      await assertOwnedInvocationRootV1(projectRoot, predecessorRoot);
       const resultsRoot = await realpath(values.get('output-root')!);
-      if (!samePathV1(dirname(predecessorRoot), resultsRoot)) throw new TypeError('Rerun predecessor must be a direct child of the selected results root.');
+      if (!samePathV1(resultsRoot, await realpath(join(projectRoot, '.benchmark-results'))) || !samePathV1(dirname(predecessorRoot), resultsRoot)) throw new TypeError('Rerun predecessor must be a direct child of the selected results root.');
       predecessorInvocation = await readInvocationAtRootV1(predecessorRoot);
       const earlier = await readPredecessorLineageV1(predecessorRoot, predecessorInvocation, plan, authority.runnerSourceSha);
       const predecessorIssues = verifyRunInvocationV1(plan, predecessorInvocation, authority.runnerSourceSha, earlier);
@@ -458,6 +482,7 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
       });
       const results = ledger.finalize();
       await writeProcessUnitResultsV1(invocationRoot, results);
+      await writeInvocationClosureV1(invocationRoot, plan, invocation, results);
       output({ status: 'completed', mode, invocationId: invocation.invocationId, invocationRoot, disposition: 'unsupported' });
       process.exitCode = 7;
       return;
@@ -468,7 +493,8 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
     ? await runSyntheticContractV1({ ...common, preflight: await readCliInputV1(values.get('preflight')!, parseSyntheticContractPreflightConfigV1) })
     : await runLifecycleSmokeV1({ ...common, preflight: await readCliInputV1(values.get('preflight')!, parseLifecycleSmokePreflightConfigV1) });
   output({ status: 'completed', mode, ...result });
-  if (mode === 'lifecycle-smoke-v1' && 'disposition' in result && result.disposition === 'unsupported') process.exitCode = 7;
+  if (mode === 'lifecycle-smoke-v1' && 'disposition' in result && result.disposition === 'unsupported'
+    && (process.exitCode === undefined || process.exitCode === 0)) process.exitCode = 7;
 }
 
 async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void> {
@@ -478,11 +504,12 @@ async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void>
   let invocationRoot: string;
   try {
     invocationRoot = await resolveInvocationDirectoryV1(values.get('invocation-root')!);
+    await assertOwnedInvocationRootV1(projectRoot, invocationRoot);
   } catch (error) {
     throw new CliInputErrorV1(`CLI invocation input is invalid: ${error instanceof Error ? error.message : 'invalid invocation root'}.`, { cause: error });
   }
   const rootEntries = await readdir(invocationRoot, { withFileTypes: true });
-  const expectedRootEntries = new Set(['run-plan.json', 'invocation.json', 'process-unit-results.json', 'bundles', 'bundle-contexts', 'lifecycle-smoke']);
+  const expectedRootEntries = new Set(['run-plan.json', 'invocation.json', 'process-unit-results.json', 'invocation-closure.json', 'bundles', 'bundle-contexts', 'lifecycle-smoke', 'failure-diagnostics']);
   if (rootEntries.length !== expectedRootEntries.size || rootEntries.some((entry) => !expectedRootEntries.has(entry.name) || entry.isSymbolicLink())) {
     throw new TypeError('Invocation root contains missing or unexpected entries.');
   }
@@ -497,37 +524,37 @@ async function verifyCommand(values: ReadonlyMap<string, string>): Promise<void>
   const results = ledger.finalize();
   const controlIssues = await verifyInvocationControlV1(invocationRoot, plan, invocation, results);
   const lifecycleIssues = await verifyLifecycleSmokeArtifactsV1(invocationRoot, results, { plan, invocation });
-  if (controlIssues.length > 0 || lifecycleIssues.length > 0) throw new TypeError(`Invocation control verification failed: ${[...controlIssues, ...lifecycleIssues].join('; ')}`);
+  const closureIssues = await verifyInvocationClosureV1(invocationRoot, plan, invocation, results);
+  if (controlIssues.length > 0 || lifecycleIssues.length > 0 || closureIssues.length > 0) throw new TypeError(`Invocation control verification failed: ${[...controlIssues, ...lifecycleIssues, ...closureIssues].join('; ')}`);
+  const closure = await readInvocationClosureV1(invocationRoot);
   const bundleRoot = join(invocationRoot, 'bundles');
   const contextRoot = join(invocationRoot, 'bundle-contexts');
-  const bundles = await readdir(bundleRoot, { withFileTypes: true });
-  const contexts = await readdir(contextRoot, { withFileTypes: true });
+  const bundleNames = [...new Set(closure.files.filter(({ role }) => role === 'bundle').map(({ path }) => path.split('/')[1]).filter((name): name is string => name !== undefined))].sort();
+  const contextNames = closure.files.filter(({ role }) => role === 'bundle-context').map(({ path }) => basename(path)).sort();
   const validRunCount = results.filter(({ disposition }) => disposition === 'valid').reduce((count, result) => count + result.runIds.length, 0);
-  if ((validRunCount > 0 && bundles.length === 0) || bundles.some((entry) => !entry.isDirectory() || entry.isSymbolicLink())
-    || contexts.some((entry) => !entry.isFile() || entry.isSymbolicLink())
-    || contexts.length !== bundles.length) {
+  if ((validRunCount > 0 && bundleNames.length === 0) || contextNames.length !== bundleNames.length) {
     throw new TypeError('Bundle and validation-context directories do not form a closed set.');
   }
   const verifiedBundles: string[] = [];
   const bundleRunIds: string[] = [];
-  for (const bundle of bundles) {
-    const contextName = `${bundle.name}.json`;
-    if (!contexts.some(({ name }) => name === contextName)) throw new TypeError('Bundle validation context is missing.');
+  for (const bundleName of bundleNames) {
+    const contextName = `${bundleName}.json`;
+    if (!contextNames.includes(contextName)) throw new TypeError('Bundle validation context is missing.');
     const context = parseCanonicalJsonV1(await readBounded(join(contextRoot, contextName))) as unknown as BenchmarkValidationContextV1;
     assertBundleContextBindingsV1(context, plan);
-    const currentBundleRoot = join(bundleRoot, bundle.name);
+    const currentBundleRoot = join(bundleRoot, bundleName);
     const bundleManifest = parseCanonicalJsonV1(await readBounded(join(currentBundleRoot, 'bundle-manifest.json'))) as { readonly bundleId?: unknown };
     const document = parseCanonicalJsonV1(await readBounded(join(currentBundleRoot, 'raw', 'hardware-cell.json'))) as BenchmarkRunDocumentV1;
-    if (bundleManifest.bundleId !== bundle.name || typeof document.hardwareCellId !== 'string'
-      || deriveBundleIdV1(invocation.invocationId, document.hardwareCellId as CanonicalIdV1) !== bundle.name) {
+    if (bundleManifest.bundleId !== bundleName || typeof document.hardwareCellId !== 'string'
+      || deriveBundleIdV1(invocation.invocationId, document.hardwareCellId as CanonicalIdV1) !== bundleName) {
       throw new TypeError('Bundle identity is not bound to its invocation and hardware cell.');
     }
     assertBundleContextDocumentBindingsV1(context, document);
     assertBundleDocumentBindingsV1(document, plan, invocation);
     const verification = verifyWrittenBundleV1(currentBundleRoot, context);
     if (!verification.valid) throw new TypeError(`Bundle verification failed: ${verification.error ?? 'unknown error'}.`);
-    verifiedBundles.push(bundle.name);
-    bundleRunIds.push(...await readVerifiedBundleRunIdsV1(join(bundleRoot, bundle.name)));
+    verifiedBundles.push(bundleName);
+    bundleRunIds.push(...await readVerifiedBundleRunIdsV1(join(bundleRoot, bundleName)));
   }
   const expectedValidRunIds = results.filter(({ disposition }) => disposition === 'valid').flatMap(({ runIds }) => runIds);
   assertBundleRunBindingsV1(expectedValidRunIds, bundleRunIds);
@@ -564,12 +591,6 @@ if (await isCurrentModulePathV1(process.argv[1])) {
     const errorLine = `${JSON.stringify({ status: 'error', message: error instanceof Error ? error.message : 'Runner failed.' })}\n`;
     const exitCode = classifyRunnerErrorV1(error, process.argv[2]);
     process.exitCode = exitCode;
-    if (exitCode === 8) {
-      const hardExit = setTimeout(() => process.exit(exitCode), 250);
-      hardExit.unref();
-      process.stderr.write(errorLine, () => process.exit(exitCode));
-    } else {
-      process.stderr.write(errorLine);
-    }
+    process.stderr.write(errorLine);
   }
 }

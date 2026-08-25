@@ -1,9 +1,10 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { BrowserContext, Page } from '@playwright/test';
+import type { Browser, BrowserContext, BrowserServer, Page } from '@playwright/test';
 import { describe, expect, it, vi } from 'vitest';
-import { startBrowserProcessV1, type PersistentContextLauncherV1 } from '../../../../src/benchmark/runner/process/browserProcessSupervisorV1';
+import { sha256BytesV1 } from '../../../../src/benchmark/provenance';
+import { BrowserInitializationErrorV1, BrowserStartupCleanupErrorV1, startBrowserProcessV1, type OwnedBrowserLauncherV1 } from '../../../../src/benchmark/runner/process/browserProcessSupervisorV1';
 import { CleanupGuardV1 } from '../../../../src/benchmark/runner/process/cleanupGuardV1';
 import { startPreviewServerV1, type PreviewFactoryV1 } from '../../../../src/benchmark/runner/process/previewServerSupervisorV1';
 
@@ -30,8 +31,10 @@ describe('BR03 cleanup and preview supervision v1', () => {
       } };
     });
     const fetchImplementation = vi.fn(async () => new Response('ok')) as unknown as typeof fetch;
-    const handle = await startPreviewServerV1({ projectRoot: 'project', buildRoot: 'dist' }, factory, fetchImplementation);
+    const expectedHealthSha256 = sha256BytesV1(new TextEncoder().encode('ok'));
+    const handle = await startPreviewServerV1({ projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256 }, factory, fetchImplementation);
     expect(handle.baseUrl).toBe('http://127.0.0.1:43210');
+    expect(handle).toMatchObject({ host: '127.0.0.1', port: 43210, healthSha256: expectedHealthSha256 });
     await handle.assertHealthy();
     await handle.close();
     expect(close).toHaveBeenCalledOnce();
@@ -43,45 +46,120 @@ describe('BR03 cleanup and preview supervision v1', () => {
       address: () => ({ port: 43210 }), close, on: () => undefined,
     } });
     await expect(startPreviewServerV1(
-      { projectRoot: 'project', buildRoot: 'dist' },
+      { projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256: sha256BytesV1(new TextEncoder().encode('ok')) },
       factory,
       vi.fn(async () => new Response('no', { status: 503 })) as unknown as typeof fetch,
     )).rejects.toThrow(/HTTP 503/);
     expect(close).toHaveBeenCalledOnce();
   });
+
+  it('fails closed when preview returns 200 with the wrong build marker', async () => {
+    const close = vi.fn((callback: (error?: Error) => void) => callback());
+    const factory: PreviewFactoryV1 = async () => ({ httpServer: {
+      address: () => ({ port: 43210 }), close, on: () => undefined,
+    } });
+    await expect(startPreviewServerV1(
+      { projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256: sha256BytesV1(new TextEncoder().encode('expected')) },
+      factory,
+      vi.fn(async () => new Response('different')) as unknown as typeof fetch,
+    )).rejects.toThrow(/build marker/);
+    expect(close).toHaveBeenCalledOnce();
+  });
 });
 
 describe('BR03 persistent browser profile supervision v1', () => {
+  it('retains observed initialization provenance when startup cleanup also fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'br03-startup-cleanup-'));
+    const child = { pid: 1234, spawnfile: process.execPath, spawnargs: [] as string[], exitCode: null as number | null, signalCode: null };
+    const server = { process: () => child, wsEndpoint: () => 'ws://127.0.0.1/owned', kill: async () => { throw new Error('kill failed'); } } as unknown as BrowserServer;
+    let profilePath = '';
+    const launcher: OwnedBrowserLauncherV1 = {
+      launchServer: async () => {
+        profilePath = await mkdtemp(join(process.env.TEMP!, 'playwright_chromiumdev_profile-'));
+        await writeFile(join(profilePath, 'sentinel'), 'retain');
+        child.spawnargs = [process.execPath, `--user-data-dir=${profilePath}`];
+        return server;
+      },
+      connect: async () => { throw new Error('connect failed'); },
+    };
+    try {
+      const error = await startBrowserProcessV1({ ownedResultsRoot: root, profileRoot: join(root, 'profiles'), channel: 'chromium', headless: true, args: [], viewport: { width: 1, height: 1 }, deviceScaleFactor: 1 }, launcher).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(BrowserStartupCleanupErrorV1);
+      const aggregate = (error as Error).cause as AggregateError;
+      expect(aggregate.errors.some((entry) => entry instanceof BrowserInitializationErrorV1
+        && entry.executableName === (process.platform === 'win32' ? 'node.exe' : 'node'))).toBe(true);
+      expect(await readdir(profilePath)).toEqual(['sentinel']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('never deletes a launcher-reported profile outside the owned results root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'br03-owned-results-'));
+    const external = await mkdtemp(join(tmpdir(), 'br03-external-profile-'));
+    await writeFile(join(external, 'sentinel'), 'keep');
+    const child = { pid: 1234, spawnfile: process.execPath, spawnargs: [process.execPath, `--user-data-dir=${external}`], exitCode: null as number | null, signalCode: null };
+    const server = { process: () => child, wsEndpoint: () => 'ws://127.0.0.1/owned', close: async () => { child.exitCode = 0; }, kill: async () => { child.exitCode = 1; } } as unknown as BrowserServer;
+    const launcher: OwnedBrowserLauncherV1 = { launchServer: async () => server, connect: async () => { throw new Error('must not connect'); } };
+    try {
+      await expect(startBrowserProcessV1({ ownedResultsRoot: root, profileRoot: join(root, 'profiles'), channel: 'chromium', headless: true, args: [], viewport: { width: 1, height: 1 }, deviceScaleFactor: 1 }, launcher)).rejects.toBeInstanceOf(BrowserInitializationErrorV1);
+      expect(await readdir(external)).toEqual(['sentinel']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(external, { recursive: true, force: true });
+    }
+  });
+
   it('uses a unique empty profile per process and removes only that profile after context close', async () => {
     const root = await mkdtemp(join(tmpdir(), 'br03-browser-test-'));
     const events = new Map<string, () => void>();
     const closeOrder: string[] = [];
-    const page = { on: vi.fn() } as unknown as Page;
+    const page = { on: vi.fn(), setViewportSize: vi.fn(async () => undefined) } as unknown as Page;
     let connected = true;
     const context = {
       pages: () => [page],
       newPage: async () => page,
       on: (event: string, listener: () => void) => { events.set(event, listener); },
       close: async () => { closeOrder.push('context'); events.get('close')?.(); },
-      browser: () => ({
-        isConnected: () => connected,
-        close: async () => { closeOrder.push('browser'); connected = false; },
-        newBrowserCDPSession: async () => ({ send: async () => ({}) }),
-      }),
     } as unknown as BrowserContext;
     const profiles: string[] = [];
-    const launcher: PersistentContextLauncherV1 = {
-      launchPersistentContext: async (profilePath) => { profiles.push(profilePath); expect(await readdir(profilePath)).toEqual([]); return context; },
+    const child = { pid: 1234, spawnfile: process.execPath, spawnargs: [] as string[], exitCode: null as number | null, signalCode: null };
+    const server = {
+      process: () => child,
+      wsEndpoint: () => 'ws://127.0.0.1/owned',
+      close: async () => { child.exitCode = 0; },
+      kill: async () => { child.exitCode = 1; },
+    } as unknown as BrowserServer;
+    const browser = {
+      contexts: () => [context],
+      isConnected: () => connected,
+      close: async () => { closeOrder.push('browser'); connected = false; },
+      newBrowserCDPSession: async () => ({ send: async () => ({}) }),
+    } as unknown as Browser;
+    const launcher: OwnedBrowserLauncherV1 = {
+      launchServer: async (launchOptions) => {
+        expect(launchOptions.args?.some((argument) => argument.startsWith('--user-data-dir='))).toBe(false);
+        const profilePath = await mkdtemp(join(process.env.TEMP!, 'playwright_chromiumdev_profile-'));
+        child.spawnargs = [process.execPath, `--user-data-dir=${profilePath}`];
+        profiles.push(profilePath);
+        expect(await readdir(profilePath)).toEqual([]);
+        child.exitCode = null;
+        connected = true;
+        return server;
+      },
+      connect: async () => browser,
     };
     try {
-      const first = await startBrowserProcessV1({ profileRoot: root, channel: 'chromium', headless: true, args: [], viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, launcher);
+      await expect(startBrowserProcessV1({ ownedResultsRoot: root, profileRoot: join(root, '..', 'outside'), channel: 'chromium', headless: true, args: [], viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, launcher)).rejects.toThrow(/outside its owned root/);
+      const profileRoot = join(root, 'profiles');
+      const first = await startBrowserProcessV1({ ownedResultsRoot: root, profileRoot, channel: 'chromium', headless: true, args: [], viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, launcher);
       await first.close();
-      expect(await readdir(root)).toEqual([]);
-      const second = await startBrowserProcessV1({ profileRoot: root, channel: 'chromium', headless: true, args: [], viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, launcher);
+      expect(await readdir(profileRoot)).toEqual([]);
+      const second = await startBrowserProcessV1({ ownedResultsRoot: root, profileRoot, channel: 'chromium', headless: true, args: [], viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, launcher);
       await second.close();
       expect(profiles[0]).not.toBe(profiles[1]);
       expect(closeOrder).toEqual(['context', 'browser', 'context', 'browser']);
-      expect(await readdir(root)).toEqual([]);
+      expect(await readdir(profileRoot)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

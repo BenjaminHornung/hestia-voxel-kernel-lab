@@ -56,6 +56,9 @@ describe('BR03 lifecycle-smoke contract v1', () => {
       await mkdir(join(root, 'lifecycle-smoke'));
       const document = createBenchmarkCaseDocumentV1({ scenarioId: 'backend-fixture-v1', phase: 'cold', container: 'cold', samples: true }) as unknown as { readonly browserProcesses: readonly [{ readonly runs: readonly [BenchmarkRunV1] }] };
       const run = document.browserProcesses[0]!.runs[0]!;
+      const executableSha256 = `sha256:${'a'.repeat(64)}` as never;
+      const environment = { ...run.environment, browser: { ...run.environment.browser, executableSha256: observed(executableSha256) } } as BenchmarkRunV1['environment'];
+      const ownedRun = { ...run, environment };
       const result = {
         schemaVersion: 'br03-process-unit-result-v1' as const,
         slotId: run.ids.slotId,
@@ -65,7 +68,17 @@ describe('BR03 lifecycle-smoke contract v1', () => {
          failureCode: 'required-metric-producers-unavailable' as const,
         runIds: [run.runId],
       };
-      const artifactRoot = await writeLifecycleSmokeArtifactsV1(root, run.ids.slotId, run, run.environment, canonicalizeJsonV1({ runId: run.runId }));
+      const artifactRoot = await writeLifecycleSmokeArtifactsV1(root, run.ids.slotId, ownedRun, environment, canonicalizeJsonV1({ runId: run.runId }), {
+        schemaVersion: 'br03-lifecycle-ownership-v1', slotId: run.ids.slotId,
+        preview: { host: '127.0.0.1', port: 43210, expectedHealthSha256: executableSha256, observedHealthSha256: executableSha256 },
+        browser: { executableName: 'chromium', executableSha256, exitCode: 0, signal: null },
+        cdp: { browserVersion: { product: null, protocolVersion: null, revision: null, userAgent: null, jsVersion: null }, probes: [
+          { method: 'Browser.getVersion', status: 'unknown', responseSha256: null },
+          { method: 'SystemInfo.getInfo', status: 'unknown', responseSha256: null },
+          { method: 'Browser.getBrowserCommandLine', status: 'unknown', responseSha256: null },
+        ] },
+        cleanupState: 'complete',
+      });
       expect(await verifyLifecycleSmokeArtifactsV1(root, [result])).toEqual([]);
       await writeFile(join(artifactRoot, 'telemetry-export.json'), new TextEncoder().encode('{"changed":true}'));
       expect(await verifyLifecycleSmokeArtifactsV1(root, [result])).toContainEqual(expect.stringMatching(/digest mismatch/));
