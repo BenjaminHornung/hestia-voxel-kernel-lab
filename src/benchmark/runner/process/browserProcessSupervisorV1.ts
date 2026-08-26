@@ -305,11 +305,12 @@ export async function startBrowserProcessV1(
            } finally {
              state = crashed || child.exitCode !== null || child.signalCode !== null ? 'crashed' : 'closed';
            }
-            if (closeError === undefined || childExited || child.exitCode !== null || child.signalCode !== null) {
+            const childExitProven = childExited || child.exitCode !== null || child.signalCode !== null;
+            if (closeError === undefined || childExitProven) {
              assertOwnedPath(root, ownedProfilePath);
              await cleanupOwnedProfileV1(ownedProfilePath, ownedResultsRoot, 'Benchmark browser profile cleanup');
            }
-           if (closeError !== undefined) throw closeError;
+            if (closeError !== undefined && !childExitProven) throw closeError;
         })();
         return closePromise;
       },
