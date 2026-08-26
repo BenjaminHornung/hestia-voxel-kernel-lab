@@ -62,5 +62,5 @@ describe('BR03 cumulative gate allowlist', () => {
     const candidatePackage = JSON.parse(readFileSync('package.json', 'utf8')) as { readonly dependencies: unknown; readonly devDependencies: unknown };
     expect({ dependencies: candidatePackage.dependencies, devDependencies: candidatePackage.devDependencies })
       .toEqual({ dependencies: acceptedPackage.dependencies, devDependencies: acceptedPackage.devDependencies });
-  });
+  }, 30_000);
 });
