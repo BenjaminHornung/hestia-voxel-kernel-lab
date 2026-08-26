@@ -282,7 +282,6 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       executionError ??= reason;
     }
     rejectAbort?.(reason);
-    signalCleanup ??= guard.close();
   };
   const terminalOutcomeIsAborted = () => terminalOutcome === 'aborted';
   const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
