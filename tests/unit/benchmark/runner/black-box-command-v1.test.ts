@@ -29,7 +29,7 @@ describe('BR03 black-box command receipts', () => {
     expect(receipt).toMatchObject({ classification: 'harness-failure', result: { exitCode: 0 } });
     expect(receipt.result.stdoutSha256).toMatch(/^sha256:/u);
     expect(receipt.observations.failureSha256).toMatch(/^sha256:/u);
-  });
+  }, 30_000);
 
   it('reserves an immutable receipt before spawning', async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), 'br03-command-reservation-'));

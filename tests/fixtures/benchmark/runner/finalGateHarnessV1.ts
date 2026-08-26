@@ -76,7 +76,7 @@ async function gate(label: string, command: string, args: readonly string[], tim
 }
 
 await gate('01-npm-ci', process.execPath, [npmExecPath, 'ci'], 300_000, nativeCandidateGuards);
-await gate('02-focused-runner-tests', process.execPath, [join(repositoryRoot, 'node_modules', 'vitest', 'vitest.mjs'), 'run', '--maxWorkers=1',
+await gate('02-focused-runner-tests', process.execPath, [vitestExecPath, 'run', '--maxWorkers=1',
   'tests/unit/benchmark/runner/black-box-command-v1.test.ts',
   'tests/unit/benchmark/runner/br03-gate-allowlist-v1.test.ts',
   'tests/unit/benchmark/runner/process-supervisors-v1.test.ts',
