@@ -299,16 +299,22 @@ export async function startBrowserProcessV1(
       close: () => {
         if (closePromise !== null) return closePromise;
         closePromise = (async () => {
-          if (state === 'closed') return;
-          const crashed = state === 'crashed';
-          state = 'closing';
-          try {
-            await closeOwnedBrowser(ownedContext, browser!, server);
-          } finally {
-            state = crashed ? 'crashed' : 'closed';
-          }
-          assertOwnedPath(root, ownedProfilePath);
-          await cleanupOwnedProfileV1(ownedProfilePath, ownedResultsRoot, 'Benchmark browser profile cleanup');
+           if (state === 'closed') return;
+           const crashed = state === 'crashed';
+           state = 'closing';
+           let closeError: unknown;
+           try {
+             await closeOwnedBrowser(ownedContext, browser!, server);
+           } catch (error) {
+             closeError = error;
+           } finally {
+             state = crashed || child.exitCode !== null || child.signalCode !== null ? 'crashed' : 'closed';
+           }
+           if (closeError === undefined || child.exitCode !== null || child.signalCode !== null) {
+             assertOwnedPath(root, ownedProfilePath);
+             await cleanupOwnedProfileV1(ownedProfilePath, ownedResultsRoot, 'Benchmark browser profile cleanup');
+           }
+           if (closeError !== undefined) throw closeError;
         })();
         return closePromise;
       },
