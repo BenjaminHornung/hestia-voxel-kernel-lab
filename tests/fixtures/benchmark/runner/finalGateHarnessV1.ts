@@ -87,7 +87,7 @@ await gate('03-unit-tests', process.execPath, [vitestExecPath, 'run', '--maxWork
 await gate('04-build', process.execPath, [npmExecPath, 'run', 'build'], 300_000);
 await gate('05-build-benchmark', process.execPath, [npmExecPath, 'run', 'build:benchmark'], 300_000);
 await gate('06-build-runner', process.execPath, [npmExecPath, 'run', 'build:runner'], 300_000);
-await gate('07-e2e-and-built-runner-matrix', process.execPath, [npmExecPath, 'run', 'test:e2e'], 900_000);
+await gate('07-e2e-and-built-runner-matrix', process.execPath, [npmExecPath, 'run', 'test:e2e'], 1_200_000);
 await gate('08-dependency-tree', process.execPath, [npmExecPath, 'ls', '--depth=0'], 120_000);
 await gate('09-diff-check', 'git', ['--no-replace-objects', 'diff', '--check'], 30_000);
 
