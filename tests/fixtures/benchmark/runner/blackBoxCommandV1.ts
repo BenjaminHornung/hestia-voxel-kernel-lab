@@ -196,7 +196,7 @@ async function runBlackBoxCommandCoreV1(options: BlackBoxCommandOptionsV1, recei
     await killTree(pid);
     throw new Error('Black-box child exceeded its output bound.');
   }
-  const directChildAliveAfter = alive(pid);
+  const directChildAliveAfter = child.exitCode === null && child.signalCode === null ? alive(pid) : false;
   const outcome: BlackBoxOutcomeV1 = {
     ...closed,
     stdout: Buffer.concat(stdout).toString('utf8'),
