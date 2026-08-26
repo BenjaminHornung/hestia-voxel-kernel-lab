@@ -531,6 +531,10 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       // The immutable closure is the publish-last linearization point.
     } catch (error) {
       if (error instanceof ArtifactCleanupErrorV1) recordCleanupFailure(error);
+      else if (error instanceof RunnerFailureErrorV1 && error.failureCode === 'operator-abort') {
+        setStage('operator-abort');
+        recordFailure(error, 'Lifecycle-smoke terminal-result publication was aborted.');
+      }
       else {
         setStage('artifact-write-failed');
         recordFailure(error, 'Lifecycle-smoke terminal-result publication failed.');
