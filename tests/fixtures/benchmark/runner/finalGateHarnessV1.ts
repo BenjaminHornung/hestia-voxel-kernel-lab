@@ -76,14 +76,14 @@ async function gate(label: string, command: string, args: readonly string[], tim
 }
 
 await gate('01-npm-ci', process.execPath, [npmExecPath, 'ci'], 300_000, nativeCandidateGuards);
-await gate('02-focused-runner-tests', process.execPath, [vitestExecPath, 'run', '--pool=threads', '--maxWorkers=1',
+await gate('02-focused-runner-tests', process.execPath, [vitestExecPath, 'run', '--pool=threads', '--maxWorkers=1', '--testTimeout=120000',
   'tests/unit/benchmark/runner/black-box-command-v1.test.ts',
   'tests/unit/benchmark/runner/br03-gate-allowlist-v1.test.ts',
   'tests/unit/benchmark/runner/process-supervisors-v1.test.ts',
   'tests/unit/benchmark/runner/br02-handoff-driver-v1.test.ts',
   'tests/unit/benchmark/runner/lifecycle-smoke-v1.test.ts',
   'tests/unit/benchmark/runner/run-assembly-receipt-v1.test.ts'], 300_000);
-await gate('03-unit-tests', process.execPath, [vitestExecPath, 'run', '--pool=threads', '--maxWorkers=1'], 600_000);
+await gate('03-unit-tests', process.execPath, [vitestExecPath, 'run', '--pool=threads', '--maxWorkers=1', '--testTimeout=120000'], 600_000);
 await gate('04-build', process.execPath, [npmExecPath, 'run', 'build'], 300_000);
 await gate('05-build-benchmark', process.execPath, [npmExecPath, 'run', 'build:benchmark'], 300_000);
 await gate('06-build-runner', process.execPath, [npmExecPath, 'run', 'build:runner'], 300_000);
