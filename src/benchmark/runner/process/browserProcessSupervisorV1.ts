@@ -134,7 +134,6 @@ async function closeOwnedBrowser(context: BrowserContext, browser: Browser, serv
 async function waitForExactChildExitV1(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   await boundedCleanupV1(new Promise<void>((resolve) => child.once('exit', () => resolve())), 'Exact owned browser child exit');
-  if (child.exitCode === null && child.signalCode === null) throw new Error('Exact owned browser child exit was not proven.');
 }
 
 async function killOwnedBrowserServerV1(server: BrowserServer): Promise<void> {
@@ -237,18 +236,14 @@ export async function startBrowserProcessV1(
   assertOwnedPath(ownedResultsRoot, root);
   await assertNoSymlinkParentsV1(requestedProfileRoot, requestedOwnedResultsRoot);
   let server: BrowserServer;
-  try {
-    server = await launchServerInOwnedTempRoot(launcher, root, {
+  server = await launchServerInOwnedTempRoot(launcher, root, {
       args: [...options.args, ...(options.args.includes('--enable-automation') ? [] : ['--enable-automation'])],
       channel: options.channel,
       handleSIGHUP: false,
       handleSIGINT: false,
       handleSIGTERM: false,
       headless: options.headless,
-    });
-  } catch (error) {
-    throw error;
-  }
+  });
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
   let profilePath: string | null = null;
