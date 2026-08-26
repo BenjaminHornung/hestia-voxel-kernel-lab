@@ -73,11 +73,10 @@ function repositoryState(repository: string) {
   };
 }
 
-function npmVersion(repository: string): string {
+function npmVersion(repository: string): string | null {
   const npmExecPath = process.env.npm_execpath;
   if (npmExecPath !== undefined) return bounded(repository, process.execPath, [npmExecPath, '--version']).trim();
-  if (process.platform === 'win32') throw new Error('npm CLI path is unavailable.');
-  return bounded(repository, 'npm', ['--version']).trim();
+  return null;
 }
 
 function alive(pid: number): boolean {

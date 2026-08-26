@@ -11,9 +11,11 @@ import {
   type AdaptTelemetryExportV1,
   type CanonicalIdV1,
   type GitShaV1,
+  type Sha256DigestV1,
 } from '../../contracts';
 import { adaptTelemetryExportV1 } from '../../adapters';
 import { canonicalizeJsonV1, readFileBytesV1, repositoryRelativePathV1 } from '../../provenance';
+import { assertRunnerAuthorityV1, type RunnerAuthorityV1 } from '../runnerSourceV1';
 
 export interface ReceiptValidatorSourceFileV1 {
   readonly path: string;
@@ -22,6 +24,10 @@ export interface ReceiptValidatorSourceFileV1 {
 }
 
 export interface MintReceiptOptionsV1 {
+  readonly runnerAuthority: RunnerAuthorityV1;
+  readonly projectRoot: string;
+  readonly expectedSourceCommitSha: GitShaV1;
+  readonly runnerSourceSha: Sha256DigestV1;
   readonly document: BenchmarkRunDocumentV1;
   readonly planId: CanonicalIdV1;
   readonly slotId: CanonicalIdV1;
@@ -43,6 +49,14 @@ export interface MintedReceiptV1 {
 export async function mintReceiptV1(options: MintReceiptOptionsV1): Promise<MintedReceiptV1> {
   const validation = validateBenchmarkRunV1(options.document, options.validationContext, BENCHMARK_METRIC_REGISTRY_V1);
   if (!validation.valid) throw new Error(`Cannot mint receipt for BR01-invalid hardware cell: ${validation.code}.`);
+  assertRunnerAuthorityV1(options.runnerAuthority, {
+    projectRoot: options.projectRoot,
+    sourceCommitSha: options.expectedSourceCommitSha,
+    runnerSourceSha: options.runnerSourceSha,
+  });
+  if (options.document.source.commitSha !== options.expectedSourceCommitSha) {
+    throw new Error('Receipt source commit does not match the accepted plan.');
+  }
   if (options.validatorSourceFiles.length === 0) throw new TypeError('Receipt validator source file set must be non-empty.');
   let validatorSourceBytes = 0;
   const validatorSourceFiles = options.validatorSourceFiles.map(({ path, absolutePath, bytes }) => {

@@ -1,10 +1,10 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Browser, BrowserContext, BrowserServer, Page } from '@playwright/test';
 import { describe, expect, it, vi } from 'vitest';
 import { sha256BytesV1 } from '../../../../src/benchmark/provenance';
-import { BrowserInitializationErrorV1, BrowserStartupCleanupErrorV1, startBrowserProcessV1, type OwnedBrowserLauncherV1 } from '../../../../src/benchmark/runner/process/browserProcessSupervisorV1';
+import { BrowserInitializationErrorV1, BrowserStartupCleanupErrorV1, cleanupOwnedProfileV1, startBrowserProcessV1, type OwnedBrowserLauncherV1 } from '../../../../src/benchmark/runner/process/browserProcessSupervisorV1';
 import { CleanupGuardV1 } from '../../../../src/benchmark/runner/process/cleanupGuardV1';
 import { startPreviewServerV1, type PreviewFactoryV1 } from '../../../../src/benchmark/runner/process/previewServerSupervisorV1';
 
@@ -120,6 +120,62 @@ describe('BR03 cleanup and preview supervision v1', () => {
 });
 
 describe('BR03 persistent browser profile supervision v1', () => {
+  it('rejects a static profile parent alias before creating an external child', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'br03-profile-parent-alias-'));
+    const external = await mkdtemp(join(tmpdir(), 'br03-profile-parent-external-'));
+    const profileParent = join(root, 'profiles');
+    try {
+      try {
+        await symlink(external, profileParent, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+        if (['EACCES', 'EPERM', 'ENOTSUP', 'UNKNOWN'].includes(code ?? '')) return;
+        throw error;
+      }
+      await writeFile(join(external, 'sentinel'), 'keep');
+      const launcher: OwnedBrowserLauncherV1 = {
+        launchServer: vi.fn(async () => { throw new Error('must not launch'); }),
+        connect: async () => { throw new Error('must not connect'); },
+      };
+      await expect(startBrowserProcessV1({
+        ownedResultsRoot: root,
+        profileRoot: join(profileParent, 'invocation'),
+        channel: 'chromium',
+        headless: true,
+        args: [],
+        viewport: { width: 1, height: 1 },
+        deviceScaleFactor: 1,
+      }, launcher)).rejects.toThrow(/symbolic-link|junction/);
+      expect(launcher.launchServer).not.toHaveBeenCalled();
+      expect(await readdir(external)).toEqual(['sentinel']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(external, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses cleanup through a static profile parent alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'br03-profile-cleanup-alias-'));
+    const external = await mkdtemp(join(tmpdir(), 'br03-profile-cleanup-external-'));
+    const profileParent = join(root, 'profiles');
+    try {
+      try {
+        await symlink(external, profileParent, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+        if (['EACCES', 'EPERM', 'ENOTSUP', 'UNKNOWN'].includes(code ?? '')) return;
+        throw error;
+      }
+      await mkdir(join(external, 'invocation'), { recursive: true });
+      await writeFile(join(external, 'sentinel'), 'keep');
+      await expect(cleanupOwnedProfileV1(join(profileParent, 'invocation'), root, 'profile cleanup')).rejects.toThrow(/symbolic-link|junction|owned root/);
+      expect(await readdir(external)).toEqual(expect.arrayContaining(['invocation', 'sentinel']));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(external, { recursive: true, force: true });
+    }
+  });
+
   it('retains observed initialization provenance when startup cleanup also fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'br03-startup-cleanup-'));
     const child = { pid: 1234, spawnfile: process.execPath, spawnargs: [] as string[], exitCode: null as number | null, signalCode: null };

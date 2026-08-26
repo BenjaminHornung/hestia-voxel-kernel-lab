@@ -11,6 +11,24 @@ const FORBIDDEN_PREFIXES = [
   'tests/contracts/',
   'evidence/',
 ] as const;
+const ALLOWED_PATHS = new Set([
+  '.gitignore', 'docs/benchmark/runner-v1.md', 'package.json', 'vite.runner.config.ts',
+  'src/benchmark/runner/artifacts/artifactStoreV1.ts', 'src/benchmark/runner/assembly/receiptMinterV1.ts', 'src/benchmark/runner/assembly/runAssemblerV1.ts',
+  'src/benchmark/runner/browser/br02HandoffDriverV1.ts', 'src/benchmark/runner/cli.ts', 'src/benchmark/runner/contractsV1.ts', 'src/benchmark/runner/environment/environmentCollectorV1.ts',
+  'src/benchmark/runner/ids/orchestrationIdsV1.ts', 'src/benchmark/runner/invocation/runInvocationV1.ts', 'src/benchmark/runner/live/lifecycleSmokeRunV1.ts',
+  'src/benchmark/runner/plan/counterbalanceV1.ts', 'src/benchmark/runner/plan/planFileV1.ts', 'src/benchmark/runner/plan/runPlanV1.ts',
+  'src/benchmark/runner/preflight/preflightBindingsV1.ts', 'src/benchmark/runner/process/browserProcessSupervisorV1.ts', 'src/benchmark/runner/process/cleanupGuardV1.ts',
+  'src/benchmark/runner/process/previewServerSupervisorV1.ts', 'src/benchmark/runner/provenance/gitCommandV1.ts', 'src/benchmark/runner/results/processUnitResultLedgerV1.ts',
+  'src/benchmark/runner/runnerSourceV1.ts', 'src/benchmark/runner/scenarios/scenarioDriverRegistryV1.ts', 'src/benchmark/runner/synthetic/syntheticContractRunV1.ts',
+  'src/benchmark/runner/synthetic/validatorAttestationV1.ts', 'src/benchmark/runner/validation/warmupControllerV1.ts', 'tests/e2e/benchmark-runner-smoke.spec.ts',
+  'tests/fixtures/benchmark/runner/blackBoxCommandV1.ts', 'tests/fixtures/benchmark/runner/cli-synthetic-input.json', 'tests/fixtures/benchmark/runner/finalGateHarnessV1.ts',
+  'tests/fixtures/benchmark/runner/runPlanInputV1.ts', 'tests/fixtures/benchmark/runner/runnerSourceV1.ts', 'tests/fixtures/benchmark/runner/synthetic-contract-plan-input-v1.json',
+  'tests/unit/benchmark/runner/black-box-command-v1.test.ts', 'tests/unit/benchmark/runner/br02-handoff-driver-v1.test.ts', 'tests/unit/benchmark/runner/br03-gate-allowlist-v1.test.ts',
+  'tests/unit/benchmark/runner/cli-v1.test.ts', 'tests/unit/benchmark/runner/contract-inventory-v1.test.ts', 'tests/unit/benchmark/runner/environment-collector-v1.test.ts',
+  'tests/unit/benchmark/runner/invocation-warmup-v1.test.ts', 'tests/unit/benchmark/runner/lifecycle-smoke-v1.test.ts', 'tests/unit/benchmark/runner/process-supervisors-v1.test.ts',
+  'tests/unit/benchmark/runner/process-unit-result-ledger-v1.test.ts', 'tests/unit/benchmark/runner/run-assembly-receipt-v1.test.ts', 'tests/unit/benchmark/runner/run-plan-v1.test.ts',
+  'tests/unit/benchmark/runner/scenario-driver-registry-v1.test.ts',
+]);
 
 function git(args: readonly string[]): string {
   const result = spawnSync('git', ['--no-replace-objects', ...args], {
@@ -34,6 +52,7 @@ describe('BR03 cumulative gate allowlist', () => {
       ...git(['ls-files', '--others', '--exclude-standard']).trim().split(/\r?\n/u),
     ].filter(Boolean);
     expect(changedPaths.filter((path) => path === 'package-lock.json' || FORBIDDEN_PREFIXES.some((prefix) => path.startsWith(prefix)))).toEqual([]);
+    expect(changedPaths.filter((path) => !ALLOWED_PATHS.has(path))).toEqual([]);
   });
 
   it('keeps the integration anchor and package dependency graph available', () => {

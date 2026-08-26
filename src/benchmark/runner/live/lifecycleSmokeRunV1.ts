@@ -40,7 +40,7 @@ import { RunnerFailureErrorV1, type BuiltRunPlanV1, type LifecycleOwnershipRecei
 import { collectEnvironmentV1 } from '../environment/environmentCollectorV1';
 import { deriveHardwareCellIdV1 } from '../ids/orchestrationIdsV1';
 import { createRunInvocationV1 } from '../invocation/runInvocationV1';
-import { boundedCleanupV1, BrowserInitializationErrorV1, BrowserStartupCleanupErrorV1, startBrowserProcessV1 } from '../process/browserProcessSupervisorV1';
+import { boundedCleanupV1, BrowserInitializationErrorV1, BrowserStartupCleanupErrorV1, cleanupOwnedProfileV1, startBrowserProcessV1 } from '../process/browserProcessSupervisorV1';
 import { CleanupGuardV1 } from '../process/cleanupGuardV1';
 import { PreviewHealthMismatchErrorV1, PreviewStartupCleanupErrorV1, startPreviewServerV1 } from '../process/previewServerSupervisorV1';
 import { ProcessUnitResultLedgerV1 } from '../results/processUnitResultLedgerV1';
@@ -229,10 +229,7 @@ export function lifecycleTerminalFailureCodeV1(
 }
 
 export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): Promise<LifecycleSmokeRunResultV1> {
-  assertRunnerAuthorityV1(options.runnerAuthority);
-  if (options.runnerAuthority.sourceCommitSha !== options.plan.core.expectedSourceCommitSha) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority does not match the expected source commit.');
-  }
+  assertRunnerAuthorityV1(options.runnerAuthority, { projectRoot: options.projectRoot, sourceCommitSha: options.plan.core.expectedSourceCommitSha });
   if (!Number.isSafeInteger(options.slotIndex) || options.slotIndex < 0) throw new RangeError('slotIndex must be a non-negative safe integer.');
   const unit = options.plan.core.processUnits[options.slotIndex];
   if (unit === undefined || unit.processContainer !== 'cold' || unit.processOrdinal !== 0) {
@@ -530,7 +527,7 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       }
       await writeProcessUnitResultsV1(invocationRoot, results, assertPublicationNotAborted);
       assertPublicationNotAborted();
-      await writeInvocationClosureV1(invocationRoot, options.plan, invocation, results, () => {
+      await writeInvocationClosureV1(invocationRoot, options.plan, invocation, results, options.runnerAuthority, () => {
         assertPublicationNotAborted();
       }, () => { terminalOutcome = 'claimed'; });
       // The immutable closure is the publish-last linearization point.
@@ -597,7 +594,8 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     throw new Error('Lifecycle-smoke execution was aborted while starting the preview server.');
   }
   input.setStage('browser-launch-failed');
-   const profileRoot = join(dirname(invocationRoot), '.profiles', basename(invocationRoot));
+  const ownedResultsRoot = dirname(invocationRoot);
+  const profileRoot = join(ownedResultsRoot, '.profiles', basename(invocationRoot));
   let browser: Awaited<ReturnType<typeof startBrowserProcessV1>> | undefined;
   let browserStart: Promise<Awaited<ReturnType<typeof startBrowserProcessV1>>> | undefined;
   let browserStartAttempted = false;
@@ -609,7 +607,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
           browser = await browserStart;
         } catch (error) {
           if (error instanceof BrowserStartupCleanupErrorV1) throw error;
-          await boundedCleanupV1(rm(profileRoot, { recursive: true, force: true }), 'Browser startup profile cleanup');
+          await cleanupOwnedProfileV1(profileRoot, ownedResultsRoot, 'Browser startup profile cleanup');
           return;
         }
         if (browser === undefined) throw new Error('Owned browser handle is unavailable; profile ownership is retained for cleanup review.');
@@ -621,7 +619,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     } finally {
       input.setBrowserExit({ exitCode: browser.exitCode, signal: browser.signalCode });
     }
-    await boundedCleanupV1(rm(profileRoot, { recursive: true, force: true }), 'Browser profile cleanup');
+    await cleanupOwnedProfileV1(profileRoot, ownedResultsRoot, 'Browser profile cleanup');
   };
   browserStartAttempted = true;
   guard.register('browser-and-profile-root', closeBrowser);
@@ -665,7 +663,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
     if (error instanceof Br02HandoffDriverErrorV1 && error.code === 'process-crash') input.setStage('browser-crash');
     throw error;
   }
-  guard.register('handoff-observation', () => handoff.completeObservation());
+  guard.register('handoff-observation', () => handoff.stopObservation());
   input.setStage('browser-crash');
   ownedBrowser.assertRunning();
   input.setStage('preview-health-failed');
@@ -729,6 +727,8 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   });
   input.setStage('browser-crash');
   ownedBrowser.assertRunning();
+  input.setStage('handoff-failed');
+  handoff.completeObservation();
   return {
     run,
     environment: environment.manifest,

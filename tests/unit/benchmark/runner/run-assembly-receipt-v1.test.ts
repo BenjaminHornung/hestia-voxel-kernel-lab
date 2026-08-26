@@ -1,7 +1,12 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  BENCHMARK_METRIC_REGISTRY_V1,
+  BENCHMARK_SCHEMA_SET_BYTES_V1,
+  createBenchmarkValidationReceiptV1,
+} from '../../../../src/benchmark/contracts';
 import type {
   BenchmarkEnvironmentManifestV1,
   BenchmarkRunV1,
@@ -13,8 +18,10 @@ import type {
 import { adaptTelemetryExportV1 } from '../../../../src/benchmark/adapters';
 import { createTelemetryBufferV1 } from '../../../../src/diagnostics/telemetry/bufferV1';
 import { deriveTelemetryCapabilityIdsV1, serializeSealedTelemetryExportV1 } from '../../../../src/diagnostics/telemetry/contractV1';
+import { canonicalizeJsonV1 } from '../../../../src/benchmark/provenance';
 import { assembleHardwareCellV1, assembleRunV1, createSinglePassTelemetryAdapterV1 } from '../../../../src/benchmark/runner/assembly/runAssemblerV1';
 import { mintReceiptV1 } from '../../../../src/benchmark/runner/assembly/receiptMinterV1';
+import { RUNNER_AUTHORITY_BRAND_V1 } from '../../../../src/benchmark/runner/runnerSourceV1';
 import {
   buildBenchmarkBundleV1,
   createInvocationArtifactRootV1,
@@ -168,17 +175,61 @@ describe('BR03 run assembly and receipt integration v1', () => {
       }, plan, invocation)).toThrow(/not bound/);
     }
     const rawTelemetry = serializeSealedTelemetryExportV1(telemetryExport);
-    const minted = await mintReceiptV1({
+    const testAuthority = {
+      projectRoot: 'test-project',
+      runnerPath: 'test-project/.benchmark-runner/runner.mjs',
+      sourceCommitSha: template.source.commitSha,
+      runnerSourceSha: testRunnerSourceShaV1,
+      [RUNNER_AUTHORITY_BRAND_V1]: true as const,
+    };
+    const mintedReceipt = await mintReceiptV1({
+      runnerAuthority: testAuthority,
+      projectRoot: 'test-project',
+      expectedSourceCommitSha: template.source.commitSha,
+      runnerSourceSha: testRunnerSourceShaV1,
       document,
       planId: plan.runPlanId,
       slotId: unit.ids.slotId,
       runId: plannedRun.runId,
       telemetryExportRawBytes: rawTelemetry,
       validatorSourceCommitSha: template.source.commitSha,
-      validatorSourceFiles: [{ path: 'src/benchmark/contracts/validateV1.ts', absolutePath: resolve('src/benchmark/contracts/validateV1.ts') }],
+       validatorSourceFiles: [{ path: 'src/benchmark/contracts/validateV1.ts', absolutePath: 'unused', bytes: new TextEncoder().encode('validator') }],
       validationContext,
       telemetryAdapter,
     });
+    expect(mintedReceipt.receipt.status).toBe('schema-and-integrity-valid');
+    await expect(mintReceiptV1({
+      runnerAuthority: {} as never,
+      projectRoot: 'test-project',
+      expectedSourceCommitSha: template.source.commitSha,
+      runnerSourceSha: testRunnerSourceShaV1,
+      document,
+      planId: plan.runPlanId,
+      slotId: unit.ids.slotId,
+      runId: plannedRun.runId,
+      telemetryExportRawBytes: rawTelemetry,
+      validatorSourceCommitSha: template.source.commitSha,
+      validatorSourceFiles: [{ path: 'src/benchmark/contracts/validateV1.ts', absolutePath: 'unused' }],
+      validationContext,
+      telemetryAdapter,
+    })).rejects.toThrow(/validated built-runner authority/);
+    const benchmarkRunBytes = canonicalizeJsonV1(document);
+    const receipt = createBenchmarkValidationReceiptV1({
+      planId: plan.runPlanId,
+      slotId: unit.ids.slotId,
+      runId: plannedRun.runId,
+      telemetryExportRawBytes: rawTelemetry,
+      benchmarkRunRawBytes: benchmarkRunBytes,
+      benchmarkRunCanonicalBytes: benchmarkRunBytes,
+      schemaSetBytes: BENCHMARK_SCHEMA_SET_BYTES_V1,
+      metricRegistry: BENCHMARK_METRIC_REGISTRY_V1,
+      telemetryAdapter: { adapt: telemetryAdapter },
+      validatorSourceCommitSha: template.source.commitSha,
+       validatorSourceFiles: [{ path: 'src/benchmark/contracts/validateV1.ts' as never, bytes: new TextEncoder().encode('validator') }],
+      validationContext,
+    });
+    expect(receipt.status).toBe('schema-and-integrity-valid');
+    const minted = { receipt: mintedReceipt.receipt, receiptCanonicalBytes: mintedReceipt.receiptCanonicalBytes };
     expect(minted.receipt.status).toBe('schema-and-integrity-valid');
     expect(minted.receipt.telemetryDerivationEvidence.derivedSampleCount).toBe(1);
     expect(minted.receipt.runId).toBe(plannedRun.runId);
@@ -212,7 +263,7 @@ describe('BR03 run assembly and receipt integration v1', () => {
         failureCode: 'none' as const,
         runIds: [plannedRun.runId],
       }];
-      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, [])).rejects.toThrow(/omit selected slots/);
+      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, [], undefined as never)).rejects.toThrow(/omit selected slots/);
       await expect(writeProcessUnitResultsV1(invocationRoot, results, () => { throw new Error('signal'); })).rejects.toThrow(/signal/);
       await expect(readFile(join(invocationRoot, 'process-unit-results.json'))).rejects.toThrow();
       await writeProcessUnitResultsV1(invocationRoot, results);
@@ -235,11 +286,11 @@ describe('BR03 run assembly and receipt integration v1', () => {
       expect(await readdir(join(invocationRoot, 'bundles'))).toEqual([]);
       expect(await readdir(join(invocationRoot, 'bundle-contexts'))).toEqual([]);
       const bundleRoot = await writeBundleClosureExclusiveV1(invocationRoot, bundleId, persistedContext, bundle.files);
-      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results, () => { throw new Error('signal'); })).rejects.toThrow(/signal/);
-      await expect(readFile(join(invocationRoot, 'invocation-closure.json'))).rejects.toThrow();
-      await writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results);
-      expect(await verifyInvocationControlV1(invocationRoot, plan, invocationForOutput, results)).toEqual([]);
-      expect(await verifyInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).toEqual([]);
+       const outputAuthority = { ...testAuthority, projectRoot: dirname(dirname(invocationRoot)), runnerPath: join(dirname(dirname(invocationRoot)), '.benchmark-runner', 'runner.mjs') };
+       await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results, outputAuthority, () => { throw new Error('signal'); })).rejects.toThrow(/signal/);
+       await expect(readFile(join(invocationRoot, 'invocation-closure.json'))).rejects.toThrow();
+       expect(await verifyInvocationControlV1(invocationRoot, plan, invocationForOutput, results)).toEqual([]);
+       expect(await verifyInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).not.toEqual([]);
       expect(verifyWrittenBundleV1(bundleRoot, validationContext).valid).toBe(true);
       const originalResults = await readFile(join(invocationRoot, 'process-unit-results.json'));
       await expect(writeProcessUnitResultsV1(invocationRoot, [{ ...results[0]!, disposition: 'failed', failureClass: 'infrastructure', failureCode: 'artifact-write-failed', runIds: [] }])).rejects.toThrow();
@@ -249,7 +300,8 @@ describe('BR03 run assembly and receipt integration v1', () => {
       await expect(writeBundleClosureExclusiveV1(invocationRoot, bundleId, persistedContext, bundle.files)).rejects.toThrow();
       expect(await readFile(join(invocationRoot, 'bundle-contexts', `${bundleId}.json`))).toEqual(originalContext);
       expect(await readFile(join(bundleRoot, 'bundle-manifest.json'))).toEqual(originalManifest);
-      await expect(writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).rejects.toThrow();
+       await writeInvocationClosureV1(invocationRoot, plan, invocationForOutput, results, outputAuthority);
+       expect(await verifyInvocationClosureV1(invocationRoot, plan, invocationForOutput, results)).toEqual([]);
       await expect(createInvocationArtifactRootV1(outputRoot, temporaryRoot, plan, invocationForOutput)).rejects.toThrow();
       await writeFile(join(bundleRoot, 'telemetry', `${plannedRun.runId}.json`), new Uint8Array([123, 125]));
       expect(verifyWrittenBundleV1(bundleRoot, validationContext).valid).toBe(false);

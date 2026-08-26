@@ -27,6 +27,7 @@ export interface Br02HandoffResultV1 {
   readonly rawBytes: Uint8Array;
   readonly telemetryExport: Br02TelemetryExportV1;
   completeObservation(): void;
+  stopObservation(): void;
 }
 
 interface ParsedStatusV1 {
@@ -214,6 +215,7 @@ export async function runBr02HandoffV1(
   url.searchParams.set(BR02_BROWSER_HANDOFF_QUERY_KEY, encodeBrowserTelemetryHandoffV1(envelope));
   const tracker = await trackFailures(page, new URL(baseUrl).origin);
   let retainObservation = false;
+  let stopDownloadListener: (() => void) | undefined;
   try {
     return await Promise.race([(async () => {
     await page.goto(url.toString(), { waitUntil: 'load' });
@@ -242,13 +244,14 @@ export async function runBr02HandoffV1(
     const downloads: Download[] = [];
     const downloadListener = (download: Download) => { downloads.push(download); };
     page.on('download', downloadListener);
+    stopDownloadListener = () => page.off('download', downloadListener);
     let download: Download;
     try {
       const downloadPromise = page.waitForEvent('download');
       await page.getByTestId('telemetry-export').click();
       download = await downloadPromise;
     } finally {
-      if (downloads.length === 0) page.off('download', downloadListener);
+      if (downloads.length === 0) stopDownloadListener();
     }
     if (downloads.length === 0) throw new Br02HandoffDriverErrorV1('download-missing');
     if (downloads.length !== 1 || downloads[0] !== download) throw new Br02HandoffDriverErrorV1('download-duplicate');
@@ -257,11 +260,14 @@ export async function runBr02HandoffV1(
     assertNoFailures(tracker.failures);
     retainObservation = true;
     let observationComplete = false;
-    return { rawBytes, telemetryExport, completeObservation: () => {
-      if (observationComplete) return;
-      observationComplete = true;
+    const stopObservation = () => {
       page.off('download', downloadListener);
       tracker.stop();
+    };
+    return { rawBytes, telemetryExport, stopObservation, completeObservation: () => {
+      if (observationComplete) return;
+      observationComplete = true;
+      stopObservation();
       if (downloads.length !== 1 || downloads[0] !== download) throw new Br02HandoffDriverErrorV1('download-duplicate');
       assertNoFailures(tracker.failures);
     } };
@@ -271,6 +277,9 @@ export async function runBr02HandoffV1(
     assertNoFailures(tracker.failures);
     throw new Br02HandoffDriverErrorV1('ui-lifecycle-failure', { cause: error });
   } finally {
-    if (!retainObservation) tracker.stop();
+    if (!retainObservation) {
+      stopDownloadListener?.();
+      tracker.stop();
+    }
   }
 }

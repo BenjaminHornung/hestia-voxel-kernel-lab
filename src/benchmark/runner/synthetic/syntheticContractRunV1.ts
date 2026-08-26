@@ -229,10 +229,7 @@ export interface SyntheticContractRunResultV1 {
 
 export async function runSyntheticContractV1(options: SyntheticContractRunOptionsV1): Promise<SyntheticContractRunResultV1> {
   const { plan } = options;
-  assertRunnerAuthorityV1(options.runnerAuthority);
-  if (options.runnerAuthority.sourceCommitSha !== plan.core.expectedSourceCommitSha) {
-    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority does not match the expected source commit.');
-  }
+  assertRunnerAuthorityV1(options.runnerAuthority, { projectRoot: options.projectRoot, sourceCommitSha: plan.core.expectedSourceCommitSha });
   if (plan.core.syntheticHardwareProfile !== true) throw new TypeError('Synthetic contract mode requires a synthetic hardware profile plan.');
   if (!Number.isSafeInteger(options.slotIndex) || options.slotIndex < 0) throw new RangeError('slotIndex must be a non-negative safe integer.');
   const unit = plan.core.processUnits[options.slotIndex];
@@ -333,6 +330,10 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
   });
   const validatorBefore = readFixedValidatorAttestationSetV1(options.projectRoot);
   const minted = await mintReceiptV1({
+    runnerAuthority: options.runnerAuthority,
+    projectRoot: options.projectRoot,
+    expectedSourceCommitSha: plan.core.expectedSourceCommitSha,
+    runnerSourceSha: invocation.runnerSourceSha,
     document,
     planId: plan.runPlanId,
     slotId: unit.ids.slotId,
@@ -401,7 +402,7 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
     const bundleVerification = verifyWrittenBundleV1(bundleRoot, validationContext);
     if (!bundleVerification.valid) throw new Error('Synthetic artifact verification failed.');
     await writeProcessUnitResultsV1(invocationRoot, results);
-    await writeInvocationClosureV1(invocationRoot, plan, invocation, results);
+    await writeInvocationClosureV1(invocationRoot, plan, invocation, results, options.runnerAuthority);
     return {
       invocationId: invocation.invocationId,
       bundleId,
@@ -431,7 +432,7 @@ export async function runSyntheticContractV1(options: SyntheticContractRunOption
         ],
       });
       await writeProcessUnitResultsV1(invocationRoot, terminalResults);
-      await writeInvocationClosureV1(invocationRoot, plan, invocation, terminalResults);
+      await writeInvocationClosureV1(invocationRoot, plan, invocation, terminalResults, options.runnerAuthority);
     } catch (resultError) {
       if (resultError instanceof ArtifactCleanupErrorV1) failureCode = 'cleanup-failed';
       terminalError = new AggregateError([error, resultError], 'Synthetic artifact failure and terminal-result publication failed.');

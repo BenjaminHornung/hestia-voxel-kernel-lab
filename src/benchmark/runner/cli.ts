@@ -482,7 +482,7 @@ async function runCommand(values: ReadonlyMap<string, string>): Promise<void> {
       });
       const results = ledger.finalize();
       await writeProcessUnitResultsV1(invocationRoot, results);
-      await writeInvocationClosureV1(invocationRoot, plan, invocation, results);
+      await writeInvocationClosureV1(invocationRoot, plan, invocation, results, authority);
       output({ status: 'completed', mode, invocationId: invocation.invocationId, invocationRoot, disposition: 'unsupported' });
       process.exitCode = 7;
       return;

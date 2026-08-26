@@ -10,7 +10,10 @@ import { runNoReplaceGitV1 } from './provenance/gitCommandV1';
 declare const __BR03_SOURCE_COMMIT_SHA__: string | undefined;
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
+const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const AUTHORITY_BRAND = Symbol('br03-runner-authority-v1');
+/** @internal Test fixtures may use this to exercise terminal publication success paths. */
+export const RUNNER_AUTHORITY_BRAND_V1 = AUTHORITY_BRAND;
 
 export interface RunnerAuthorityV1 {
   readonly projectRoot: string;
@@ -89,8 +92,27 @@ export async function createRunnerAuthorityV1(projectRoot: string, expectedSourc
   return authority;
 }
 
-export function assertRunnerAuthorityV1(value: unknown): asserts value is RunnerAuthorityV1 {
+export function assertRunnerAuthorityV1(
+  value: unknown,
+  expected?: Partial<Pick<RunnerAuthorityV1, 'projectRoot' | 'sourceCommitSha' | 'runnerSourceSha'>>,
+): asserts value is RunnerAuthorityV1 {
   if (value === null || typeof value !== 'object' || (value as Record<PropertyKey, unknown>)[AUTHORITY_BRAND] !== true) {
     throw new RunnerFailureErrorV1('source-preflight-rejected', 'A validated built-runner authority is required.');
+  }
+  const authority = value as RunnerAuthorityV1;
+  if (typeof authority.projectRoot !== 'string' || authority.projectRoot.length === 0
+    || typeof authority.runnerPath !== 'string' || authority.runnerPath.length === 0
+    || typeof authority.sourceCommitSha !== 'string' || !GIT_SHA.test(authority.sourceCommitSha)
+    || typeof authority.runnerSourceSha !== 'string' || !SHA256_DIGEST.test(authority.runnerSourceSha)) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'The runner authority fields are invalid.');
+  }
+  if (expected?.projectRoot !== undefined && !samePath(authority.projectRoot, expected.projectRoot)) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority project root does not match the expected root.');
+  }
+  if (expected?.sourceCommitSha !== undefined && authority.sourceCommitSha !== expected.sourceCommitSha) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority source commit does not match the expected commit.');
+  }
+  if (expected?.runnerSourceSha !== undefined && authority.runnerSourceSha !== expected.runnerSourceSha) {
+    throw new RunnerFailureErrorV1('source-preflight-rejected', 'Runner authority digest does not match the expected runner.');
   }
 }

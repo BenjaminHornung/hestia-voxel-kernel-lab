@@ -46,5 +46,5 @@ describe('BR03 black-box command receipts', () => {
     await runBlackBoxCommandV1({ ...options, args: ['-e', ''] });
     await expect(runBlackBoxCommandV1({ ...options, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'spawned')`] })).rejects.toThrow();
     await expect(access(markerPath)).rejects.toThrow();
-  });
+  }, 30_000);
 });

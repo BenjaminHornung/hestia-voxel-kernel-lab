@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdir, realpath, rm } from 'node:fs/promises';
-import { basename, relative, resolve } from 'node:path';
+import { lstat, mkdir, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, relative, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type BrowserServer, type CDPSession, type Page } from '@playwright/test';
 import type { Sha256DigestV1 } from '../../contracts';
 
@@ -140,8 +140,53 @@ async function killOwnedBrowserServerV1(server: BrowserServer): Promise<void> {
 function assertOwnedPath(root: string, candidate: string): void {
   const pathFromRoot = relative(root, candidate);
   if (pathFromRoot.length === 0 || pathFromRoot.startsWith('..') || resolve(root, pathFromRoot) !== resolve(candidate)) {
-    throw new Error('Refusing to clean a browser profile outside its owned root.');
+    throw new Error('Refusing to clean a browser profile outside its owned root or through a symbolic-link alias.');
   }
+}
+
+async function realpathWithMissingSuffixV1(path: string): Promise<string> {
+  let current = resolve(path);
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      const existing = await realpath(current);
+      return resolve(existing, ...suffix.reverse());
+    } catch (error) {
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      suffix.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function assertNoSymlinkParentsV1(path: string, boundary: string): Promise<void> {
+  let current = resolve(path);
+  const resolvedBoundary = resolve(boundary);
+  while (true) {
+    try {
+      if ((await lstat(current)).isSymbolicLink()) throw new Error('Browser profile path contains a symbolic-link or junction alias.');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (current === resolvedBoundary) return;
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
+export async function cleanupOwnedProfileV1(profilePath: string, ownedResultsRoot: string, label: string): Promise<void> {
+  const resolvedRoot = await realpath(ownedResultsRoot);
+  const resolvedProfilePath = await realpath(profilePath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (resolvedProfilePath === undefined) return;
+  assertOwnedPath(resolvedRoot, resolvedProfilePath);
+  await assertNoSymlinkParentsV1(ownedResultsRoot, ownedResultsRoot);
+  await assertNoSymlinkParentsV1(profilePath, ownedResultsRoot);
+  await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), label);
 }
 
 async function launchServerInOwnedTempRoot(
@@ -177,10 +222,15 @@ export async function startBrowserProcessV1(
   const requestedOwnedResultsRoot = resolve(options.ownedResultsRoot);
   const requestedProfileRoot = resolve(options.profileRoot);
   assertOwnedPath(requestedOwnedResultsRoot, requestedProfileRoot);
+  const ownedResultsRoot = await realpath(requestedOwnedResultsRoot);
+  await assertNoSymlinkParentsV1(requestedOwnedResultsRoot, requestedOwnedResultsRoot);
+  await assertNoSymlinkParentsV1(requestedProfileRoot, requestedOwnedResultsRoot);
+  const verifiedProfileRoot = await realpathWithMissingSuffixV1(requestedProfileRoot);
+  assertOwnedPath(ownedResultsRoot, verifiedProfileRoot);
   await mkdir(requestedProfileRoot, { recursive: true });
-  const ownedResultsRoot = await realpath(options.ownedResultsRoot);
-  const root = await realpath(options.profileRoot);
+  const root = await realpath(requestedProfileRoot);
   assertOwnedPath(ownedResultsRoot, root);
+  await assertNoSymlinkParentsV1(requestedProfileRoot, requestedOwnedResultsRoot);
   let server: BrowserServer;
   try {
     server = await launchServerInOwnedTempRoot(launcher, root, {
@@ -198,6 +248,8 @@ export async function startBrowserProcessV1(
   let context: BrowserContext | null = null;
   let profilePath: string | null = null;
   const child = server.process();
+  let childExited = child.exitCode !== null || child.signalCode !== null;
+  if (typeof child.once === 'function') child.once('exit', () => { childExited = true; });
   let executableName: string | null = null;
   let executableSha256: Sha256DigestV1 | null = null;
   try {
@@ -220,9 +272,10 @@ export async function startBrowserProcessV1(
     cdp = await browser.newBrowserCDPSession();
     const page = existingPages[0] ?? await ownedContext.newPage();
     await page.setViewportSize(options.viewport);
-    let state: 'running' | 'closing' | 'closed' | 'crashed' = 'running';
-    page.on('crash', () => { state = 'crashed'; });
-    ownedContext.on('close', () => { state = state === 'closing' ? 'closed' : 'crashed'; });
+       let state: 'running' | 'closing' | 'closed' | 'crashed' = childExited ? 'crashed' : 'running';
+      page.on('crash', () => { state = 'crashed'; });
+      ownedContext.on('close', () => { state = state === 'closing' ? 'closed' : 'crashed'; });
+       if (typeof child.once === 'function') child.once('exit', () => { if (state === 'running') state = 'crashed'; });
     let closePromise: Promise<void> | null = null;
     return {
       context: ownedContext,
@@ -234,8 +287,9 @@ export async function startBrowserProcessV1(
       processId: child.pid,
       get exitCode() { return child.exitCode; },
       get signalCode() { return child.signalCode; },
-      assertRunning: () => {
-        if (state !== 'running') throw new Error(`Benchmark browser process is ${state}.`);
+       assertRunning: () => {
+         if (child.exitCode !== null || child.signalCode !== null) state = state === 'running' ? 'crashed' : state;
+         if (state !== 'running') throw new Error(`Benchmark browser process is ${state}.`);
       },
       close: () => {
         if (closePromise !== null) return closePromise;
@@ -249,7 +303,7 @@ export async function startBrowserProcessV1(
             state = crashed ? 'crashed' : 'closed';
           }
           assertOwnedPath(root, ownedProfilePath);
-          await boundedCleanupV1(rm(ownedProfilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
+          await cleanupOwnedProfileV1(ownedProfilePath, ownedResultsRoot, 'Benchmark browser profile cleanup');
         })();
         return closePromise;
       },
@@ -264,7 +318,8 @@ export async function startBrowserProcessV1(
     }
     if (profilePath !== null) {
       try {
-        await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), 'Benchmark browser profile cleanup');
+        assertOwnedPath(root, profilePath);
+        await cleanupOwnedProfileV1(profilePath, ownedResultsRoot, 'Benchmark browser profile cleanup');
       } catch (cleanupError) {
         throw new BrowserStartupCleanupErrorV1('Benchmark browser profile cleanup failed.', { cause: new AggregateError([initializationError(), cleanupError], 'Benchmark browser profile cleanup failed.') });
       }

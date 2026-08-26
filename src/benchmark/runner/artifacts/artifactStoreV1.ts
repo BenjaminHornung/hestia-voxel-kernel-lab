@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import {
   BENCHMARK_PROTOCOL_VERSION,
   BENCHMARK_METRIC_REGISTRY_V1,
+  BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1,
   BENCHMARK_SCHEMA_SET_SHA256_V1,
   type BenchmarkArtifactEntryV1,
   type BenchmarkArtifactManifestV1,
@@ -28,6 +29,7 @@ import {
   BR02_BROWSER_RUNTIME_ACTIVATION,
   type BrowserTelemetryHandoffEnvelopeV1,
 } from '../../../diagnostics/telemetry/browserHandoffV1';
+import { TELEMETRY_LIMITS_V1 } from '../../../diagnostics/telemetry/contractV1';
 import { validateDownloadedTelemetryV1 } from '../browser/br02HandoffDriverV1';
 import {
   buildBundleFilesV1,
@@ -51,6 +53,7 @@ import type {
   RunInvocationV1,
 } from '../contractsV1';
 import { deriveHardwareCellIdV1, hashCanonicalV1, idFromDigestV1 } from '../ids/orchestrationIdsV1';
+import { assertRunnerAuthorityV1, type RunnerAuthorityV1 } from '../runnerSourceV1';
 
 export interface BundleRunClosureV1 {
   readonly runId: CanonicalIdV1;
@@ -105,6 +108,16 @@ async function readControlFileBoundedV1(path: string): Promise<Uint8Array> {
   }
   if (bytes.byteLength < 1) throw new TypeError('Invocation control file is missing or outside its size bound.');
   return bytes;
+}
+
+async function readArtifactFileBoundedV1(path: string, maxFileBytes: number): Promise<Uint8Array> {
+  try {
+    const bytes = readFileBytesV1(path, { maxFileBytes, maxAggregateBytes: maxFileBytes });
+    if (bytes.byteLength < 1) throw new Error('Empty artifact.');
+    return bytes;
+  } catch (error) {
+    throw new TypeError('Invocation artifact is missing or outside its size bound.', { cause: error });
+  }
 }
 
 async function assertMissingV1(path: string, label: string): Promise<void> {
@@ -406,7 +419,9 @@ export async function verifyLifecycleSmokeArtifactsV1(
       }
       const bytesByPath = new Map<string, Uint8Array>();
       for (const file of manifest.files) {
-        const bytes = await readControlFileBoundedV1(join(directory, file.path));
+        const bytes = file.path === 'telemetry-export.json'
+          ? await readArtifactFileBoundedV1(join(directory, file.path), TELEMETRY_LIMITS_V1.maxCanonicalExportBytes)
+          : await readControlFileBoundedV1(join(directory, file.path));
         if (bytes.byteLength !== file.byteLength || sha256BytesV1(bytes) !== file.sha256) throw new Error('Lifecycle-smoke artifact digest mismatch.');
         bytesByPath.set(file.path, bytes);
       }
@@ -745,15 +760,32 @@ function closureRoleV1(path: string): InvocationClosureFileV1['role'] {
   throw new TypeError(`Invocation contains an unowned closure path: ${path}.`);
 }
 
-async function invocationFilesV1(root: string, current = root): Promise<readonly { readonly path: string; readonly bytes: Uint8Array }[]> {
+async function invocationFilesV1(
+  root: string,
+  current = root,
+  state: { count: number; totalBytes: number } = { count: 0, totalBytes: 0 },
+): Promise<readonly { readonly path: string; readonly bytes: Uint8Array }[]> {
   const files: { path: string; bytes: Uint8Array }[] = [];
   for (const entry of await readdir(current, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) throw new TypeError('Invocation closure cannot contain symbolic links or junction aliases.');
     const absolutePath = join(current, entry.name);
     const relativePath = relative(root, absolutePath).split(sep).join('/');
     if (relativePath === INVOCATION_CLOSURE_PATH) continue;
-    if (entry.isDirectory()) files.push(...await invocationFilesV1(root, absolutePath));
-    else if (entry.isFile()) files.push({ path: relativePath, bytes: await readControlFileBoundedV1(absolutePath) });
+    if (entry.isDirectory()) files.push(...await invocationFilesV1(root, absolutePath, state));
+    else if (entry.isFile()) {
+      state.count += 1;
+      if (state.count > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxFiles) throw new TypeError('Invocation closure exceeds its file-count bound.');
+      const role = closureRoleV1(relativePath);
+      const maxFileBytes = relativePath === 'lifecycle-smoke/telemetry-export.json'
+        ? TELEMETRY_LIMITS_V1.maxCanonicalExportBytes
+        : role === 'plan' || role === 'invocation' || role === 'terminal-results' || role === 'bundle-context' || role === 'failure-diagnostic'
+          ? MAX_CONTROL_FILE_BYTES
+          : BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxFileBytes;
+      const bytes = await readArtifactFileBoundedV1(absolutePath, maxFileBytes);
+      state.totalBytes += bytes.byteLength;
+      if (state.totalBytes > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxAggregateBytes) throw new TypeError('Invocation closure exceeds its aggregate byte bound.');
+      files.push({ path: relativePath, bytes });
+    }
     else throw new TypeError('Invocation closure contains an unsupported filesystem entry.');
   }
   return files.sort((left, right) => compareUtf16(left.path, right.path));
@@ -789,6 +821,7 @@ export async function writeInvocationClosureV1(
   plan: BuiltRunPlanV1,
   invocation: RunInvocationV1,
   results: readonly ProcessUnitResultV1[],
+  runnerAuthority: RunnerAuthorityV1,
   beforePublish?: () => void,
   afterPublish?: () => void,
 ): Promise<void> {
@@ -796,6 +829,16 @@ export async function writeInvocationClosureV1(
   const files = await invocationFilesV1(root);
   const closure = buildInvocationClosureV1(plan, invocation, results, files);
   if (closure.missingSlotIds.length > 0) throw new TypeError('A terminal invocation closure cannot omit selected slots.');
+  assertRunnerAuthorityV1(runnerAuthority);
+  const authorityResultsRoot = resolve(runnerAuthority.projectRoot, '.benchmark-results');
+  if (!sameFilesystemPathV1(dirname(root), authorityResultsRoot) || basename(root) !== invocation.invocationId) {
+    throw new Error('Invocation closure root does not match the runner authority.');
+  }
+  assertRunnerAuthorityV1(runnerAuthority, {
+    projectRoot: dirname(dirname(root)),
+    sourceCommitSha: plan.core.expectedSourceCommitSha,
+    runnerSourceSha: invocation.runnerSourceSha,
+  });
   await writeExclusive(join(root, INVOCATION_CLOSURE_PATH), canonicalizeJsonV1(closure), root, beforePublish, afterPublish);
 }
 
