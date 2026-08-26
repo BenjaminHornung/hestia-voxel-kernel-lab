@@ -310,7 +310,7 @@ export async function startBrowserProcessV1(
            } finally {
              state = crashed || child.exitCode !== null || child.signalCode !== null ? 'crashed' : 'closed';
            }
-           if (closeError === undefined || child.exitCode !== null || child.signalCode !== null) {
+            if (closeError === undefined || childExited || child.exitCode !== null || child.signalCode !== null) {
              assertOwnedPath(root, ownedProfilePath);
              await cleanupOwnedProfileV1(ownedProfilePath, ownedResultsRoot, 'Benchmark browser profile cleanup');
            }
