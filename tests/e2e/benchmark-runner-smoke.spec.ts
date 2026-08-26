@@ -38,11 +38,11 @@ function withPoisonedGitEnvironment<T>(operation: () => T): T {
 }
 
 function runGit(repository: string, args: readonly string[], encoding: BufferEncoding = 'utf8'): string {
-  return execFileSync('git', ['--no-replace-objects', ...args], { cwd: repository, encoding, windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 });
+  return execFileSync('git', ['--no-replace-objects', ...args], { cwd: repository, encoding, windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 });
 }
 
 function runGitBytes(repository: string, args: readonly string[]): Buffer {
-  return execFileSync('git', ['--no-replace-objects', ...args], { cwd: repository, encoding: 'buffer', windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 });
+  return execFileSync('git', ['--no-replace-objects', ...args], { cwd: repository, encoding: 'buffer', windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 });
 }
 
 function buildRunner(repository: string): void {

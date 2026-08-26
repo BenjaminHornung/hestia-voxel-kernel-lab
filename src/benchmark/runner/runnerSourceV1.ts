@@ -12,8 +12,6 @@ declare const __BR03_SOURCE_COMMIT_SHA__: string | undefined;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const AUTHORITY_BRAND = Symbol('br03-runner-authority-v1');
-/** @internal Test fixtures may use this to exercise terminal publication success paths. */
-export const RUNNER_AUTHORITY_BRAND_V1 = AUTHORITY_BRAND;
 
 export interface RunnerAuthorityV1 {
   readonly projectRoot: string;

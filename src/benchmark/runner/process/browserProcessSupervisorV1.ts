@@ -121,7 +121,12 @@ async function closeOwnedBrowser(context: BrowserContext, browser: Browser, serv
   try {
     await waitForExactChildExitV1(child);
   } catch (error) {
-    errors.push(error instanceof Error ? error : new Error('Exact owned browser child exit was not proven.', { cause: error }));
+    try {
+      await boundedCleanupV1(server.kill(), 'Benchmark browser server kill after exit timeout');
+      await waitForExactChildExitV1(child);
+    } catch (killError) {
+      errors.push(new AggregateError([error, killError], 'Benchmark browser process termination was not proven.'));
+    }
   }
   if (errors.length > 0) throw new AggregateError(errors, 'Benchmark browser cleanup was not proven complete.');
 }

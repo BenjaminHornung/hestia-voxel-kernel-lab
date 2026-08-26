@@ -776,7 +776,7 @@ async function invocationFilesV1(
       state.count += 1;
       if (state.count > BENCHMARK_PROVENANCE_RESOURCE_LIMITS_V1.maxFiles) throw new TypeError('Invocation closure exceeds its file-count bound.');
       const role = closureRoleV1(relativePath);
-      const maxFileBytes = relativePath === 'lifecycle-smoke/telemetry-export.json'
+      const maxFileBytes = role === 'lifecycle-smoke' && basename(relativePath) === 'telemetry-export.json'
         ? TELEMETRY_LIMITS_V1.maxCanonicalExportBytes
         : role === 'plan' || role === 'invocation' || role === 'terminal-results' || role === 'bundle-context' || role === 'failure-diagnostic'
           ? MAX_CONTROL_FILE_BYTES
