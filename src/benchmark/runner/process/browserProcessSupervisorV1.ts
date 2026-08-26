@@ -190,7 +190,7 @@ export async function cleanupOwnedProfileV1(profilePath: string, ownedResultsRoo
   assertOwnedPath(resolvedRoot, resolvedProfilePath);
   await assertNoSymlinkParentsV1(ownedResultsRoot, ownedResultsRoot);
   await assertNoSymlinkParentsV1(profilePath, ownedResultsRoot);
-  await boundedCleanupV1(rm(profilePath, { recursive: true, force: true }), label);
+  await boundedCleanupV1(rm(profilePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }), label);
 }
 
 async function launchServerInOwnedTempRoot(
