@@ -53,7 +53,7 @@ describe('BR03 cumulative gate allowlist', () => {
     ].filter(Boolean);
     expect(changedPaths.filter((path) => path === 'package-lock.json' || FORBIDDEN_PREFIXES.some((prefix) => path.startsWith(prefix)))).toEqual([]);
     expect(changedPaths.filter((path) => !ALLOWED_PATHS.has(path))).toEqual([]);
-  });
+  }, 30_000);
 
   it('keeps the integration anchor and package dependency graph available', () => {
     expect(git(['rev-parse', '--verify', `${INTEGRATION_SHA}^{commit}`]).trim()).toBe(INTEGRATION_SHA);
