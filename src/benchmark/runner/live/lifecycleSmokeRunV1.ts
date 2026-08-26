@@ -271,7 +271,6 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
   let preflightInput: Parameters<typeof sourcePreflightV1>[0] | undefined;
   let acceptedPreflight: Extract<ReturnType<typeof sourcePreflightV1>, { readonly status: 'accepted' }> | undefined;
   const guard = new CleanupGuardV1();
-  let signalCleanup: Promise<void> | null = null;
   let rejectAbort: ((reason: unknown) => void) | undefined;
   const abortSignal = new Promise<never>((_, reject) => { rejectAbort = reject; });
   void abortSignal.catch(() => undefined);
@@ -367,7 +366,7 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
     recordFailure(error, 'Lifecycle-smoke execution failed.');
   } finally {
     try {
-      await (signalCleanup ?? guard.close());
+      await guard.close();
     } catch (error) {
       recordCleanupFailure(error);
       execution = undefined;
@@ -539,13 +538,6 @@ export async function runLifecycleSmokeV1(options: LifecycleSmokeRunOptionsV1): 
       throw new RunnerFailureErrorV1(stage, `Lifecycle-smoke process failed at ${stage}${safeFailureDetail()}.`, { cause: executionError });
     }
     removeHandlers();
-    if (signalCleanup !== null) {
-      try {
-        await signalCleanup;
-      } catch (error) {
-        recordCleanupFailure(error);
-      }
-    }
     if (cleanupFailed) throw new RunnerFailureErrorV1('cleanup-failed', 'Lifecycle-smoke cleanup failed after terminal publication.', { cause: executionError });
     if (execution === undefined || artifactRoot === undefined) throw new RunnerFailureErrorV1(stage, `Lifecycle-smoke process failed at ${stage}${safeFailureDetail()}.`, { cause: executionError });
     return { invocationId: invocation.invocationId, runId: plannedRun.runId, invocationRoot, artifactRoot, disposition: 'unsupported' };
@@ -646,7 +638,7 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
   const backend = backendValue === 'three-webgl2' || backendValue === 'raw-webgpu' ? backendValue : 'not-applicable';
   let handoff: Awaited<ReturnType<typeof runBr02HandoffV1>>;
   try {
-    handoff = await Promise.race([runBr02HandoffV1(ownedBrowser.page, preview.baseUrl, input.route, {
+    const handoffPromise = runBr02HandoffV1(ownedBrowser.page, preview.baseUrl, input.route, {
       schemaVersion: BR02_BROWSER_HANDOFF_SCHEMA_VERSION,
       contractId: BR02_BROWSER_HANDOFF_CONTRACT_ID,
       runtimeActivation: BR02_BROWSER_RUNTIME_ACTIVATION,
@@ -657,7 +649,9 @@ async function executeLifecycleSmokeProcessV1(input: ExecuteProcessOptionsV1) {
       backend,
       telemetryMode: 'telemetry-enabled-minimal',
       iterations: plannedRun.iterationIds.map((iterationId, iterationOrdinal) => ({ iterationId, iterationOrdinal })),
-    }), preview.failure]);
+    });
+    void handoffPromise.catch(() => undefined);
+    handoff = await Promise.race([handoffPromise, preview.failure]);
   } catch (error) {
     if (error instanceof Br02HandoffDriverErrorV1 && error.code === 'process-crash') input.setStage('browser-crash');
     throw error;

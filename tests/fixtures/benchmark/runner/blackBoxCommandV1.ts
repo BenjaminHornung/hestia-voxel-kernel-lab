@@ -16,7 +16,7 @@ export interface BlackBoxOutcomeV1 {
   readonly stderr: string;
   readonly timedOut: boolean;
   readonly pid: number;
-  readonly directChildAliveAfter: boolean;
+  readonly directChildAliveAfter: boolean | null;
 }
 
 export interface BlackBoxControlV1 {
@@ -269,7 +269,7 @@ export async function runBlackBoxCommandV1(options: BlackBoxCommandOptionsV1): P
             stderrSha256: null,
             timeoutOwner: state.timedOut ? 'outer' : 'none',
             directChildPid: state.pid,
-            directChildAliveAfter: state.pid === null ? null : alive(state.pid),
+            directChildAliveAfter: null,
             harnessFailureSha256: sha256(message),
           },
           observations: { before: null, after: null, failureSha256: null },
