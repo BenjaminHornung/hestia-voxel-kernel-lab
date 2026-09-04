@@ -23,6 +23,7 @@ const ALLOWED_PATHS = new Set([
   'src/benchmark/runner/synthetic/validatorAttestationV1.ts', 'src/benchmark/runner/validation/warmupControllerV1.ts', 'tests/e2e/benchmark-runner-smoke.spec.ts',
   'tests/fixtures/benchmark/runner/blackBoxCommandV1.ts', 'tests/fixtures/benchmark/runner/cli-synthetic-input.json', 'tests/fixtures/benchmark/runner/finalGateHarnessV1.ts',
   'tests/fixtures/benchmark/runner/runPlanInputV1.ts', 'tests/fixtures/benchmark/runner/runnerSourceV1.ts', 'tests/fixtures/benchmark/runner/synthetic-contract-plan-input-v1.json',
+  'tests/unit/benchmark/contracts/future-provenance-contract-v1.test.ts', 'tests/unit/benchmark/provenance/source-preflight-v1.test.ts',
   'tests/unit/benchmark/runner/black-box-command-v1.test.ts', 'tests/unit/benchmark/runner/br02-handoff-driver-v1.test.ts', 'tests/unit/benchmark/runner/br03-gate-allowlist-v1.test.ts',
   'tests/unit/benchmark/runner/cli-v1.test.ts', 'tests/unit/benchmark/runner/contract-inventory-v1.test.ts', 'tests/unit/benchmark/runner/environment-collector-v1.test.ts',
   'tests/unit/benchmark/runner/invocation-warmup-v1.test.ts', 'tests/unit/benchmark/runner/lifecycle-smoke-v1.test.ts', 'tests/unit/benchmark/runner/process-supervisors-v1.test.ts',
