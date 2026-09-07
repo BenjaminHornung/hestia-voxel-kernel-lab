@@ -14,6 +14,7 @@ interface PreviewServerV1 {
 }
 
 const PREVIEW_CLOSE_TIMEOUT_MS = 5_000;
+const PREVIEW_MAX_HEALTH_BYTES = 1_048_576;
 
 export class PreviewStartupCleanupErrorV1 extends Error {
   public constructor(message: string, options?: ErrorOptions) {
@@ -172,18 +173,75 @@ export async function startPreviewServerV1(
   const assertHealthy = async (): Promise<void> => {
     if (state !== 'running') throw new Error('Benchmark preview is not running.', { cause: failure });
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PREVIEW_CLOSE_TIMEOUT_MS);
+    let healthTimedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        healthTimedOut = true;
+        try {
+          controller.abort();
+        } finally {
+          reject(new Error('Benchmark preview health check timed out.'));
+        }
+      }, PREVIEW_CLOSE_TIMEOUT_MS);
+    });
+    void timeout.catch(() => undefined);
     let response: Response;
     try {
-      response = await fetchImplementation(new URL(options.healthPath ?? '/', baseUrl), { signal: controller.signal });
+      const fetchPromise = fetchImplementation(new URL(options.healthPath ?? '/', baseUrl), { signal: controller.signal });
+      void fetchPromise.catch(() => undefined);
+      response = await Promise.race([fetchPromise, timeout]);
+      if (!response.ok) throw new Error(`Benchmark preview health check returned HTTP ${response.status}.`);
+      let bodyBytes: Uint8Array;
+      let sizeExceeded = false;
+      try {
+        const stream = response.body as unknown as { getReader?: () => { read(): Promise<{ readonly done: boolean; readonly value?: Uint8Array }>; cancel(): Promise<void> } } | null | undefined;
+        if (stream === null || stream === undefined || typeof stream.getReader !== 'function') {
+          const bodyPromise = response.arrayBuffer();
+          void Promise.resolve(bodyPromise).catch(() => undefined);
+          const buffered = await Promise.race([bodyPromise, timeout]);
+          if (buffered.byteLength > PREVIEW_MAX_HEALTH_BYTES) throw new Error('Benchmark preview health body exceeds its size bound.');
+          bodyBytes = new Uint8Array(buffered);
+        } else {
+          const reader = stream.getReader();
+          const chunks: Uint8Array[] = [];
+          let total = 0;
+          for (;;) {
+            const readPromise = reader.read();
+            void readPromise.catch(() => undefined);
+            const { done, value } = await Promise.race([readPromise, timeout]);
+            if (done) break;
+            const chunk = value ?? new Uint8Array(0);
+            total += chunk.byteLength;
+            if (total > PREVIEW_MAX_HEALTH_BYTES) {
+              sizeExceeded = true;
+              void reader.cancel().catch(() => undefined);
+              throw new Error('Benchmark preview health body exceeds its size bound.');
+            }
+            chunks.push(chunk);
+          }
+          bodyBytes = new Uint8Array(total);
+          let offset = 0;
+          for (const chunk of chunks) {
+            bodyBytes.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+        }
+      } catch (error) {
+        if (sizeExceeded || (error instanceof Error && /exceeds its size bound/.test(error.message))) throw error;
+        if (healthTimedOut || controller.signal.aborted) {
+          void Promise.resolve(response.body?.cancel()).catch(() => undefined);
+          throw new Error('Benchmark preview health check timed out.', { cause: error });
+        }
+        throw error;
+      }
+      const healthSha256 = sha256BytesV1(bodyBytes);
+      if (healthSha256 !== options.expectedHealthSha256) throw new PreviewHealthMismatchErrorV1(options.expectedHealthSha256, healthSha256);
+      observedHealthSha256 = healthSha256;
+      if (state !== 'running') throw new Error('Benchmark preview stopped during its health check.', { cause: failure });
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`Benchmark preview health check returned HTTP ${response.status}.`);
-    const healthSha256 = sha256BytesV1(new Uint8Array(await response.arrayBuffer()));
-    if (healthSha256 !== options.expectedHealthSha256) throw new PreviewHealthMismatchErrorV1(options.expectedHealthSha256, healthSha256);
-    observedHealthSha256 = healthSha256;
-    if (state !== 'running') throw new Error('Benchmark preview stopped during its health check.', { cause: failure });
   };
   try {
     await assertHealthy();

@@ -117,6 +117,41 @@ describe('BR03 cleanup and preview supervision v1', () => {
     )).rejects.toThrow(/build marker/);
     expect(close).toHaveBeenCalledOnce();
   });
+
+  it('times out a hanging preview body, aborts, and closes its owned server', async () => {
+    const listeners = new Map<string, (...arguments_: never[]) => void>();
+    const close = vi.fn((callback: (error?: Error) => void) => { listeners.get('close')?.(); callback(); });
+    const factory: PreviewFactoryV1 = async () => ({ httpServer: {
+      address: () => ({ port: 43210 }),
+      close,
+      on: (event: 'close' | 'error', listener: (...arguments_: never[]) => void) => listeners.set(event, listener),
+    } });
+    let observedSignal: AbortSignal | undefined;
+    const fetchImplementation = vi.fn(async (_url: unknown, init?: { readonly signal?: AbortSignal }) => {
+      observedSignal = init?.signal;
+      return { ok: true, status: 200, arrayBuffer: () => new Promise<ArrayBuffer>(() => {}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    await expect(startPreviewServerV1(
+      { projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256: sha256BytesV1(new TextEncoder().encode('ok')) },
+      factory,
+      fetchImplementation,
+    )).rejects.toThrow(/timed out/);
+    expect(observedSignal?.aborted).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+  }, 15_000);
+
+  it('rejects an oversized preview body without hashing and closes its owned server', async () => {
+    const close = vi.fn((callback: (error?: Error) => void) => callback());
+    const factory: PreviewFactoryV1 = async () => ({ httpServer: {
+      address: () => ({ port: 43210 }), close, on: () => undefined,
+    } });
+    await expect(startPreviewServerV1(
+      { projectRoot: 'project', buildRoot: 'dist', expectedHealthSha256: sha256BytesV1(new TextEncoder().encode('ok')) },
+      factory,
+      vi.fn(async () => new Response('x'.repeat(2 * 1024 * 1024))) as unknown as typeof fetch,
+    )).rejects.toThrow(/size bound/);
+    expect(close).toHaveBeenCalledOnce();
+  });
 });
 
 describe('BR03 persistent browser profile supervision v1', () => {

@@ -146,22 +146,37 @@ async function readInvocationAtRootV1(root: string): Promise<RunInvocationV1> {
   return invocation;
 }
 
-async function readPredecessorLineageV1(
+const MAX_RERUN_LINEAGE_DEPTH_V1 = 1024;
+
+export async function readPredecessorLineageV1(
   currentRoot: string,
   current: RunInvocationV1,
   plan: BuiltRunPlanV1,
   runnerSourceSha: RunInvocationV1['runnerSourceSha'],
+  seenInvocationIds: Set<string> = new Set<string>(),
+  depth: number = 0,
 ): Promise<RunInvocationV1 | undefined> {
   if (current.attempt === 0) return undefined;
   if (!Number.isSafeInteger(current.attempt) || current.attempt < 1 || current.attempt > 1024 || current.rerunOrigin === null) {
     throw new TypeError('Rerun invocation lineage is invalid.');
   }
   if (!CANONICAL_ID_V1.test(current.rerunOrigin.replacesInvocationId)) throw new TypeError('Rerun predecessor ID is not canonical.');
-  const expectedRoot = join(dirname(currentRoot), current.rerunOrigin.replacesInvocationId);
+  if (depth >= MAX_RERUN_LINEAGE_DEPTH_V1) throw new TypeError('Rerun invocation lineage exceeds its depth bound.');
+  const predecessorId = current.rerunOrigin.replacesInvocationId;
+  if (predecessorId === current.invocationId || predecessorId === basename(currentRoot) || seenInvocationIds.has(predecessorId)) {
+    throw new TypeError('Rerun invocation lineage contains a cycle.');
+  }
+  seenInvocationIds.add(current.invocationId);
+  const expectedRoot = join(dirname(currentRoot), predecessorId);
   const predecessorRoot = await resolveInvocationDirectoryV1(expectedRoot);
   if (!samePathV1(predecessorRoot, expectedRoot)) throw new TypeError('Rerun predecessor root identity is invalid.');
   const predecessor = await readInvocationAtRootV1(predecessorRoot);
-  const earlier = await readPredecessorLineageV1(predecessorRoot, predecessor, plan, runnerSourceSha);
+  if (predecessor.invocationId !== predecessorId) throw new TypeError('Rerun predecessor identity does not match its lineage link.');
+  if (!Number.isSafeInteger(predecessor.attempt) || predecessor.attempt !== current.attempt - 1) {
+    throw new TypeError('Rerun predecessor attempt must descend by exactly one.');
+  }
+  if (seenInvocationIds.has(predecessor.invocationId)) throw new TypeError('Rerun invocation lineage contains a cycle.');
+  const earlier = await readPredecessorLineageV1(predecessorRoot, predecessor, plan, runnerSourceSha, seenInvocationIds, depth + 1);
   const issues = verifyRunInvocationV1(plan, predecessor, runnerSourceSha, earlier);
   if (issues.length > 0) throw new TypeError(`Rerun predecessor verification failed: ${issues.join('; ')}`);
   await assertPredecessorTerminalV1(predecessorRoot, plan, predecessor);
