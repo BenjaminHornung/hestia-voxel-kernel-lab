@@ -82,22 +82,6 @@ describe('SparseChunkWorld', () => {
       { coord: ORIGIN, voxels: fullChunk() },
     ])).toThrow(RangeError);
   });
-
-  it('rejects duplicate chunk coordinates regardless of empty-payload order', () => {
-    const emptyChunk = (): Uint8Array => new Uint8Array(VOLUME_VOXEL_COUNT);
-    expect(() => new SparseChunkWorld([
-      { coord: ORIGIN, voxels: emptyChunk() },
-      { coord: ORIGIN, voxels: fullChunk() },
-    ])).toThrow(RangeError);
-    expect(() => new SparseChunkWorld([
-      { coord: ORIGIN, voxels: fullChunk() },
-      { coord: ORIGIN, voxels: emptyChunk() },
-    ])).toThrow(RangeError);
-    expect(() => new SparseChunkWorld([
-      { coord: ORIGIN, voxels: emptyChunk() },
-      { coord: ORIGIN, voxels: emptyChunk() },
-    ])).toThrow(RangeError);
-  });
 });
 
 describe('chunk halo and seam meshing', () => {

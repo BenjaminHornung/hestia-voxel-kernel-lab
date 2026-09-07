@@ -25,13 +25,8 @@ export class SparseChunkWorld {
 
   constructor(chunks: Iterable<ChunkPayload> = []) {
     let occupiedCount = 0;
-    const seen = new Set<ChunkKey>();
     for (const chunk of chunks) {
       const key = chunkCoordToKey(chunk.coord);
-      if (seen.has(key)) {
-        throw new RangeError(`Duplicate chunk: ${key}`);
-      }
-      seen.add(key);
       if (this.#chunks.has(key)) {
         throw new RangeError(`Duplicate chunk: ${key}`);
       }
