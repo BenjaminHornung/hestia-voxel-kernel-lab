@@ -50,6 +50,7 @@ import type {
   Br04PlannedRunSlotV1,
   Br04RawMetricSampleProjectionV1,
   Br04RunDispositionV1,
+  Br04RunProjectionV1,
   Br04Sha256,
   Br04ValidatedRunEnvelopeV1,
 } from './br04ContractV1';
@@ -553,6 +554,31 @@ function projectRunV1(
   if (fixtureDigest === null) {
     return fail('FIXTURE_DIGEST_UNAVAILABLE', 'No observed fixture digest available for the run.', '/source/fixture');
   }
+  const projectedRun: Br04RunProjectionV1 = {
+    source: {
+      repository: run.source.repositoryUrl as string,
+      sourceTreeSha: run.source.commitTreeSha as string,
+      buildSha256: run.source.build.sha256 as string as Br04Sha256,
+      dirty,
+      fixtureContractId: run.source.fixture.id as string,
+      fixtureContractVersion: run.source.fixture.version as number,
+      fixtureDigest,
+    },
+    environmentCellId: run.hardwareCellId as string,
+    browserProcessId: run.browserProcessId as string,
+    candidateId: run.execution.order.candidateId as string,
+    phase: run.execution.phase as string as Br04Phase,
+    scenarioId: unit.scenarioId as string,
+    scenarioVersion: 1,
+    workloadSeed: scenarioSeedV1(unit, planCore.orderSeed as number),
+    environmentFingerprint: sha256OfCanonicalV1(run.environment),
+    measurementEligible: run.measurementEligible,
+    declaredDisposition,
+    declaredReasonCode,
+    declaredRuleId,
+    capabilities,
+    iterations: projectedIterations,
+  };
   const envelope: Br04ValidatedRunEnvelopeV1 = {
     runId: run.runId as string,
     slotId: run.ids.slotId as string,
@@ -565,34 +591,15 @@ function projectRunV1(
       status: 'schema-and-integrity-valid',
       validatedRawByteDigest: receipt.benchmarkRunRawByteSha256 as string as Br04Sha256,
       validatedCanonicalContentDigest: receipt.benchmarkRunCanonicalSha256 as string as Br04Sha256,
+      /**
+       * R4: binds the projected content above, validated by recomputation
+       * at the bundle boundary (PROJECTION_DIGEST_MISMATCH).
+       */
+      validatedProjectionDigest: sha256OfCanonicalV1(projectedRun),
       planDigest: receipt.planDigest as string as Br04Sha256,
       metricRegistryDigest: projectedRegistryDigest,
     },
-    run: {
-      source: {
-        repository: run.source.repositoryUrl as string,
-        sourceTreeSha: run.source.commitTreeSha as string,
-        buildSha256: run.source.build.sha256 as string as Br04Sha256,
-        dirty,
-        fixtureContractId: run.source.fixture.id as string,
-        fixtureContractVersion: run.source.fixture.version as number,
-        fixtureDigest,
-      },
-      environmentCellId: run.hardwareCellId as string,
-      browserProcessId: run.browserProcessId as string,
-      candidateId: run.execution.order.candidateId as string,
-      phase: run.execution.phase as string as Br04Phase,
-      scenarioId: unit.scenarioId as string,
-      scenarioVersion: 1,
-      workloadSeed: scenarioSeedV1(unit, planCore.orderSeed as number),
-      environmentFingerprint: sha256OfCanonicalV1(run.environment),
-      measurementEligible: run.measurementEligible,
-      declaredDisposition,
-      declaredReasonCode,
-      declaredRuleId,
-      capabilities,
-      iterations: projectedIterations,
-    },
+    run: projectedRun,
   };
   return { envelope, fatal: null };
 }

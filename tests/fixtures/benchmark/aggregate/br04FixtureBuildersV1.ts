@@ -184,6 +184,46 @@ export function buildTestBundleV1(spec: Br04TestBundleSpecV1): Br04AggregateInpu
     const rawByteDigest = fakeDigestV1(`raw:${run.runId}`);
     const canonicalContentDigest = fakeDigestV1(`canonical:${run.runId}`);
     const slot = slotSpecs.find((entry) => entry.slotId === run.slotId);
+    const projectedRun = {
+      source: {
+        repository: 'BenjaminHornung/hestia-voxel-kernel-lab',
+        sourceTreeSha: BR04_ACCEPTED_BR03_SYNTHETIC_V1,
+        buildSha256: fakeDigestV1('build'),
+        dirty: run.disposition === 'source-dirty',
+        fixtureContractId: 'fixture-synthetic',
+        fixtureContractVersion: 1,
+        fixtureDigest: fakeDigestV1('fixture'),
+      },
+      environmentCellId: run.environmentCellId ?? 'cell-h1',
+      browserProcessId: run.processId ?? `process-${run.slotId}`,
+      candidateId: run.candidateId ?? slotSpecs.find((slot) => slot.slotId === run.slotId)?.candidateId ?? 'candidate-a',
+      phase: run.phase ?? 'measurement',
+      scenarioId: run.scenarioId ?? slot?.scenarioId ?? 'mesh-density-sweep-v1',
+      scenarioVersion: 1,
+      workloadSeed: run.workloadSeed ?? slot?.workloadSeed ?? 7,
+      environmentFingerprint: run.environmentFingerprint ?? fakeDigestV1('env:default'),
+      measurementEligible: run.eligible ?? true,
+      declaredDisposition: run.disposition ?? 'valid',
+      declaredReasonCode: run.reasonCode ?? null,
+      declaredRuleId: run.ruleId ?? null,
+      capabilities: run.capabilities ?? {},
+      iterations: run.iterations.map((iteration, ordinal) => ({
+        iterationId: iteration.iterationId,
+        ordinal,
+        samples: iteration.samples.map((sample, sampleIndex) => {
+          const metric = metricByRef.get(sample.metric);
+          return {
+            sampleId: `${iteration.iterationId}:s${sampleIndex}`,
+            metricRef: sample.metric,
+            value: sample.value,
+            unit: sample.unit ?? metric?.unit ?? 'ms',
+            valid: sample.valid ?? true,
+            invalidReason: sample.invalidReason ?? null,
+            tags: sample.tags ?? {},
+          };
+        }),
+      })),
+    };
     const receipt = {
       receiptVersion: 1 as const,
       validatorId: 'br01-validator-v1',
@@ -191,6 +231,8 @@ export function buildTestBundleV1(spec: Br04TestBundleSpecV1): Br04AggregateInpu
       status: 'schema-and-integrity-valid' as const,
       validatedRawByteDigest: run.breakReceipt === 'raw' ? fakeDigestV1(`broken:${run.runId}`) : rawByteDigest,
       validatedCanonicalContentDigest: run.breakReceipt === 'canonical' ? fakeDigestV1(`broken:${run.runId}`) : canonicalContentDigest,
+      /** R4: binds projectedRun; the bundle validator recomputes it (PROJECTION_DIGEST_MISMATCH). */
+      validatedProjectionDigest: sha256OfCanonicalV1(projectedRun),
       planDigest: run.breakReceipt === 'plan' ? fakeDigestV1('broken-plan') : planDigest,
       metricRegistryDigest: run.breakReceipt === 'registry' ? fakeDigestV1('broken-registry') : metricRegistryDigest,
     };
@@ -203,46 +245,7 @@ export function buildTestBundleV1(spec: Br04TestBundleSpecV1): Br04AggregateInpu
       rawByteDigest,
       canonicalContentDigest,
       br01ValidationReceipt: brokenStatus,
-      run: {
-        source: {
-          repository: 'BenjaminHornung/hestia-voxel-kernel-lab',
-          sourceTreeSha: BR04_ACCEPTED_BR03_SYNTHETIC_V1,
-          buildSha256: fakeDigestV1('build'),
-          dirty: run.disposition === 'source-dirty',
-          fixtureContractId: 'fixture-synthetic',
-          fixtureContractVersion: 1,
-          fixtureDigest: fakeDigestV1('fixture'),
-        },
-        environmentCellId: run.environmentCellId ?? 'cell-h1',
-        browserProcessId: run.processId ?? `process-${run.slotId}`,
-        candidateId: run.candidateId ?? slotSpecs.find((slot) => slot.slotId === run.slotId)?.candidateId ?? 'candidate-a',
-        phase: run.phase ?? 'measurement',
-        scenarioId: run.scenarioId ?? slot?.scenarioId ?? 'mesh-density-sweep-v1',
-        scenarioVersion: 1,
-        workloadSeed: run.workloadSeed ?? slot?.workloadSeed ?? 7,
-        environmentFingerprint: run.environmentFingerprint ?? fakeDigestV1('env:default'),
-        measurementEligible: run.eligible ?? true,
-        declaredDisposition: run.disposition ?? 'valid',
-        declaredReasonCode: run.reasonCode ?? null,
-        declaredRuleId: run.ruleId ?? null,
-        capabilities: run.capabilities ?? {},
-        iterations: run.iterations.map((iteration, ordinal) => ({
-          iterationId: iteration.iterationId,
-          ordinal,
-          samples: iteration.samples.map((sample, sampleIndex) => {
-            const metric = metricByRef.get(sample.metric);
-            return {
-              sampleId: `${iteration.iterationId}:s${sampleIndex}`,
-              metricRef: sample.metric,
-              value: sample.value,
-              unit: sample.unit ?? metric?.unit ?? 'ms',
-              valid: sample.valid ?? true,
-              invalidReason: sample.invalidReason ?? null,
-              tags: sample.tags ?? {},
-            };
-          }),
-        })),
-      },
+      run: projectedRun,
     };
   });
   const body = {

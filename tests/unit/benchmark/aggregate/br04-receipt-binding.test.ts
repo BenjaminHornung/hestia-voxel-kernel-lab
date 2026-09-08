@@ -8,7 +8,8 @@
  *   must be refused by the public bundle validator.
  */
 import { describe, expect, it } from 'vitest';
-import { validateAndAggregateBundleV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
+import { canonicalBundleBodyDigestV1, validateAndAggregateBundleV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
+import { sha256OfCanonicalV1 } from '../../../../src/benchmark/aggregate/br04StatisticsV1';
 import type { Br04AggregateInputBundleV1 } from '../../../../src/benchmark/aggregate/br04ContractV1';
 import type { BenchmarkRunV1 } from '../../../../src/benchmark/contracts';
 import {
@@ -101,5 +102,34 @@ describe('br04 R3 B3-Rest receipt binding', () => {
     expect(result.validation.status).toBe('invalid');
     expect(result.aggregate).toBeNull();
     expect(result.validation.issues.some((issue) => issue.code === 'BOOTSTRAP_POLICY_INVALID')).toBe(true);
+  });
+
+  it('R4: rejects a post-crosswalk projection tamper (5 -> 12345) with recomputed container hashes', () => {
+    const plan = r2PlanV1('r4-bind-doc', [{ slot: 'slot-doc', candidate: 'candidate-a' }]);
+    const entry = r2EntryV1(plan, {
+      runId: 'run-doc', slot: 'slot-doc', candidate: 'candidate-a', values: [5],
+    });
+    const { bundle } = r2BundleV1('r4-bind-doc', plan, [entry]);
+    expect(bundle).not.toBeNull();
+    const tamperedRuns = structuredClone(bundle?.runs ?? []);
+    const tamperedSample = tamperedRuns[0]?.run.iterations[0]?.samples[0] as { value: number } | undefined;
+    expect(tamperedSample?.value).toBe(5);
+    if (tamperedSample !== undefined) tamperedSample.value = 12345;
+    const tamperedBody = { ...bundle, runs: tamperedRuns } as Omit<Br04AggregateInputBundleV1, 'manifest'>;
+    const normalizedInputDigest = canonicalBundleBodyDigestV1(tamperedBody);
+    const orderedRawRunDigests = [...(bundle?.manifest.orderedRawRunDigests ?? [])];
+    const tampered: Br04AggregateInputBundleV1 = {
+      ...(bundle as Br04AggregateInputBundleV1),
+      runs: tamperedRuns,
+      manifest: {
+        orderedRawRunDigests,
+        normalizedInputDigest,
+        manifestDigest: sha256OfCanonicalV1({ orderedRawRunDigests, normalizedInputDigest }),
+      },
+    };
+    const result = validateAndAggregateBundleV1(tampered);
+    expect(result.validation.status).toBe('invalid');
+    expect(result.aggregate).toBeNull();
+    expect(result.validation.issues.some((issue) => issue.code === 'PROJECTION_DIGEST_MISMATCH')).toBe(true);
   });
 });

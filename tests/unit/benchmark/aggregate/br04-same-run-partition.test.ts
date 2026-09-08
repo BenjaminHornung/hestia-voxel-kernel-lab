@@ -203,4 +203,132 @@ describe('br04 R3 B2-Rest same-run partition', () => {
     const differences = comparisons.map((comparison) => comparison.differencePointEstimate).sort((a, b) => (a ?? 0) - (b ?? 0));
     expect(differences).toEqual([2, 200]);
   });
+
+  it('R4: mixed and simple runs of one population stay one population (js-heap with 2 runs)', () => {
+    const bundle = buildTestBundleV1({
+      bundleId: 'r4-mixed-simple',
+      metrics: [memoryMetricV1()],
+      slots: [
+        { slotId: 'slot-1', candidateId: 'candidate-a' },
+        { slotId: 'slot-2', candidateId: 'candidate-a' },
+      ],
+      runs: [
+        {
+          runId: 'run-1',
+          slotId: 'slot-1',
+          candidateId: 'candidate-a',
+          iterations: [{
+            iterationId: 'iter-1',
+            samples: [
+              {
+                metric: MEMORY, value: 1, unit: 'bytes',
+                valid: true, invalidReason: null, tags: { memoryKind: 'js-heap' },
+              },
+              {
+                metric: MEMORY, value: 1000, unit: 'bytes',
+                valid: true, invalidReason: null, tags: { memoryKind: 'embedder-heap' },
+              },
+            ],
+          }],
+        },
+        {
+          runId: 'run-2',
+          slotId: 'slot-2',
+          candidateId: 'candidate-a',
+          iterations: [iterationV1('iter-2', MEMORY, [2], { unit: 'bytes', tags: { memoryKind: 'js-heap' } })],
+        },
+      ],
+    });
+    const result = validateAndAggregateBundleV1(bundle);
+    expect(result.validation.status).toBe('valid');
+    const cells = (result.aggregate?.environmentCells ?? []).flatMap(
+      (cell) => cell.metricCells.filter((metricCell) => metricCell.metricRef === MEMORY),
+    );
+    expect(cells.length).toBe(2);
+    const jsHeap = cells.find((cell) => cell.maximum === 2);
+    const embedder = cells.find((cell) => cell.maximum === 1000);
+    expect(jsHeap).toBeDefined();
+    expect(jsHeap?.nRuns).toBe(2);
+    expect(embedder?.nRuns).toBe(1);
+  });
+
+  it('R4: paired js-heap merges across a mixed and a simple pair cell (no split-shaped duplicate)', () => {
+    const bundle = buildTestBundleV1({
+      bundleId: 'r4-paired-merge',
+      comparisonMode: 'reference-paired',
+      referenceCandidateId: 'ref',
+      metrics: [memoryMetricV1()],
+      slots: [
+        {
+          slotId: 'slot-r0', candidateId: 'ref', pairCellId: 'pc-1',
+          pairOrdinal: 1, balanceBlockId: 'bb-1', bootstrapClusterId: 'cluster-r0',
+        },
+        {
+          slotId: 'slot-c0', candidateId: 'cmp', pairCellId: 'pc-1',
+          pairOrdinal: 1, balanceBlockId: 'bb-1', bootstrapClusterId: 'cluster-c0',
+        },
+        {
+          slotId: 'slot-r1', candidateId: 'ref', pairCellId: 'pc-2',
+          pairOrdinal: 1, balanceBlockId: 'bb-1', bootstrapClusterId: 'cluster-r1',
+        },
+        {
+          slotId: 'slot-c1', candidateId: 'cmp', pairCellId: 'pc-2',
+          pairOrdinal: 1, balanceBlockId: 'bb-1', bootstrapClusterId: 'cluster-c1',
+        },
+      ],
+      runs: [
+        {
+          runId: 'run-r0', slotId: 'slot-r0', processId: 'process-r0', candidateId: 'ref',
+          iterations: [{
+            iterationId: 'iter-r0',
+            samples: [
+              {
+                metric: MEMORY, value: 10, unit: 'bytes',
+                valid: true, invalidReason: null, tags: { memoryKind: 'js-heap' },
+              },
+              {
+                metric: MEMORY, value: 1000, unit: 'bytes',
+                valid: true, invalidReason: null, tags: { memoryKind: 'embedder-heap' },
+              },
+            ],
+          }],
+        },
+        {
+          runId: 'run-c0', slotId: 'slot-c0', processId: 'process-c0', candidateId: 'cmp',
+          iterations: [{
+            iterationId: 'iter-c0',
+            samples: [
+              {
+                metric: MEMORY, value: 12, unit: 'bytes',
+                valid: true, invalidReason: null, tags: { memoryKind: 'js-heap' },
+              },
+              {
+                metric: MEMORY, value: 1200, unit: 'bytes',
+                valid: true, invalidReason: null, tags: { memoryKind: 'embedder-heap' },
+              },
+            ],
+          }],
+        },
+        {
+          runId: 'run-r1', slotId: 'slot-r1', processId: 'process-r1', candidateId: 'ref',
+          iterations: [iterationV1('iter-r1', MEMORY, [20], { unit: 'bytes', tags: { memoryKind: 'js-heap' } })],
+        },
+        {
+          runId: 'run-c1', slotId: 'slot-c1', processId: 'process-c1', candidateId: 'cmp',
+          iterations: [iterationV1('iter-c1', MEMORY, [24], { unit: 'bytes', tags: { memoryKind: 'js-heap' } })],
+        },
+      ],
+    });
+    const result = validateAndAggregateBundleV1(bundle);
+    expect(result.validation.status).toBe('valid');
+    const comparisons = (result.aggregate?.pairedComparisons ?? []).filter(
+      (comparison) => comparison.metricRef === MEMORY,
+    );
+    expect(comparisons.length).toBe(2);
+    const jsHeap = comparisons.find((comparison) => comparison.pairValues.length === 2);
+    const embedder = comparisons.find((comparison) => comparison.pairValues.length === 1);
+    expect(jsHeap?.pairs.complete).toBe(2);
+    expect(jsHeap?.pairs.incomplete).toBe(0);
+    expect(embedder?.pairs.complete).toBe(1);
+  });
 });

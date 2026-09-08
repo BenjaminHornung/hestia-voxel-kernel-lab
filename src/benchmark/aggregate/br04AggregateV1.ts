@@ -264,6 +264,22 @@ export function validateAndAggregateBundleV1(bundle: Br04AggregateInputBundleV1)
     if (receipt.validatorDigest !== bundle.sourceContract.br01ValidatorDigest) {
       error('VALIDATOR_DIGEST_MISMATCH', 'Receipt validator digest disagrees with the bundle source contract.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
     }
+    /**
+     * R4: the projected run content is bound to the receipt. The digest is
+     * recomputed from the actual projection, so a post-crosswalk value or
+     * tag change with recomputed container/manifest hashes is refused
+     * instead of aggregated. Non-canonical projections (NaN, negative zero)
+     * cannot be rehashed here; they are reported below as
+     * CANONICAL_SERIALIZATION_FAILED. Synthetic API-boundary check: a fully
+     * consistent re-forgery of every digest stays outside the threat model.
+     */
+    try {
+      if (envelope.br01ValidationReceipt.validatedProjectionDigest !== sha256OfCanonicalV1(envelope.run)) {
+        error('PROJECTION_DIGEST_MISMATCH', 'Receipt projection digest mismatches the projected run content; the projection was changed after crosswalk validation.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
+      }
+    } catch {
+      // Non-canonical projection content; covered by CANONICAL_SERIALIZATION_FAILED below.
+    }
     if (envelope.run.source.dirty && envelope.run.declaredDisposition === 'valid') {
       error('SOURCE_DIRTY_MISMATCH', 'Run source is dirty but projected as valid.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
     }
@@ -425,7 +441,8 @@ interface Br04RunMetricDataV1 {
     readonly values: readonly number[];
     readonly iterations: readonly (readonly number[])[];
     readonly runDigest: Br04Sha256;
-    readonly partitionKey: string | null;
+    /** R4: always the full observed tag tuple; the population key never depends on sibling partitions. */
+    readonly partitionKey: string;
   }[];
 }
 
@@ -550,11 +567,16 @@ function groupCellDataV1(
         }
       }
       if (partitions.size === 0) continue;
-      const split = partitions.size > 1;
       for (const partitionKey of [...partitions.keys()].sort()) {
         const entry = partitions.get(partitionKey) as { values: number[]; iterations: number[][]; samples: { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[] };
         const signature = tagSignatureV1(extraTags, entry.samples);
-        const compatTag = split ? `${ref}\0${signature}\0${partitionKey}` : `${ref}\0${signature}`;
+        /**
+         * R4: uniform population identity. The key always carries the same
+         * canonical projection (metric plus the full observed tag tuple);
+         * whether the run holds further partitions must not move the key,
+         * otherwise mixed and simple runs of one population split apart.
+         */
+        const compatTag = `${ref}\0${signature}\0${partitionKey}`;
         const { key } = compatibilityKeyV1(item.envelope, compatTag);
         let cell = cells.get(key);
         if (cell === undefined) {
@@ -579,7 +601,7 @@ function groupCellDataV1(
           };
           cell.metrics.set(ref, data);
         }
-        data.runs.push({ eligible: item, values: entry.values, iterations: entry.iterations, runDigest: item.envelope.canonicalContentDigest, partitionKey: split ? partitionKey : null });
+        data.runs.push({ eligible: item, values: entry.values, iterations: entry.iterations, runDigest: item.envelope.canonicalContentDigest, partitionKey });
       }
     }
   }
@@ -651,15 +673,13 @@ function buildAggregateV1(
       for (const run of [...data.runs].sort((left, right) =>
         left.eligible.envelope.runId < right.eligible.envelope.runId ? -1
           : left.eligible.envelope.runId > right.eligible.envelope.runId ? 1
-            : (left.partitionKey ?? '') < (right.partitionKey ?? '') ? -1 : 1,
+            : left.partitionKey < right.partitionKey ? -1 : 1,
       )) {
         processes.add(run.eligible.envelope.run.browserProcessId);
         nIterations += run.iterations.length;
         for (const value of run.values) pooledValues.push(value);
         const scope = { metricRef: ref, unit: metric.unit, sourceRunDigests: [run.runDigest] as readonly Br04Sha256[] };
-        const runScopeId = run.partitionKey === null
-          ? `run:${run.eligible.envelope.runId}:${ref}`
-          : `run:${run.eligible.envelope.runId}:${ref}:${run.partitionKey}`;
+        const runScopeId = `run:${run.eligible.envelope.runId}:${ref}:${run.partitionKey}`;
         const p50 = quantileResultV1({ ...scope, scopeId: runScopeId }, run.values, 0.5);
         const p95 = quantileResultV1({ ...scope, scopeId: runScopeId }, run.values, 0.95);
         const p99 = quantileResultV1({ ...scope, scopeId: runScopeId }, run.values, 0.99);
@@ -677,10 +697,8 @@ function buildAggregateV1(
           iterations: run.iterations,
         });
       }
-      const splitKeys = [...new Set(data.runs.map((run) => run.partitionKey).filter((key): key is string => key !== null))].sort();
-      const pooledScopeId = splitKeys.length === 0
-        ? `cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}`
-        : `cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:${splitKeys.join('|')}`;
+      const splitKeys = [...new Set(data.runs.map((run) => run.partitionKey))].sort();
+      const pooledScopeId = `cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:${splitKeys.join('|')}`;
       const pooledScope = { metricRef: ref, scopeId: pooledScopeId, unit: metric.unit, sourceRunDigests: runDigests };
       const descriptivePooledQuantiles: Br04QuantileResultV1[] = [
         quantileResultV1(pooledScope, pooledValues, 0.5),
@@ -919,7 +937,7 @@ function buildPairedComparisonsV1(
   for (const item of eligible) envelopeBySlot.set(item.slot.slotId, item);
   const groups = new Map<string, {
     environmentCellId: string; phase: Br04Phase; scenarioId: string; scenarioVersion: number;
-    workloadSeed: number; tagSignature: string; partitionKey: string | null; split: boolean; metricRef: Br04MetricRef;
+    workloadSeed: number; tagSignature: string; partitionKey: string | null; metricRef: Br04MetricRef;
     referenceCandidateId: string; candidateId: string; cells: Map<string, Br04PairCellStateV1>;
   }>();
   for (const metric of bundle.metricRegistry) {
@@ -979,7 +997,6 @@ function buildPairedComparisonsV1(
       const primaryKeys = primaryParts !== null && primaryParts.size > 0
         ? [...primaryParts.keys()].sort()
         : [null] as readonly (string | null)[];
-      const split = primaryParts !== null && primaryParts.size > 1;
       for (const partitionKey of primaryKeys) {
         const signature = partitionKey === null
           ? (primary.tagSignature ?? '')
@@ -992,7 +1009,13 @@ function buildPairedComparisonsV1(
           refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '',
           cmpSlot?.candidateId ?? refSlot?.candidateId ?? '',
           signature,
-          split && partitionKey !== null ? partitionKey : '',
+          /**
+           * R4: uniform pair-group identity, mirroring the absolute cells.
+           * The observed tag tuple always enters the key (null only for the
+           * unobserved-slot fallback); a primary with a single partition no
+           * longer groups apart from a mixed run of the same population.
+           */
+          partitionKey ?? '',
         ].join('\0');
         let group = groups.get(groupKey);
         if (group === undefined) {
@@ -1000,7 +1023,7 @@ function buildPairedComparisonsV1(
             environmentCellId: primary.environmentCellId, phase: primary.phase,
             scenarioId: primary.scenarioId, scenarioVersion: primary.scenarioVersion,
             workloadSeed: primary.workloadSeed, tagSignature: signature,
-            partitionKey, split,
+            partitionKey,
             metricRef: ref,
             referenceCandidateId: (refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '') as string,
             candidateId: (cmpSlot?.candidateId ?? refSlot?.candidateId ?? '') as string,
@@ -1017,7 +1040,7 @@ function buildPairedComparisonsV1(
   for (const groupKey of sortedGroupKeys) {
     const group = groups.get(groupKey) as {
       environmentCellId: string; phase: Br04Phase; scenarioId: string; scenarioVersion: number;
-      workloadSeed: number; tagSignature: string; partitionKey: string | null; split: boolean; metricRef: Br04MetricRef;
+      workloadSeed: number; tagSignature: string; partitionKey: string | null; metricRef: Br04MetricRef;
       referenceCandidateId: string; candidateId: string; cells: Map<string, Br04PairCellStateV1>;
     };
     const metric = bundle.metricRegistry.find(
@@ -1208,7 +1231,7 @@ function buildPairedComparisonsV1(
     const comparisonId =
       `cmp:${group.environmentCellId}:${group.phase}:${group.scenarioId}:${group.workloadSeed}:` +
       `${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}` +
-      (group.split && group.partitionKey !== null ? `:tag=${group.partitionKey}` : '');
+      (group.partitionKey !== null ? `:tag=${group.partitionKey}` : '');
     comparisons.push({
       schemaVersion: 1,
       comparisonId,

@@ -63,8 +63,11 @@ describe('br04 R3 B6-Folgen positive ratio seed golden and labels', () => {
     expect(comparison?.differenceInterval.replicateVectorDigest)
       .not.toBe(comparison?.ratioInterval.replicateVectorDigest);
     expect(comparison?.ratioPointEstimate).toBeCloseTo(1.059104500597819, 12);
+    // R4 renewal: seed-dependent replicate vector moved with the fixed
+    // contract content (uniform population identity, projection-bound
+    // receipts); the fixture and the known answer are unchanged.
     expect(comparison?.ratioInterval.replicateVectorDigest).toBe(
-      'sha256:86529f5127ef6e3a3bb83d7cf3e542e1514ec1d57bca57cad77d2dd8044b1530' as Br04Sha256,
+      'sha256:45c1e8d01ae08264f1c4e384d4f7fa2dedfdf9a1ffbb521095d442cb326ed880' as Br04Sha256,
     );
   });
 
