@@ -292,6 +292,11 @@ export interface Br04PairKeyV1 {
 
 export interface Br04PairedComparisonV1 {  readonly schemaVersion: 1;
   readonly comparisonId: string;
+  /**
+   * R3/B6-Folgen: human-readable population identity (scenario, workload
+   * seed, observed tag tuple) shared by the paired arms.
+   */
+  readonly populationLabel: string;
   readonly metricRef: Br04MetricRef;
   readonly environmentCellId: string;
   readonly phase: Br04Phase;
@@ -432,6 +437,12 @@ export interface Br04PerRunMetricSummaryV1 {
 export interface Br04MetricCellV1 {
   readonly metricRef: Br04MetricRef;
   readonly unit: string;
+  /**
+   * R3/B6-Folgen: human-readable population identity (scenario, workload
+   * seed, observed tag tuple). The fingerprint digest stays the machine
+   * identity; this label is its readable projection.
+   */
+  readonly populationLabel: string;
   readonly nProcesses: number;
   readonly nRuns: number;
   readonly nIterations: number;

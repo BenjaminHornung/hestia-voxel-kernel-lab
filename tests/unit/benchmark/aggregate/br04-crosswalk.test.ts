@@ -14,6 +14,7 @@ import type {
 } from '../../../../src/benchmark/contracts';
 import type { BuiltRunPlanV1 } from '../../../../src/benchmark/runner/contractsV1';
 import { crosswalkToBundleV1, normalizeDimensionKeyV1, projectMetricDefinitionV1 } from '../../../../src/benchmark/aggregate/br04CrosswalkV1';
+import { sha256OfCanonicalV1 } from '../../../../src/benchmark/aggregate/br04StatisticsV1';
 import { validateAndAggregateBundleV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
 import type { Br04BootstrapPolicyV1, Br04Sha256 } from '../../../../src/benchmark/aggregate/br04ContractV1';
 import {
@@ -116,7 +117,7 @@ function frozenRunV1(
     buildDigest?: Br04Sha256;
     commitSha?: string;
   },
-): { document: BenchmarkRunDocumentV1; run: BenchmarkRunV1; receipt: BenchmarkValidationReceiptV1 } {
+): { document: BenchmarkRunDocumentV1; run: BenchmarkRunV1; receipt: BenchmarkValidationReceiptV1; rawByteDigest: Br04Sha256; canonicalContentDigest: Br04Sha256 } {
   const slotId = overrides?.slotId ?? 'slot-xw';
   const run = {
     runId: 'run-xw',
@@ -161,19 +162,25 @@ function frozenRunV1(
   const document = {
     browserProcesses: [{ runs: [run], ids: { bootstrapClusterId: 'cluster-xw' } }],
   } as unknown as BenchmarkRunDocumentV1;
+  /**
+   * R3/B3-Rest: genuine validated digests bound to the document bytes, so
+   * the crosswalk recomputation check taken from the BR01 canonicalizer
+   * accepts untampered fixtures and refuses stale receipts.
+   */
+  const documentDigest = sha256OfCanonicalV1(document);
   const receipt = {
     status: 'schema-and-integrity-valid',
     runId: 'run-xw',
     slotId,
-    benchmarkRunRawByteSha256: fakeDigestV1('xw-raw'),
-    benchmarkRunCanonicalSha256: fakeDigestV1('xw-canonical'),
+    benchmarkRunRawByteSha256: documentDigest,
+    benchmarkRunCanonicalSha256: documentDigest,
     planDigest: fakeDigestV1('xw-plan'),
     metricRegistrySha256: fakeDigestV1('xw-registry'),
     validator: { id: 'br01-validator-v1', sourceFileSetSha256: fakeDigestV1('xw-validator') },
     schemaVersion: 'benchmark-validation-receipt-v1',
     schemaSetSha256: fakeDigestV1('xw-schema'),
   } as unknown as BenchmarkValidationReceiptV1;
-  return { document, run, receipt };
+  return { document, run, receipt, rawByteDigest: documentDigest, canonicalContentDigest: documentDigest };
 }
 
 const POLICY: Br04BootstrapPolicyV1 = {
@@ -203,6 +210,10 @@ describe('BR04 crosswalk', () => {
         ...(frozen.run.iterations as unknown[]),
       ],
     } as unknown as BenchmarkRunV1;
+    const warmupDocument = {
+      browserProcesses: [{ runs: [warmupRun], ids: { bootstrapClusterId: 'cluster-xw' } }],
+    } as unknown as BenchmarkRunDocumentV1;
+    const warmupDigest = sha256OfCanonicalV1(warmupDocument);
     const result = crosswalkToBundleV1({
       acceptedBr03Sha: BR04_ACCEPTED_BR03_SYNTHETIC_V1,
       bundleId: 'xw-valid',
@@ -211,12 +222,15 @@ describe('BR04 crosswalk', () => {
       registry: frozenMetricRegistryV1(),
       bootstrapPolicy: POLICY,
       runs: [{
-        document: {
-          browserProcesses: [{ runs: [warmupRun], ids: { bootstrapClusterId: 'cluster-xw' } }],
-        } as unknown as BenchmarkRunDocumentV1,
-        run: warmupRun, receipt: frozen.receipt,
-        rawByteDigest: fakeDigestV1('xw-raw'),
-        canonicalContentDigest: fakeDigestV1('xw-canonical'),
+        document: warmupDocument,
+        run: warmupRun,
+        receipt: {
+          ...frozen.receipt,
+          benchmarkRunRawByteSha256: warmupDigest,
+          benchmarkRunCanonicalSha256: warmupDigest,
+        } as BenchmarkValidationReceiptV1,
+        rawByteDigest: warmupDigest,
+        canonicalContentDigest: warmupDigest,
       }],
     });
     expect(result.issues).toEqual([]);
@@ -268,8 +282,8 @@ describe('BR04 crosswalk', () => {
       runs: [{
         document: ghost.document, run: ghost.run,
         receipt: { ...ghost.receipt, slotId: 'slot-ghost' } as BenchmarkValidationReceiptV1,
-        rawByteDigest: fakeDigestV1('xw-raw'),
-        canonicalContentDigest: fakeDigestV1('xw-canonical'),
+        rawByteDigest: ghost.rawByteDigest,
+        canonicalContentDigest: ghost.canonicalContentDigest,
       }],
     });
     expect(ghostResult.bundle).toBeNull();
@@ -285,8 +299,8 @@ describe('BR04 crosswalk', () => {
       runs: [{
         document: { browserProcesses: [] } as unknown as BenchmarkRunDocumentV1,
         run: orphan.run, receipt: orphan.receipt,
-        rawByteDigest: fakeDigestV1('xw-raw'),
-        canonicalContentDigest: fakeDigestV1('xw-canonical'),
+        rawByteDigest: orphan.rawByteDigest,
+        canonicalContentDigest: orphan.canonicalContentDigest,
       }],
     });
     expect(orphanResult.bundle).toBeNull();
@@ -310,8 +324,8 @@ describe('BR04 crosswalk', () => {
     };
     const runEntry = {
       document: infra.document, run: infra.run, receipt: infra.receipt,
-      rawByteDigest: fakeDigestV1('xw-raw'),
-      canonicalContentDigest: fakeDigestV1('xw-canonical'),
+      rawByteDigest: infra.rawByteDigest,
+      canonicalContentDigest: infra.canonicalContentDigest,
     };
     const undeclared = crosswalkToBundleV1({ ...base, runs: [runEntry] });
     expect(undeclared.bundle).toBeNull();
@@ -342,8 +356,8 @@ describe('BR04 crosswalk', () => {
       invalidationRegistry: [rule],
       runs: [{
         document: candidate.document, run: candidate.run, receipt: candidate.receipt,
-        rawByteDigest: fakeDigestV1('xw-raw'),
-        canonicalContentDigest: fakeDigestV1('xw-canonical'),
+        rawByteDigest: candidate.rawByteDigest,
+        canonicalContentDigest: candidate.canonicalContentDigest,
         declaredRuleId: 'host-suspend-resume',
       }],
     });
@@ -368,8 +382,8 @@ describe('BR04 crosswalk', () => {
     };
     const entry = {
       document: dirty.document, run: dirty.run, receipt: dirty.receipt,
-      rawByteDigest: fakeDigestV1('xw-raw'),
-      canonicalContentDigest: fakeDigestV1('xw-canonical'),
+      rawByteDigest: dirty.rawByteDigest,
+      canonicalContentDigest: dirty.canonicalContentDigest,
     };
     expect(crosswalkToBundleV1({ ...base, runs: [entry] }).bundle?.runs[0]?.run.declaredDisposition)
       .toBe('source-dirty');
@@ -379,8 +393,8 @@ describe('BR04 crosswalk', () => {
       bundleId: 'xw-drift',
       runs: [{
         document: drifted.document, run: drifted.run, receipt: drifted.receipt,
-        rawByteDigest: fakeDigestV1('xw-raw'),
-        canonicalContentDigest: fakeDigestV1('xw-canonical'),
+        rawByteDigest: drifted.rawByteDigest,
+        canonicalContentDigest: drifted.canonicalContentDigest,
       }],
     });
     expect(driftedResult.bundle?.runs[0]?.run.declaredDisposition).toBe('provenance-mismatch');

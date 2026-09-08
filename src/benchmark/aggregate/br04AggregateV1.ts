@@ -62,6 +62,9 @@ import {
   type Br04Sha256,
   type Br04ValidatedRunEnvelopeV1,
   BR04_AGGREGATOR_VERSION_V1,
+  BR04_BOOTSTRAP_CONFIDENCE_V1,
+  BR04_BOOTSTRAP_RESAMPLES_V1,
+  BR04_MINIMUM_TOP_LEVEL_CLUSTERS_V1,
 } from './br04ContractV1';
 import {
   bootstrapAbsoluteV1,
@@ -178,6 +181,25 @@ export function validateAndAggregateBundleV1(bundle: Br04AggregateInputBundleV1)
   if (!/^[0-9a-f]{64}$/.test(bundle.bootstrapPolicy.masterSeedHex)) {
     error('MASTER_SEED_INVALID', 'bootstrapPolicy.masterSeedHex is not 64 lowercase hex.', '/bootstrapPolicy/masterSeedHex');
   }
+  /**
+   * R3/B3-Rest: the public boundary enforces the same versioned statistics
+   * policy as the crosswalk, so a hand-built bundle cannot smuggle in a
+   * weakened bootstrap (e.g. resamples=7).
+   */
+  if (
+    bundle.bootstrapPolicy.method !== 'hierarchical-percentile-v1'
+    || bundle.bootstrapPolicy.confidenceLevel !== BR04_BOOTSTRAP_CONFIDENCE_V1
+    || bundle.bootstrapPolicy.resamples !== BR04_BOOTSTRAP_RESAMPLES_V1
+    || bundle.bootstrapPolicy.minimumTopLevelClusters !== BR04_MINIMUM_TOP_LEVEL_CLUSTERS_V1
+    || bundle.bootstrapPolicy.seedDerivation !== 'sha256-bound-xoshiro128ss-v1'
+    || bundle.bootstrapPolicy.prng !== 'xoshiro128**-32-v1'
+    || bundle.bootstrapPolicy.indexSampling !== 'uint32-rejection-v1'
+  ) {
+    error('BOOTSTRAP_POLICY_INVALID', 'bootstrapPolicy deviates from the versioned BR04 statistics policy.', '/bootstrapPolicy');
+  }
+  if (bundle.sourceContract.acceptedBr03Sha !== bundle.runPlan.acceptedBr03Sha) {
+    error('SOURCE_CONTRACT_CONFLICT', 'sourceContract acceptedBr03Sha disagrees with the run plan.', '/sourceContract/acceptedBr03Sha');
+  }
   if (bundle.runPlan.slots.length === 0) error('NO_PLANNED_SLOTS', 'Run plan carries no slots.', '/runPlan/slots');
   if (bundle.metricRegistry.length === 0) error('EMPTY_METRIC_REGISTRY', 'Metric registry is empty.', '/metricRegistry');
   const metricByRef = new Map<Br04MetricRef, Br04MetricDefinitionV1>();
@@ -230,6 +252,25 @@ export function validateAndAggregateBundleV1(bundle: Br04AggregateInputBundleV1)
     if (!['cold', 'warmup', 'measurement', 'stress', 'trace', 'leak'].includes(envelope.run.phase)) {
       error('ILLEGAL_PHASE', 'Run phase is not a known sample phase.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
     }
+    /**
+     * R3/B3-Rest: receipt-to-source-contract binding and run-to-slot
+     * binding at the public boundary. A wrong validator digest, a
+     * dirty source projected as valid, or a candidate that disagrees
+     * with its plan slot is refused instead of aggregated.
+     */
+    if (receipt.validatorId !== bundle.sourceContract.br01ValidatorId) {
+      error('VALIDATOR_MISMATCH', 'Receipt validator disagrees with the bundle source contract.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
+    }
+    if (receipt.validatorDigest !== bundle.sourceContract.br01ValidatorDigest) {
+      error('VALIDATOR_DIGEST_MISMATCH', 'Receipt validator digest disagrees with the bundle source contract.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
+    }
+    if (envelope.run.source.dirty && envelope.run.declaredDisposition === 'valid') {
+      error('SOURCE_DIRTY_MISMATCH', 'Run source is dirty but projected as valid.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
+    }
+    const plannedSlot = slotById.get(envelope.slotId);
+    if (plannedSlot !== undefined && envelope.run.candidateId !== plannedSlot.candidateId) {
+      error('SLOT_CANDIDATE_MISMATCH', 'Run candidate disagrees with its plan slot.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
+    }
     if (envelope.run.declaredDisposition === 'infrastructure-invalid') {
       const rule = envelope.run.declaredRuleId === null
         ? undefined
@@ -276,6 +317,18 @@ export function validateAndAggregateBundleV1(bundle: Br04AggregateInputBundleV1)
   const orderedRaw = bundle.runs.map((envelope) => envelope.rawByteDigest).sort();
   if (orderedRaw.join(',') !== [...bundle.manifest.orderedRawRunDigests].sort().join(',')) {
     error('MANIFEST_RUN_DIGESTS_MISMATCH', 'Manifest raw run digests do not match the observed runs.', '/manifest/orderedRawRunDigests');
+  }
+  /**
+   * R3/B3-Rest: the manifest digest itself is recomputed and bound, so a
+   * hand-built bundle cannot carry a foreign manifestDigest over otherwise
+   * consistent contents.
+   */
+  const recomputedManifest = sha256OfCanonicalV1({
+    orderedRawRunDigests: [...bundle.manifest.orderedRawRunDigests].sort(),
+    normalizedInputDigest: bundle.manifest.normalizedInputDigest,
+  });
+  if (recomputedManifest !== bundle.manifest.manifestDigest) {
+    error('MANIFEST_DIGEST_MISMATCH', 'Manifest digest does not match the manifest contents.', '/manifest/manifestDigest');
   }
   const metricRegistryDigest = sha256OfCanonicalV1(bundle.metricRegistry);
   for (const envelope of bundle.runs) {
@@ -366,11 +419,13 @@ export function validateAndAggregateBundleV1(bundle: Br04AggregateInputBundleV1)
 interface Br04RunMetricDataV1 {
   readonly metric: Br04MetricDefinitionV1;
   readonly ref: Br04MetricRef;
+  readonly populationLabel: string;
   readonly runs: {
     readonly eligible: Br04EligibleRunV1;
     readonly values: readonly number[];
     readonly iterations: readonly (readonly number[])[];
     readonly runDigest: Br04Sha256;
+    readonly partitionKey: string | null;
   }[];
 }
 
@@ -398,6 +453,29 @@ function tagSignatureV1(
     parts.push(`${tag}=${distinct.join(',')}`);
   }
   return parts.join(';');
+}
+
+/**
+ * R3/B2-Rest: full metric tag-tuple key of one sample. Samples of one run
+ * that differ in any tag (memory kinds, checkpoints, other tags) belong to
+ * different populations, even when they share run and iteration.
+ */
+function tagPartitionKeyV1(tags: Readonly<Record<string, string | number | boolean | null>>): string {
+  return Object.keys(tags).sort().map((key) => `${key}=${JSON.stringify(tags[key] ?? null)}`).join(';');
+}
+
+/**
+ * R3/B6-Folgen: readable population identity for cells and comparisons.
+ * Scenario, workload seed, and the observed tag tuple name the population;
+ * the fingerprint digest remains the machine identity.
+ */
+export function populationLabelV1(
+  scenarioId: string,
+  scenarioVersion: number,
+  workloadSeed: number,
+  tagSignature: string,
+): string {
+  return `scenario=${scenarioId}@v${scenarioVersion} seed=${workloadSeed} tags=${tagSignature === '' ? '-' : tagSignature}`;
 }
 
 export interface Br04CompatibilityKeyV1 {
@@ -446,41 +524,63 @@ function groupCellDataV1(
     const extraTags = extraGroupTagsV1(metric);
     for (const item of eligible) {
       if (item.metricEligibility[ref] !== 'valid') continue;
-      const values: number[] = [];
-      const iterations: (readonly number[])[] = [];
-      const taggedSamples: { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[] = [];
+      const partitions = new Map<string, { values: number[]; iterations: number[][]; samples: { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[] }>();
       for (const iteration of item.envelope.run.iterations) {
-        const iterationValues: number[] = [];
+        const perPartition = new Map<string, number[]>();
         for (const sample of iteration.samples) {
           if (sample.metricRef !== ref || !sample.valid) continue;
           if (!metric.allowedPhases.includes(item.envelope.run.phase)) continue;
-          values.push(sample.value);
+          const partitionKey = tagPartitionKeyV1(sample.tags);
+          let entry = partitions.get(partitionKey);
+          if (entry === undefined) {
+            entry = { values: [], iterations: [], samples: [] };
+            partitions.set(partitionKey, entry);
+          }
+          entry.values.push(sample.value);
+          entry.samples.push(sample);
+          let iterationValues = perPartition.get(partitionKey);
+          if (iterationValues === undefined) {
+            iterationValues = [];
+            perPartition.set(partitionKey, iterationValues);
+          }
           iterationValues.push(sample.value);
-          taggedSamples.push(sample);
         }
-        if (iterationValues.length > 0) iterations.push(iterationValues);
+        for (const [partitionKey, iterationValues] of perPartition) {
+          (partitions.get(partitionKey) as { iterations: number[][] }).iterations.push(iterationValues);
+        }
       }
-      if (values.length === 0) continue;
-      const signature = tagSignatureV1(extraTags, taggedSamples);
-      const { key } = compatibilityKeyV1(item.envelope, `${ref}\0${signature}`);
-      let cell = cells.get(key);
-      if (cell === undefined) {
-        cell = {
-          environmentCellId: item.envelope.run.environmentCellId,
-          phase: item.envelope.run.phase,
-          candidateId: item.envelope.run.candidateId,
-          compatKey: key,
-          fingerprint: fingerprintForKeyV1(item.envelope, `${ref}\0${signature}`),
-          metrics: new Map(),
-        };
-        cells.set(key, cell);
+      if (partitions.size === 0) continue;
+      const split = partitions.size > 1;
+      for (const partitionKey of [...partitions.keys()].sort()) {
+        const entry = partitions.get(partitionKey) as { values: number[]; iterations: number[][]; samples: { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[] };
+        const signature = tagSignatureV1(extraTags, entry.samples);
+        const compatTag = split ? `${ref}\0${signature}\0${partitionKey}` : `${ref}\0${signature}`;
+        const { key } = compatibilityKeyV1(item.envelope, compatTag);
+        let cell = cells.get(key);
+        if (cell === undefined) {
+          cell = {
+            environmentCellId: item.envelope.run.environmentCellId,
+            phase: item.envelope.run.phase,
+            candidateId: item.envelope.run.candidateId,
+            compatKey: key,
+            fingerprint: fingerprintForKeyV1(item.envelope, compatTag),
+            metrics: new Map(),
+          };
+          cells.set(key, cell);
+        }
+        let data = cell.metrics.get(ref);
+        if (data === undefined) {
+          data = {
+            metric, ref, runs: [],
+            populationLabel: populationLabelV1(
+              item.envelope.run.scenarioId, item.envelope.run.scenarioVersion,
+              item.envelope.run.workloadSeed, signature,
+            ),
+          };
+          cell.metrics.set(ref, data);
+        }
+        data.runs.push({ eligible: item, values: entry.values, iterations: entry.iterations, runDigest: item.envelope.canonicalContentDigest, partitionKey: split ? partitionKey : null });
       }
-      let data = cell.metrics.get(ref);
-      if (data === undefined) {
-        data = { metric, ref, runs: [] };
-        cell.metrics.set(ref, data);
-      }
-      data.runs.push({ eligible: item, values, iterations, runDigest: item.envelope.canonicalContentDigest });
     }
   }
   return cells;
@@ -549,15 +649,20 @@ function buildAggregateV1(
       let nIterations = 0;
       const processes = new Set<string>();
       for (const run of [...data.runs].sort((left, right) =>
-        left.eligible.envelope.runId < right.eligible.envelope.runId ? -1 : 1,
+        left.eligible.envelope.runId < right.eligible.envelope.runId ? -1
+          : left.eligible.envelope.runId > right.eligible.envelope.runId ? 1
+            : (left.partitionKey ?? '') < (right.partitionKey ?? '') ? -1 : 1,
       )) {
         processes.add(run.eligible.envelope.run.browserProcessId);
         nIterations += run.iterations.length;
         for (const value of run.values) pooledValues.push(value);
         const scope = { metricRef: ref, unit: metric.unit, sourceRunDigests: [run.runDigest] as readonly Br04Sha256[] };
-        const p50 = quantileResultV1({ ...scope, scopeId: `run:${run.eligible.envelope.runId}:${ref}` }, run.values, 0.5);
-        const p95 = quantileResultV1({ ...scope, scopeId: `run:${run.eligible.envelope.runId}:${ref}` }, run.values, 0.95);
-        const p99 = quantileResultV1({ ...scope, scopeId: `run:${run.eligible.envelope.runId}:${ref}` }, run.values, 0.99);
+        const runScopeId = run.partitionKey === null
+          ? `run:${run.eligible.envelope.runId}:${ref}`
+          : `run:${run.eligible.envelope.runId}:${ref}:${run.partitionKey}`;
+        const p50 = quantileResultV1({ ...scope, scopeId: runScopeId }, run.values, 0.5);
+        const p95 = quantileResultV1({ ...scope, scopeId: runScopeId }, run.values, 0.95);
+        const p99 = quantileResultV1({ ...scope, scopeId: runScopeId }, run.values, 0.99);
         perRunSummaries.push({
           runId: run.eligible.envelope.runId, runDigest: run.runDigest, metricRef: ref,
           nEvents: run.values.length, p50, p95, p99,
@@ -572,7 +677,10 @@ function buildAggregateV1(
           iterations: run.iterations,
         });
       }
-      const pooledScopeId = `cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}`;
+      const splitKeys = [...new Set(data.runs.map((run) => run.partitionKey).filter((key): key is string => key !== null))].sort();
+      const pooledScopeId = splitKeys.length === 0
+        ? `cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}`
+        : `cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:${splitKeys.join('|')}`;
       const pooledScope = { metricRef: ref, scopeId: pooledScopeId, unit: metric.unit, sourceRunDigests: runDigests };
       const descriptivePooledQuantiles: Br04QuantileResultV1[] = [
         quantileResultV1(pooledScope, pooledValues, 0.5),
@@ -597,6 +705,7 @@ function buildAggregateV1(
       const cellPointer = `/environmentCells/${environmentCellIndex}/metricCells/${metricCells.length}`;
       metricCells.push({
         metricRef: ref, unit: metric.unit,
+        populationLabel: data.populationLabel,
         nProcesses: processes.size, nRuns: data.runs.length, nIterations, nEvents: pooledValues.length,
         populationQualification: qualification,
         perRunSummaries, descriptivePooledQuantiles, maximum,
@@ -712,15 +821,41 @@ interface Br04ArmContextV1 {
   readonly tagSignature: string | null;
 }
 
-function armContextFromRunV1(item: Br04EligibleRunV1, metric: Br04MetricDefinitionV1): Br04ArmContextV1 {
-  const run = item.envelope.run;
+/**
+ * R3/B2-Rest: one arm's valid samples of one metric keyed by the full tag
+ * tuple. Pairing must operate per partition, never on pooled cross-tag
+ * scalars.
+ */
+function armPartitionMapV1(
+  item: Br04EligibleRunV1,
+  metric: Br04MetricDefinitionV1,
+): Map<string, { tagSignature: string; values: number[] }> {
+  const ref = `${metric.metricId}@${metric.metricVersion}`;
   const extraTags = extraGroupTagsV1(metric);
-  const tagged = [];
-  for (const iteration of run.iterations) {
+  const collected = new Map<string, { values: number[]; samples: { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[] }>();
+  for (const iteration of item.envelope.run.iterations) {
     for (const sample of iteration.samples) {
-      if (sample.metricRef === `${metric.metricId}@${metric.metricVersion}` && sample.valid) tagged.push(sample);
+      if (sample.metricRef !== ref || !sample.valid) continue;
+      const key = tagPartitionKeyV1(sample.tags);
+      let entry = collected.get(key);
+      if (entry === undefined) {
+        entry = { values: [], samples: [] };
+        collected.set(key, entry);
+      }
+      entry.values.push(sample.value);
+      entry.samples.push(sample);
     }
   }
+  const mapped = new Map<string, { tagSignature: string; values: number[] }>();
+  for (const [key, entry] of collected) {
+    mapped.set(key, { tagSignature: tagSignatureV1(extraTags, entry.samples), values: entry.values });
+  }
+  return mapped;
+}
+
+function armContextFromRunV1(item: Br04EligibleRunV1, metric: Br04MetricDefinitionV1): Br04ArmContextV1 {
+  const run = item.envelope.run;
+  const joined = [...new Set([...armPartitionMapV1(item, metric).values()].map((part) => part.tagSignature))].sort().join('|');
   return {
     environmentCellId: run.environmentCellId,
     phase: run.phase,
@@ -731,7 +866,7 @@ function armContextFromRunV1(item: Br04EligibleRunV1, metric: Br04MetricDefiniti
     buildSha256: run.source.buildSha256,
     fixtureDigest: run.source.fixtureDigest,
     environmentFingerprint: run.environmentFingerprint,
-    tagSignature: tagSignatureV1(extraTags, tagged),
+    tagSignature: joined,
   };
 }
 
@@ -784,7 +919,7 @@ function buildPairedComparisonsV1(
   for (const item of eligible) envelopeBySlot.set(item.slot.slotId, item);
   const groups = new Map<string, {
     environmentCellId: string; phase: Br04Phase; scenarioId: string; scenarioVersion: number;
-    workloadSeed: number; tagSignature: string; metricRef: Br04MetricRef;
+    workloadSeed: number; tagSignature: string; partitionKey: string | null; split: boolean; metricRef: Br04MetricRef;
     referenceCandidateId: string; candidateId: string; cells: Map<string, Br04PairCellStateV1>;
   }>();
   for (const metric of bundle.metricRegistry) {
@@ -838,29 +973,43 @@ function buildPairedComparisonsV1(
         : cmpSlot !== undefined ? armContextFromSlotV1(cmpSlot) : null;
       const primary = refContext ?? cmpContext;
       if (primary === null) continue;
-      const groupKey = [
-        primary.environmentCellId, primary.phase, primary.scenarioId,
-        String(primary.scenarioVersion), String(primary.workloadSeed),
-        primary.sourceTreeSha ?? '', primary.buildSha256 ?? '', primary.fixtureDigest ?? '',
-        primary.environmentFingerprint ?? '', ref,
-        refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '',
-        cmpSlot?.candidateId ?? refSlot?.candidateId ?? '',
-        primary.tagSignature ?? '',
-      ].join('\0');
-      let group = groups.get(groupKey);
-      if (group === undefined) {
-        group = {
-          environmentCellId: primary.environmentCellId, phase: primary.phase,
-          scenarioId: primary.scenarioId, scenarioVersion: primary.scenarioVersion,
-          workloadSeed: primary.workloadSeed, tagSignature: primary.tagSignature ?? '',
-          metricRef: ref,
-          referenceCandidateId: (refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '') as string,
-          candidateId: (cmpSlot?.candidateId ?? refSlot?.candidateId ?? '') as string,
-          cells: new Map(),
-        };
-        groups.set(groupKey, group);
+      const primaryParts = refRun !== undefined
+        ? armPartitionMapV1(refRun, metric)
+        : cmpRun !== undefined ? armPartitionMapV1(cmpRun, metric) : null;
+      const primaryKeys = primaryParts !== null && primaryParts.size > 0
+        ? [...primaryParts.keys()].sort()
+        : [null] as readonly (string | null)[];
+      const split = primaryParts !== null && primaryParts.size > 1;
+      for (const partitionKey of primaryKeys) {
+        const signature = partitionKey === null
+          ? (primary.tagSignature ?? '')
+          : (primaryParts as Map<string, { tagSignature: string }>).get(partitionKey)?.tagSignature ?? '';
+        const groupKey = [
+          primary.environmentCellId, primary.phase, primary.scenarioId,
+          String(primary.scenarioVersion), String(primary.workloadSeed),
+          primary.sourceTreeSha ?? '', primary.buildSha256 ?? '', primary.fixtureDigest ?? '',
+          primary.environmentFingerprint ?? '', ref,
+          refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '',
+          cmpSlot?.candidateId ?? refSlot?.candidateId ?? '',
+          signature,
+          split && partitionKey !== null ? partitionKey : '',
+        ].join('\0');
+        let group = groups.get(groupKey);
+        if (group === undefined) {
+          group = {
+            environmentCellId: primary.environmentCellId, phase: primary.phase,
+            scenarioId: primary.scenarioId, scenarioVersion: primary.scenarioVersion,
+            workloadSeed: primary.workloadSeed, tagSignature: signature,
+            partitionKey, split,
+            metricRef: ref,
+            referenceCandidateId: (refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '') as string,
+            candidateId: (cmpSlot?.candidateId ?? refSlot?.candidateId ?? '') as string,
+            cells: new Map(),
+          };
+          groups.set(groupKey, group);
+        }
+        group.cells.set(cellState.key, cellState);
       }
-      group.cells.set(cellState.key, cellState);
     }
   }
   const sortedGroupKeys = [...groups.keys()].sort();
@@ -868,7 +1017,7 @@ function buildPairedComparisonsV1(
   for (const groupKey of sortedGroupKeys) {
     const group = groups.get(groupKey) as {
       environmentCellId: string; phase: Br04Phase; scenarioId: string; scenarioVersion: number;
-      workloadSeed: number; tagSignature: string; metricRef: Br04MetricRef;
+      workloadSeed: number; tagSignature: string; partitionKey: string | null; split: boolean; metricRef: Br04MetricRef;
       referenceCandidateId: string; candidateId: string; cells: Map<string, Br04PairCellStateV1>;
     };
     const metric = bundle.metricRegistry.find(
@@ -907,24 +1056,46 @@ function buildPairedComparisonsV1(
           cellReasons.push(`candidate-${cmpRun.metricEligibility[group.metricRef]}`);
         }
         if (cellReasons.length === 0) {
-          const refValues: number[] = [];
-          for (const iteration of refRun.envelope.run.iterations) {
-            for (const sample of iteration.samples) {
-              if (sample.metricRef === group.metricRef && sample.valid) refValues.push(sample.value);
+          if (group.partitionKey !== null) {
+            const refParts = armPartitionMapV1(refRun, metric);
+            const cmpParts = armPartitionMapV1(cmpRun, metric);
+            const refKeys = [...refParts.keys()].sort();
+            const cmpKeys = [...cmpParts.keys()].sort();
+            if (refKeys.join('\0') !== cmpKeys.join('\0')) {
+              cellReasons.push('group-tags-diverged');
+            } else {
+              const refPart = refParts.get(group.partitionKey);
+              const cmpPart = cmpParts.get(group.partitionKey);
+              if (refPart === undefined || cmpPart === undefined) {
+                cellReasons.push('group-tags-diverged');
+              } else if (refPart.values.length === 0 || cmpPart.values.length === 0) {
+                cellReasons.push('scalar-unavailable');
+              } else {
+                refScalar = perRunScalarV1(refPart.values, metric.perRunStatistic);
+                cmpScalar = perRunScalarV1(cmpPart.values, metric.perRunStatistic);
+                if (refScalar === null || cmpScalar === null) cellReasons.push('scalar-unavailable');
+              }
             }
-          }
-          const cmpValues: number[] = [];
-          for (const iteration of cmpRun.envelope.run.iterations) {
-            for (const sample of iteration.samples) {
-              if (sample.metricRef === group.metricRef && sample.valid) cmpValues.push(sample.value);
-            }
-          }
-          if (refValues.length === 0 || cmpValues.length === 0) {
-            cellReasons.push('scalar-unavailable');
           } else {
-            refScalar = perRunScalarV1(refValues, metric.perRunStatistic);
-            cmpScalar = perRunScalarV1(cmpValues, metric.perRunStatistic);
-            if (refScalar === null || cmpScalar === null) cellReasons.push('scalar-unavailable');
+            const refValues: number[] = [];
+            for (const iteration of refRun.envelope.run.iterations) {
+              for (const sample of iteration.samples) {
+                if (sample.metricRef === group.metricRef && sample.valid) refValues.push(sample.value);
+              }
+            }
+            const cmpValues: number[] = [];
+            for (const iteration of cmpRun.envelope.run.iterations) {
+              for (const sample of iteration.samples) {
+                if (sample.metricRef === group.metricRef && sample.valid) cmpValues.push(sample.value);
+              }
+            }
+            if (refValues.length === 0 || cmpValues.length === 0) {
+              cellReasons.push('scalar-unavailable');
+            } else {
+              refScalar = perRunScalarV1(refValues, metric.perRunStatistic);
+              cmpScalar = perRunScalarV1(cmpValues, metric.perRunStatistic);
+              if (refScalar === null || cmpScalar === null) cellReasons.push('scalar-unavailable');
+            }
           }
         }
       } else if (cellReasons.length === 0) {
@@ -1036,10 +1207,14 @@ function buildPairedComparisonsV1(
     );
     const comparisonId =
       `cmp:${group.environmentCellId}:${group.phase}:${group.scenarioId}:${group.workloadSeed}:` +
-      `${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}`;
+      `${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}` +
+      (group.split && group.partitionKey !== null ? `:tag=${group.partitionKey}` : '');
     comparisons.push({
       schemaVersion: 1,
       comparisonId,
+      populationLabel: populationLabelV1(
+        group.scenarioId, group.scenarioVersion, group.workloadSeed, group.tagSignature,
+      ),
       metricRef: group.metricRef,
       environmentCellId: group.environmentCellId,
       phase: group.phase,

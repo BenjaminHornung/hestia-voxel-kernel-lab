@@ -7,7 +7,13 @@
  * (compatibility key with scenario/seed/source/fingerprint/tag signature,
  * bound environment fingerprint, per-population claim ids). The H01
  * fixture itself is unchanged; only the fixed contract content moved it.
+ *
+ * R3 renewal: re-recorded after the R3 finding fixes (same-run tag-tuple
+ * partitioning, receipt-bound document digests, ratio minimum recheck
+ * after filtering, readable population labels on cells and comparisons).
+ * The H01 fixture itself is unchanged; only the fixed contract content
+ * moved it.
  */
 export const BR04_GOLDEN_DIGESTS_V1 = {
-  h01AggregateDigest: 'sha256:b584dc6cbdc7d8de9b63bd015953e6789c5c1f44e85594347ec4edebe5a7bfb8' as `sha256:${string}`,
+  h01AggregateDigest: 'sha256:442f74d270f3f8e1aabea91f9def1972275786c8f41a1848031398f71dbd3328' as `sha256:${string}`,
 };

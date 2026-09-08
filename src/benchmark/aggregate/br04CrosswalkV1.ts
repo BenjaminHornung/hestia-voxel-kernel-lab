@@ -352,6 +352,23 @@ function projectRunV1(
   if (receipt.benchmarkRunCanonicalSha256 !== entry.canonicalContentDigest) {
     return fail('RECEIPT_DIGEST_MISMATCH', 'Receipt canonical-content digest does not match the observed run.', '/br01ValidationReceipt/validatedCanonicalContentDigest');
   }
+  /**
+   * R3/B3-Rest: bind the validated bytes to the projected run. The checks
+   * above compare caller-supplied digest strings with each other, so a
+   * consistently mutated document (embedded run and parallel copy changed
+   * together) under a stale receipt would pass. Recompute the canonical
+   * digest from the validated document with the same canonicalizer the
+   * BR01 validator uses and require it to match both the observed digest
+   * and the receipt, otherwise a stale or foreign evidence could back
+   * different values than the ones actually aggregated.
+   */
+  const recomputedDocumentDigest = sha256OfCanonicalV1(document);
+  if (recomputedDocumentDigest !== entry.canonicalContentDigest) {
+    return fail('DOCUMENT_DIGEST_MISMATCH', 'Observed canonical-content digest does not match the validated document bytes.', '/canonicalContentDigest');
+  }
+  if (recomputedDocumentDigest !== (receipt.benchmarkRunCanonicalSha256 as string)) {
+    return fail('RECEIPT_DIGEST_MISMATCH', 'Receipt canonical-content digest does not match the validated document bytes; the receipt is stale or foreign.', '/br01ValidationReceipt/validatedCanonicalContentDigest');
+  }
   if (receipt.planDigest !== planDigest) {
     return fail('PLAN_DIGEST_MISMATCH', 'Receipt plan digest does not match the BR03 run plan.', '/br01ValidationReceipt/planDigest');
   }

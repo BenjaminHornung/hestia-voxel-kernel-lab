@@ -543,7 +543,16 @@ export function bootstrapPairedV1(input: Br04PairedBootstrapInputV1): Br04Paired
   }
   const ratioReplicates: number[] = [];
   let ratioStatus: Br04BootstrapIntervalV1['status'] = 'no-data';
-  if (positiveClusters.length > 0) {
+  /**
+   * R3/Ratio-Mindestcluster: the minimum top-level cluster count applies
+   * AFTER estimator-dependent filtering. The difference bootstrap above
+   * evaluated all top-level clusters, but the ratio bootstrap only sees
+   * positive clusters; with fewer than the minimum it must report
+   * insufficient-clusters instead of bootstrapping a depleted hierarchy.
+   */
+  if (positiveClusters.length > 0 && positiveClusters.length < BR04_MINIMUM_TOP_LEVEL_CLUSTERS_V1) {
+    ratioStatus = 'insufficient-clusters';
+  } else if (positiveClusters.length > 0) {
     ratioStatus = 'ok';
     for (let replicate = 0; replicate < BR04_BOOTSTRAP_RESAMPLES_V1; replicate += 1) {
       const ratios: number[] = [];

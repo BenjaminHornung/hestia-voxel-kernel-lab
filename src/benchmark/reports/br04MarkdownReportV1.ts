@@ -102,6 +102,7 @@ export function buildReportModelV1(aggregate: Br04BenchmarkAggregateV1): Br04Mar
       summaryRows.push({
         cell: `${cell.environmentCellId}/${cell.phase}/${cell.candidateId}`,
         metric: metricCell.metricRef,
+        population: metricCell.populationLabel,
         processes: String(metricCell.nProcesses),
         runs: String(metricCell.nRuns),
         iterations: String(metricCell.nIterations),
@@ -145,6 +146,7 @@ export function buildReportModelV1(aggregate: Br04BenchmarkAggregateV1): Br04Mar
     const base = `/pairedComparisons/${comparisonIndex}`;
     comparisonRows.push({
       comparison: comparison.comparisonId,
+      population: comparison.populationLabel,
       planned: String(comparison.pairs.planned),
       complete: String(comparison.pairs.complete),
       incomplete: String(comparison.pairs.incomplete),

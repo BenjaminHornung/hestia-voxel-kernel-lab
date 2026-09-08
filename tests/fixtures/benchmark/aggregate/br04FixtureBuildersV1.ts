@@ -483,12 +483,19 @@ export function r2EntryV1(
     browserProcesses: [{ runs: [run], ids: { bootstrapClusterId: `cluster-${spec.slot}` } }],
   } as unknown as BenchmarkRunDocumentV1;
   if (mutateRun !== undefined) mutateRun(run as unknown as Record<string, unknown>);
+  /**
+   * R3/B3-Rest: genuine validated digests. The receipt binds the canonical
+   * bytes of the validated document with the same canonicalizer the BR01
+   * validator uses, so a later consistent document mutation under this
+   * receipt is refused instead of silently accepted.
+   */
+  const documentDigest = sha256OfCanonicalV1(document);
   const receipt = {
     status: 'schema-and-integrity-valid',
     runId: spec.runId,
     slotId: spec.slot,
-    benchmarkRunRawByteSha256: fakeDigestV1(`r2-raw:${spec.runId}`),
-    benchmarkRunCanonicalSha256: fakeDigestV1(`r2-canonical:${spec.runId}`),
+    benchmarkRunRawByteSha256: documentDigest,
+    benchmarkRunCanonicalSha256: documentDigest,
     planDigest: plan.runPlanSha256,
     metricRegistrySha256: BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256,
     runBindingSha256: R2_BINDING_V1,
