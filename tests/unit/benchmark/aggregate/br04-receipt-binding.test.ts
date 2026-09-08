@@ -104,6 +104,27 @@ describe('br04 R3 B3-Rest receipt binding', () => {
     expect(result.validation.issues.some((issue) => issue.code === 'BOOTSTRAP_POLICY_INVALID')).toBe(true);
   });
 
+  it('R4-FIX3B: reports a pre-R4 bundle without validatedProjectionDigest as PROJECTION_DIGEST_MISSING (not MISMATCH)', () => {
+    const bundle = mutableBundle();
+    delete (bundle.runs[0]!.br01ValidationReceipt as { validatedProjectionDigest?: unknown }).validatedProjectionDigest;
+    const body = { ...bundle, runs: bundle.runs } as Omit<Br04AggregateInputBundleV1, 'manifest'>;
+    const normalizedInputDigest = canonicalBundleBodyDigestV1(body);
+    const orderedRawRunDigests = [...bundle.manifest.orderedRawRunDigests];
+    const preR4: Br04AggregateInputBundleV1 = {
+      ...bundle,
+      manifest: {
+        orderedRawRunDigests,
+        normalizedInputDigest,
+        manifestDigest: sha256OfCanonicalV1({ orderedRawRunDigests, normalizedInputDigest }),
+      },
+    };
+    const result = validateAndAggregateBundleV1(preR4);
+    expect(result.validation.status).toBe('invalid');
+    expect(result.aggregate).toBeNull();
+    expect(result.validation.issues.some((issue) => issue.code === 'PROJECTION_DIGEST_MISSING')).toBe(true);
+    expect(result.validation.issues.some((issue) => issue.code === 'PROJECTION_DIGEST_MISMATCH')).toBe(false);
+  });
+
   it('R4: rejects a post-crosswalk projection tamper (5 -> 12345) with recomputed container hashes', () => {
     const plan = r2PlanV1('r4-bind-doc', [{ slot: 'slot-doc', candidate: 'candidate-a' }]);
     const entry = r2EntryV1(plan, {

@@ -143,7 +143,10 @@ export interface Br04ValidatedRunEnvelopeV1 {
      * digest over the projected `run` with the same canonicalizer and the
      * bundle validator recomputes it, so a post-crosswalk projection change
      * (even with consistently recomputed container/manifest hashes) is
-     * refused as PROJECTION_DIGEST_MISMATCH. This is a synthetic
+     * refused as PROJECTION_DIGEST_MISMATCH. A receipt without a usable
+     * digest (field absent or not a sha256 digest, e.g. pre-R4 bundles)
+     * is refused separately as PROJECTION_DIGEST_MISSING, never as a
+     * tamper verdict. This is a synthetic
      * API-boundary consistency check, not production tamper-proofing: a
      * fully consistent re-forgery of every digest stays outside the threat
      * model. The trust boundary is crosswalk output consumed directly.

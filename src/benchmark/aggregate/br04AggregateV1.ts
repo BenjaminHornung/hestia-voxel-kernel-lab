@@ -274,7 +274,10 @@ export function validateAndAggregateBundleV1(bundle: Br04AggregateInputBundleV1)
      * consistent re-forgery of every digest stays outside the threat model.
      */
     try {
-      if (envelope.br01ValidationReceipt.validatedProjectionDigest !== sha256OfCanonicalV1(envelope.run)) {
+      const validatedDigest: unknown = envelope.br01ValidationReceipt.validatedProjectionDigest;
+      if (typeof validatedDigest !== 'string' || !isSha256V1(validatedDigest)) {
+        error('PROJECTION_DIGEST_MISSING', 'Receipt has no usable projection digest; bundles without validatedProjectionDigest (pre-R4) cannot be bound to the projected run content.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
+      } else if (validatedDigest !== sha256OfCanonicalV1(envelope.run)) {
         error('PROJECTION_DIGEST_MISMATCH', 'Receipt projection digest mismatches the projected run content; the projection was changed after crosswalk validation.', '/runs', envelope.runId, envelope.slotId, envelope.rawByteDigest);
       }
     } catch {

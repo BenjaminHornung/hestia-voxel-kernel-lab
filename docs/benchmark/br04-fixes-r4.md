@@ -27,6 +27,15 @@
   Partitions-Paarung verlangt.
 - Kein Push/PR/Merge/Rebase/Amend/Reset; kein `gate:br03`; kein E2E/Browser/Hardware.
 
+## Nachtrag P-BR04-FIX3B (Review-Blocker: fehlendes vs. gefaelschtes Projektionsdigest)
+
+Entscheidung Option A: `br04AggregateV1.ts` meldet ein fehlendes/ungueltiges Receipt-Digest fail-closed als
+`PROJECTION_DIGEST_MISSING` (kein Tampervorwurf bei Versions-Skew), `PROJECTION_DIGEST_MISMATCH` nur noch bei
+wohlgeformtem, aber abweichendem Digest; `br04ContractV1.ts`-Kommentar dokumentiert die Trennung, kein
+Versionsbump. Tests: `br04-receipt-binding.test.ts` +1 (Pre-R4-Bundle ohne Feld -> `invalid`, Aggregat null,
+`MISSING`, kein `MISMATCH`; failing-first auf `24855acae` belegt); Tamper-Fall 5->12345 liefert weiter `MISMATCH`.
+Verify 15 Dateien / 105 Tests PASS, tsc PASS, voll 922/923 (einziger Fail Gate-Owner-Punkt, 8 Pfade).
+
 ## Befehle (Exitcodes)
 
 - `./node_modules/.bin/tsc --noEmit` -> PASS (Exit 0)
