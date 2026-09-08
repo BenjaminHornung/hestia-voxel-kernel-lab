@@ -30,6 +30,7 @@ const ALLOWED_PATHS = new Set([
   'tests/unit/benchmark/runner/process-unit-result-ledger-v1.test.ts', 'tests/unit/benchmark/runner/run-assembly-receipt-v1.test.ts', 'tests/unit/benchmark/runner/run-plan-v1.test.ts',
   'tests/unit/benchmark/runner/scenario-driver-registry-v1.test.ts',
   'docs/benchmark/aggregator-v1.md',
+  'docs/benchmark/br04-fixes-r2.md', 'docs/benchmark/br04-fixes-r2.summary.json',
   'src/benchmark/aggregate/br04AggregateV1.ts', 'src/benchmark/aggregate/br04ContractV1.ts', 'src/benchmark/aggregate/br04CrosswalkV1.ts',
   'src/benchmark/aggregate/br04StatisticsV1.ts', 'src/benchmark/reports/br04MarkdownReportV1.ts',
   'tests/fixtures/benchmark/aggregate/br04FixtureBuildersV1.ts', 'tests/fixtures/benchmark/aggregate/br04GoldenDigestsV1.ts',
