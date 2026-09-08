@@ -15,6 +15,9 @@ import type { Br04BenchmarkAggregateV1, Br04MetricRef } from '../../../../src/be
 import {
   buildTestBundleV1,
   iterationV1,
+  r2BundleV1,
+  r2EntryV1,
+  r2PlanV1,
 } from '../../../fixtures/benchmark/aggregate/br04FixtureBuildersV1';
 
 const CHUNK = 'chunk.mesh.cpu.ms@1' as Br04MetricRef;
@@ -161,5 +164,39 @@ describe('BR04 markdown report', () => {
     expect(formatSignificantV1(10)).toBe('10');
     expect(formatSignificantV1(2.5)).toBe('2.5');
     expect(formatSignificantV1(0.85)).toBe('0.85');
+  });
+
+  it('R2 metadata: claim status, ledger causes, and chart declarations stay honest', () => {
+    const plan = r2PlanV1('r2-w', [{ slot: 'slot-w', candidate: 'candidate-a' }], { synthetic: false });
+    const { bundle } = r2BundleV1('r2-w', plan, [
+      r2EntryV1(plan, {
+        runId: 'run-w', slot: 'slot-w', candidate: 'candidate-a', values: [5],
+        validity: { status: 'invalid', reasons: [{ code: 'page-error', detail: 'x', phase: 'measurement' }] },
+      }),
+    ]);
+    const { validation, aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(validation.status).toBe('valid');
+    expect(aggregate?.environmentCells.length).toBe(0);
+    expect(aggregate?.inputProvenance.performanceClaimEligibility).toBe('ineligible-no-valid-population');
+    const emptyModel = buildReportModelV1(aggregate ?? (() => {
+      throw new Error('missing aggregate');
+    })());
+    expect(emptyModel.performanceClaimEligibility).toBe('ineligible-no-valid-population');
+    const chartPlan = r2PlanV1('r2-charts', [{ slot: 'slot-chart', candidate: 'candidate-a' }]);
+    const chartBundle = r2BundleV1('r2-charts', chartPlan, [
+      r2EntryV1(chartPlan, { runId: 'run-chart', slot: 'slot-chart', candidate: 'candidate-a', values: [5] }),
+    ]);
+    const chartAggregate = validateAndAggregateBundleV1(chartBundle.bundle ?? (() => {
+      throw new Error('missing bundle');
+    })()).aggregate;
+    const model = buildReportModelV1(chartAggregate ?? (() => {
+      throw new Error('missing aggregate');
+    })());
+    const ecdf = model.chartSpecifications.find((spec) => spec.kind === 'ecdf');
+    expect(ecdf?.includesAllValidPoints).toBe(false);
+    const dotplot = model.chartSpecifications.find((spec) => spec.kind === 'run-dotplot');
+    expect(dotplot?.includesAllValidPoints).toBe(false);
   });
 });

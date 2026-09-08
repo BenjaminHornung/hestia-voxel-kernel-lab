@@ -13,13 +13,18 @@ import type {
   MetricRegistryV1,
 } from '../../../../src/benchmark/contracts';
 import type { BuiltRunPlanV1 } from '../../../../src/benchmark/runner/contractsV1';
-import { crosswalkToBundleV1, projectMetricDefinitionV1 } from '../../../../src/benchmark/aggregate/br04CrosswalkV1';
+import { crosswalkToBundleV1, normalizeDimensionKeyV1, projectMetricDefinitionV1 } from '../../../../src/benchmark/aggregate/br04CrosswalkV1';
 import { validateAndAggregateBundleV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
 import type { Br04BootstrapPolicyV1, Br04Sha256 } from '../../../../src/benchmark/aggregate/br04ContractV1';
 import {
   BR04_ACCEPTED_BR03_SYNTHETIC_V1,
   BR04_SYNTHETIC_SEED_00_V1,
   fakeDigestV1,
+  R2_MEMORY_V1,
+  R2_POLICY_V1,
+  r2BundleV1,
+  r2EntryV1,
+  r2PlanV1,
 } from '../../../fixtures/benchmark/aggregate/br04FixtureBuildersV1';
 
 const BUILD_DIGEST = fakeDigestV1('xw-build');
@@ -154,7 +159,7 @@ function frozenRunV1(
     measurementEligibilityReasons: [],
   } as unknown as BenchmarkRunV1;
   const document = {
-    browserProcesses: [{ runs: [{ runId: 'run-xw' }], ids: { bootstrapClusterId: 'cluster-xw' } }],
+    browserProcesses: [{ runs: [run], ids: { bootstrapClusterId: 'cluster-xw' } }],
   } as unknown as BenchmarkRunDocumentV1;
   const receipt = {
     status: 'schema-and-integrity-valid',
@@ -206,7 +211,10 @@ describe('BR04 crosswalk', () => {
       registry: frozenMetricRegistryV1(),
       bootstrapPolicy: POLICY,
       runs: [{
-        document: frozen.document, run: warmupRun, receipt: frozen.receipt,
+        document: {
+          browserProcesses: [{ runs: [warmupRun], ids: { bootstrapClusterId: 'cluster-xw' } }],
+        } as unknown as BenchmarkRunDocumentV1,
+        run: warmupRun, receipt: frozen.receipt,
         rawByteDigest: fakeDigestV1('xw-raw'),
         canonicalContentDigest: fakeDigestV1('xw-canonical'),
       }],
@@ -282,7 +290,7 @@ describe('BR04 crosswalk', () => {
       }],
     });
     expect(orphanResult.bundle).toBeNull();
-    expect(orphanResult.issues.some((issue) => issue.code === 'HIERARCHY_INVALID')).toBe(true);
+    expect(orphanResult.issues.some((issue) => issue.code === 'RUN_NOT_IN_DOCUMENT')).toBe(true);
   });
 
   it('infrastructure claims need a predeclared rule; candidate failures reject rule binding', () => {
@@ -378,8 +386,7 @@ describe('BR04 crosswalk', () => {
     expect(driftedResult.bundle?.runs[0]?.run.declaredDisposition).toBe('provenance-mismatch');
   });
 
-  it('the BR01-owned registry projects without a shadow register', () => {
-    const metric = BENCHMARK_METRIC_REGISTRY_V1.metrics.find(
+  it('the BR01-owned registry projects without a shadow register', () => {    const metric = BENCHMARK_METRIC_REGISTRY_V1.metrics.find(
       (entry) => (entry.metricRef as string) === 'chunk.mesh.cpu.ms@1',
     );
     expect(metric).toBeDefined();
@@ -389,5 +396,147 @@ describe('BR04 crosswalk', () => {
     expect(skippedUnit).toBe(false);
     expect(definition?.unit).toBe('ms');
     expect(definition?.automaticDecision).toBe('forbidden');
+  });
+});
+
+describe('BR04 R2 crosswalk regressions (B1-B3)', () => {
+  it('B1: real frozen memory dimensions pass the single versioned name boundary', () => {
+    expect(normalizeDimensionKeyV1('memory-kind')).toBe('memoryKind');
+    expect(normalizeDimensionKeyV1('observation-window-id')).toBe('observationWindowId');
+    expect(normalizeDimensionKeyV1('stale-reason')).toBe('staleReason');
+    expect(normalizeDimensionKeyV1('drop-kind')).toBe('dropKind');
+    expect(normalizeDimensionKeyV1('checkpoint-id')).toBe('checkpointId');
+    expect(normalizeDimensionKeyV1('hardware-profile')).toBe('hardware-profile');
+    const plan = r2PlanV1('r2-b1', [{ slot: 'slot-b1', candidate: 'candidate-a' }]);
+    const entry = r2EntryV1(plan, {
+      runId: 'run-b1', slot: 'slot-b1', candidate: 'candidate-a',
+      metric: R2_MEMORY_V1, values: [1048576],
+      dims: [
+        { key: 'memory-kind', value: 'js-heap' },
+        { key: 'checkpoint-id', value: 'checkpoint-0' },
+      ],
+    });
+    const { bundle, issues } = r2BundleV1('r2-b1', plan, [entry]);
+    expect(issues).toEqual([]);
+    expect(bundle).not.toBeNull();
+    const tags = bundle?.runs[0]?.run.iterations[0]?.samples[0]?.tags;
+    expect(tags?.['memoryKind']).toBe('js-heap');
+    expect(tags?.['checkpointId']).toBe('checkpoint-0');
+    const { validation, aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(validation.status).toBe('valid');
+    expect(aggregate?.environmentCells[0]?.metricCells[0]?.maximum).toBe(1048576);
+  });
+
+  it('B2: workload seeds separate absolute populations on one hardware cell', () => {
+    const plan = r2PlanV1('r2-b2seed', [
+      { slot: 'slot-s7', candidate: 'candidate-a', seed: 7 },
+      { slot: 'slot-s8', candidate: 'candidate-a', seed: 8 },
+    ]);
+    const { bundle } = r2BundleV1('r2-b2seed', plan, [
+      r2EntryV1(plan, { runId: 'run-s7', slot: 'slot-s7', candidate: 'candidate-a', values: [1] }),
+      r2EntryV1(plan, { runId: 'run-s8', slot: 'slot-s8', candidate: 'candidate-a', values: [1000] }),
+    ]);
+    const { validation, aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(validation.status).toBe('valid');
+    expect(aggregate?.environmentCells.length).toBe(2);
+    const maxima = (aggregate?.environmentCells ?? [])
+      .map((cell) => cell.metricCells[0]?.maximum)
+      .sort((a, b) => (a ?? 0) - (b ?? 0));
+    expect(maxima).toEqual([1, 1000]);
+    const fingerprints = (aggregate?.environmentCells ?? []).map((cell) => cell.environmentFingerprintDigest);
+    expect(new Set(fingerprints).size).toBe(2);
+  });
+
+  it('B2: scenarios and memory kinds separate absolute populations', () => {
+    const plan = r2PlanV1('r2-b2s', [
+      { slot: 'slot-m1', candidate: 'candidate-a', scenario: 'mesh-density-sweep-v1' },
+      { slot: 'slot-m2', candidate: 'candidate-a', scenario: 'scheduler-steady-v1' },
+    ]);
+    const { bundle } = r2BundleV1('r2-b2s', plan, [
+      r2EntryV1(plan, { runId: 'run-m1', slot: 'slot-m1', candidate: 'candidate-a', scenario: 'mesh-density-sweep-v1', values: [1] }),
+      r2EntryV1(plan, { runId: 'run-m2', slot: 'slot-m2', candidate: 'candidate-a', scenario: 'scheduler-steady-v1', values: [1000] }),
+    ]);
+    const { aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(aggregate?.environmentCells.length).toBe(2);
+    const planKind = r2PlanV1('r2-b2k', [
+      { slot: 'slot-k1', candidate: 'candidate-a' },
+      { slot: 'slot-k2', candidate: 'candidate-a' },
+    ]);
+    const kindBundle = r2BundleV1('r2-b2k', planKind, [
+      r2EntryV1(planKind, {
+        runId: 'run-k1', slot: 'slot-k1', candidate: 'candidate-a',
+        metric: R2_MEMORY_V1, values: [100],
+        dims: [{ key: 'memory-kind', value: 'js-heap' }, { key: 'checkpoint-id', value: 'checkpoint-0' }],
+      }),
+      r2EntryV1(planKind, {
+        runId: 'run-k2', slot: 'slot-k2', candidate: 'candidate-a',
+        metric: R2_MEMORY_V1, values: [200],
+        dims: [{ key: 'memory-kind', value: 'embedder-heap' }, { key: 'checkpoint-id', value: 'checkpoint-0' }],
+      }),
+    ]);
+    const kindAggregate = validateAndAggregateBundleV1(kindBundle.bundle ?? (() => {
+      throw new Error('missing bundle');
+    })()).aggregate;
+    expect(kindAggregate?.environmentCells.length).toBe(2);
+  });
+
+  it('B3: a swapped run copy is refused, the embedded run is projected', () => {
+    const plan = r2PlanV1('r2-b3', [{ slot: 'slot-b3', candidate: 'candidate-a' }]);
+    const entry = r2EntryV1(plan, { runId: 'run-b3', slot: 'slot-b3', candidate: 'candidate-a', values: [5] });
+    const tamperedRun = JSON.parse(JSON.stringify(entry.run)) as Record<string, unknown>;
+    const iterations = tamperedRun['iterations'] as { samples: { result: { value: number } }[] }[];
+    iterations[0]!.samples[0]!.result.value = 12345;
+    const tampered = r2BundleV1('r2-b3', plan, [{
+      document: entry.document,
+      run: tamperedRun as unknown as BenchmarkRunV1,
+      receipt: entry.receipt,
+    }]);
+    expect(tampered.bundle).toBeNull();
+    expect(tampered.issues.some((issue) => issue.code === 'RUN_DOCUMENT_MISMATCH')).toBe(true);
+    const { bundle } = r2BundleV1('r2-b3ok', plan, [entry]);
+    expect(bundle?.runs[0]?.run.iterations[0]?.samples[0]?.value).toBe(5);
+  });
+
+  it('B3: run, sample, scenario, eligibility, and policy bindings are fail-closed', () => {
+    const plan = r2PlanV1('r2-b3b', [{ slot: 'slot-b3b', candidate: 'candidate-a' }]);
+    const base = r2EntryV1(plan, { runId: 'run-b3b', slot: 'slot-b3b', candidate: 'candidate-a', values: [5] });
+    const wrongBindingReceipt = { ...base.receipt, runBindingSha256: fakeDigestV1('r2-other') };
+    const bound = r2BundleV1('r2-b3bind', plan, [{
+      document: base.document, run: base.run,
+      receipt: wrongBindingReceipt as unknown as BenchmarkValidationReceiptV1,
+    }]);
+    expect(bound.bundle).toBeNull();
+    expect(bound.issues.some((issue) => issue.code === 'RUN_BINDING_MISMATCH')).toBe(true);
+    const badSample = r2EntryV1(plan, {
+      runId: 'run-b3s', slot: 'slot-b3b', candidate: 'candidate-a', values: [5],
+      sampleBinding: fakeDigestV1('r2-other-sample'),
+    });
+    const sampled = r2BundleV1('r2-b3sample', plan, [badSample]);
+    expect(sampled.bundle).toBeNull();
+    expect(sampled.issues.some((issue) => issue.code === 'SAMPLE_BINDING_MISMATCH')).toBe(true);
+    const wrongScenario = r2EntryV1(plan, {
+      runId: 'run-b3sc', slot: 'slot-b3b', candidate: 'candidate-a',
+      scenario: 'scheduler-steady-v1', values: [5],
+    });
+    const scenarioed = r2BundleV1('r2-b3scenario', plan, [wrongScenario]);
+    expect(scenarioed.bundle).toBeNull();
+    expect(scenarioed.issues.some((issue) => issue.code === 'SCENARIO_MISMATCH')).toBe(true);
+    const eligibleConflict = r2EntryV1(plan, {
+      runId: 'run-b3e', slot: 'slot-b3b', candidate: 'candidate-a', values: [5],
+      eligibilityReasons: [{ code: 'source-dirty', detail: 'x', phase: 'measurement' }],
+    });
+    const conflicted = r2BundleV1('r2-b3elig', plan, [eligibleConflict]);
+    expect(conflicted.bundle).toBeNull();
+    expect(conflicted.issues.some((issue) => issue.code === 'ELIGIBILITY_CONFLICT')).toBe(true);
+    const badPolicy: Br04BootstrapPolicyV1 = { ...R2_POLICY_V1, resamples: 100 as never };
+    const policed = r2BundleV1('r2-b3pol', plan, [base], badPolicy);
+    expect(policed.bundle).toBeNull();
+    expect(policed.issues.some((issue) => issue.code === 'BOOTSTRAP_POLICY_INVALID')).toBe(true);
   });
 });

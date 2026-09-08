@@ -9,6 +9,9 @@ import type { Br04MetricRef } from '../../../../src/benchmark/aggregate/br04Cont
 import {
   buildTestBundleV1,
   iterationV1,
+  r2BundleV1,
+  r2EntryV1,
+  r2PlanV1,
 } from '../../../fixtures/benchmark/aggregate/br04FixtureBuildersV1';
 
 const CHUNK = 'chunk.mesh.cpu.ms@1' as Br04MetricRef;
@@ -123,8 +126,7 @@ describe('BR04 validation and ledger', () => {
     expect(disposition('slot-u')).toBe('not-applicable');
   });
 
-  it('illegal phases are fatal', () => {
-    const bundle = buildTestBundleV1({
+  it('illegal phases are fatal', () => {    const bundle = buildTestBundleV1({
       bundleId: 'phase',
       slots: [{ slotId: 'slot-a', candidateId: 'candidate-a' }],
       runs: [{
@@ -143,5 +145,27 @@ describe('BR04 validation and ledger', () => {
     expect(validation.status).toBe('invalid');
     expect(aggregate).toBeNull();
     expect(validation.issues.some((issue) => issue.code === 'ILLEGAL_PHASE')).toBe(true);
+  });
+
+  it('R2: incomplete pairs retain present and missing slot causes', () => {
+    const plan = r2PlanV1('r2-ledger', [
+      { slot: 'slot-r', candidate: 'ref', pairCell: 'pc-1', pairOrdinal: 1 },
+      { slot: 'slot-c', candidate: 'cmp', pairCell: 'pc-1', pairOrdinal: 1 },
+    ], { comparisonMode: 'reference-paired', referenceCandidateId: 'ref' });
+    const { bundle } = r2BundleV1('r2-ledger', plan, [
+      r2EntryV1(plan, { runId: 'run-r', slot: 'slot-r', candidate: 'ref', values: [10] }),
+    ]);
+    const { validation, aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(validation.status).toBe('valid');
+    expect(aggregate?.invalidRuns.missingSlots).toEqual(['slot-c']);
+    const incomplete = aggregate?.invalidRuns.incompletePairs;
+    expect(incomplete?.length).toBe(1);
+    expect(incomplete?.[0]?.balanceBlockId).toBe('bb-1');
+    expect(incomplete?.[0]?.pairOrdinal).toBe(1);
+    expect(incomplete?.[0]?.presentSlotIds).toEqual(['slot-r']);
+    expect(incomplete?.[0]?.missingOrInvalidSlotIds).toEqual(['slot-c']);
+    expect(incomplete?.[0]?.reasonCodes).toContain('candidate-missing-or-invalid');
   });
 });

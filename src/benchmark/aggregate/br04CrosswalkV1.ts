@@ -53,6 +53,11 @@ import type {
   Br04Sha256,
   Br04ValidatedRunEnvelopeV1,
 } from './br04ContractV1';
+import {
+  BR04_BOOTSTRAP_CONFIDENCE_V1,
+  BR04_BOOTSTRAP_RESAMPLES_V1,
+  BR04_MINIMUM_TOP_LEVEL_CLUSTERS_V1,
+} from './br04ContractV1';
 
 export interface Br04CrosswalkRunInputV1 {
   readonly document: BenchmarkRunDocumentV1;
@@ -133,6 +138,28 @@ const BR04_ANALYTIC_POLICY_V1: Readonly<Record<string, Br04MetricPolicyV1>> = {
 
 const BR04_SUPPORTED_UNITS_V1 = ['ms', 'bytes', 'count', 'ratio', 'revision'] as const;
 
+/**
+ * Versioned dimension-name mapping (R2, XW-Name-01, B1): the frozen BR01
+ * registry and all real BR01 samples use kebab-case canonical ids
+ * (`memory-kind`, `observation-window-id`, `stale-reason`, `drop-kind`,
+ * `checkpoint-id`), while the BR04 analytic policy table and the projected
+ * bundle contract use camelCase tag names. This map is the single boundary
+ * where names are translated; frozen BR01 contracts are never renamed.
+ * Unknown keys pass through unchanged and fail closed downstream when a
+ * required tag is missing.
+ */
+const BR04_DIMENSION_ALIAS_V1: Readonly<Record<string, string>> = {
+  'memory-kind': 'memoryKind',
+  'observation-window-id': 'observationWindowId',
+  'stale-reason': 'staleReason',
+  'drop-kind': 'dropKind',
+  'checkpoint-id': 'checkpointId',
+};
+
+export function normalizeDimensionKeyV1(key: string): string {
+  return BR04_DIMENSION_ALIAS_V1[key] ?? key;
+}
+
 function numericDomainForUnitV1(unit: string): Br04MetricDefinitionV1['numericDomain'] {
   switch (unit) {
     case 'ms': return 'positive-duration';
@@ -212,8 +239,8 @@ export function projectMetricDefinitionV1(
       numericDomain: numericDomainForUnitV1(frozen.unit as string),
       population: frozen.populationSemantics as string,
       requiredTags: [...policy.requiredTags],
-      groupByTags: frozen.grouping.keys.map((key) => key as string),
-      pairingKeySuffix: frozen.pairing.keys.map((key) => key as string),
+      groupByTags: frozen.grouping.keys.map((key) => normalizeDimensionKeyV1(key as string)),
+      pairingKeySuffix: frozen.pairing.keys.map((key) => normalizeDimensionKeyV1(key as string)),
       aggregationLevel: policy.aggregationLevel,
       perRunStatistic: policy.perRunStatistic,
       cellEstimator: policy.cellEstimator,
@@ -264,16 +291,52 @@ function projectRunV1(
   sourceContract: Br04CrosswalkSourceContractV1,
   invalidationRegistry: readonly Br04InfrastructureInvalidationRuleV1[],
 ): Br04ProjectedRunV1 {
-  const { document, run, receipt } = entry;
+  const { document, receipt } = entry;
   const fail = (
     code: string, message: string, jsonPointer: string,
   ): Br04ProjectedRunV1 => ({
     envelope: null as never,
     fatal: {
       severity: 'error', code, jsonPointer, message,
-      runId: run.runId as string, slotId: run.ids.slotId as string, sourceDigest: entry.rawByteDigest,
+      runId: entry.run.runId as string, slotId: entry.run.ids.slotId as string, sourceDigest: entry.rawByteDigest,
     },
   });
+  /**
+   * R2/B3: the projected run is derived from the validated document, never
+   * from the unbound parallel `input.run` copy. The document embeds the
+   * full runs (HardwareCellV1.browserProcesses[].runs[]); the passed copy
+   * must be canonically identical to the embedded run, otherwise a stale
+   * or swapped object could be evaluated under foreign evidence.
+   */
+  const processes = Array.isArray((document as { browserProcesses?: unknown }).browserProcesses)
+    ? (document.browserProcesses as readonly {
+      readonly runs?: readonly BenchmarkRunV1[];
+      readonly ids?: { readonly bootstrapClusterId?: unknown };
+    }[])
+    : [];
+  let embedded: BenchmarkRunV1 | undefined;
+  let processBootstrapCluster: unknown;
+  for (const candidate of processes) {
+    const found = Array.isArray(candidate.runs)
+      ? candidate.runs.find((item) => (item as BenchmarkRunV1).runId === entry.run.runId)
+      : undefined;
+    if (found !== undefined && Array.isArray((found as BenchmarkRunV1).iterations)) {
+      embedded = found as BenchmarkRunV1;
+      processBootstrapCluster = candidate.ids?.bootstrapClusterId;
+      break;
+    }
+  }
+  if (embedded === undefined) {
+    return fail('RUN_NOT_IN_DOCUMENT', 'Run is not contained as a full run object in any browser process of its document.', '/browserProcesses');
+  }
+  if (sha256OfCanonicalV1(embedded) !== sha256OfCanonicalV1(entry.run)) {
+    return fail('RUN_DOCUMENT_MISMATCH', 'The passed run copy differs from the run embedded in the validated document; only the embedded run is projectable.', '/browserProcesses');
+  }
+  const run = embedded;
+  const receiptBinding = (receipt as { runBindingSha256?: unknown }).runBindingSha256;
+  if (typeof receiptBinding === 'string' && receiptBinding !== (run.runBindingSha256 as string)) {
+    return fail('RUN_BINDING_MISMATCH', 'Receipt run binding does not match the embedded run.', '/br01ValidationReceipt/runBindingSha256');
+  }
   if (receipt.status !== 'schema-and-integrity-valid') {
     return fail('RECEIPT_STATUS_INVALID', 'BR01 receipt status is not schema-and-integrity-valid.', '/br01ValidationReceipt/status');
   }
@@ -308,14 +371,20 @@ function projectRunV1(
   if (unit === undefined) {
     return fail('UNKNOWN_SLOT', 'Run references a slot that is not part of the BR03 plan.', '/slotId');
   }
-  const process = document.browserProcesses.find((candidate) =>
-    candidate.runs.some((item) => item.runId === run.runId),
-  );
-  if (process === undefined) {
-    return fail('HIERARCHY_INVALID', 'Run is not contained in any browser process of its document.', '/browserProcesses');
-  }
-  if (process.ids.bootstrapClusterId !== run.ids.bootstrapClusterId) {
+  if (processBootstrapCluster !== run.ids.bootstrapClusterId) {
     return fail('HIERARCHY_INVALID', 'Run bootstrap cluster disagrees with its browser process.', '/ids/bootstrapClusterId');
+  }
+  const scenarioId = (run as { scenario?: { id?: unknown; version?: unknown } }).scenario;
+  if (scenarioId !== undefined) {
+    if (scenarioId.id !== unit.scenarioId) {
+      return fail('SCENARIO_MISMATCH', 'Run scenario binding disagrees with its plan slot.', '/scenario/id');
+    }
+    if (scenarioId.version !== 1) {
+      return fail('SCENARIO_VERSION_MISMATCH', 'Run scenario version is not the frozen v1.', '/scenario/version');
+    }
+  }
+  if (run.measurementEligible === true && run.measurementEligibilityReasons.length > 0) {
+    return fail('ELIGIBILITY_CONFLICT', 'Eligible run carries eligibility reasons.', '/measurementEligibilityReasons');
   }
   if (run.execution.order.candidateId !== unit.candidateId) {
     return fail('SLOT_CANDIDATE_MISMATCH', 'Run candidate disagrees with its plan slot.', '/execution/order/candidateId');
@@ -367,7 +436,11 @@ function projectRunV1(
       }
       const tags: Record<string, string | number | boolean | null> = {};
       for (const dimension of sample.dimensions) {
-        tags[dimension.key as string] = dimension.value as string | number | boolean;
+        tags[normalizeDimensionKeyV1(dimension.key as string)] = dimension.value as string | number | boolean;
+      }
+      const sampleBinding = (sample as { runBindingSha256?: unknown }).runBindingSha256;
+      if (typeof sampleBinding === 'string' && sampleBinding !== (run.runBindingSha256 as string)) {
+        return fail('SAMPLE_BINDING_MISMATCH', 'Sample run binding does not match its run.', `/iterations/${iteration.iterationId as string}/samples/${sample.sampleId as string}`);
       }
       if (sample.result.status === 'valid') {
         for (const required of metric.requiredTags) {
@@ -492,6 +565,10 @@ function projectRunV1(
       browserProcessId: run.browserProcessId as string,
       candidateId: run.execution.order.candidateId as string,
       phase: run.execution.phase as string as Br04Phase,
+      scenarioId: unit.scenarioId as string,
+      scenarioVersion: 1,
+      workloadSeed: scenarioSeedV1(unit, planCore.orderSeed as number),
+      environmentFingerprint: sha256OfCanonicalV1(run.environment),
       measurementEligible: run.measurementEligible,
       declaredDisposition,
       declaredReasonCode,
@@ -615,6 +692,17 @@ export function crosswalkToBundleV1(input: Br04CrosswalkInputV1): Br04CrosswalkR
   const policy = input.bootstrapPolicy;
   if (!/^[0-9a-f]{64}$/.test(policy.masterSeedHex)) {
     return fatal('MASTER_SEED_INVALID', 'bootstrapPolicy.masterSeedHex is not 64 lowercase hex.', '/bootstrapPolicy/masterSeedHex');
+  }
+  if (
+    policy.method !== 'hierarchical-percentile-v1'
+    || policy.confidenceLevel !== BR04_BOOTSTRAP_CONFIDENCE_V1
+    || policy.resamples !== BR04_BOOTSTRAP_RESAMPLES_V1
+    || policy.minimumTopLevelClusters !== BR04_MINIMUM_TOP_LEVEL_CLUSTERS_V1
+    || policy.seedDerivation !== 'sha256-bound-xoshiro128ss-v1'
+    || policy.prng !== 'xoshiro128**-32-v1'
+    || policy.indexSampling !== 'uint32-rejection-v1'
+  ) {
+    return fatal('BOOTSTRAP_POLICY_INVALID', 'bootstrapPolicy deviates from the versioned BR04 statistics policy.', '/bootstrapPolicy');
   }
   const body = {
     schemaVersion: 1 as const,

@@ -453,6 +453,16 @@ export interface Br04PairedBootstrapResultV1 {
  * Reference and candidate arms of a pair cell are never resampled
  * independently. Pair identity is (balanceBlockId, pairCellId,
  * pairOrdinal); bootstrapClusterId is never a pairing criterion.
+ *
+ * R2/B5 (report section 9.9): difference and ratio are evaluated
+ * independently. A pair cell with an undefined ratio still contributes
+ * to the difference evaluation; it never contributes to the ratio
+ * evaluation. An undefined ratio suppresses only the ratio interval.
+ *
+ * R2/B6: difference and ratio replicates draw from their own derived
+ * streams (differenceDerived / ratioDerived); the reported provenance
+ * always names the stream actually used. Ratio intervals carry the
+ * dimensionless unit 'ratio', never the input metric unit.
  */
 export function bootstrapPairedV1(input: Br04PairedBootstrapInputV1): Br04PairedBootstrapResultV1 {
   const differenceEstimatorId = `${input.estimatorId}:difference-median`;
@@ -474,6 +484,8 @@ export function bootstrapPairedV1(input: Br04PairedBootstrapInputV1): Br04Paired
     derived: { seedMaterialDigest: Br04Sha256; derivedSeedHex: string },
     replicates: readonly number[],
     status: Br04BootstrapIntervalV1['status'],
+    unit: string,
+    clusterCount: number,
   ): Br04BootstrapIntervalV1 => {
     const sorted = sortedAscendingV1(replicates);
     return {
@@ -482,9 +494,9 @@ export function bootstrapPairedV1(input: Br04PairedBootstrapInputV1): Br04Paired
       confidenceLevel: BR04_BOOTSTRAP_CONFIDENCE_V1, resamples: BR04_BOOTSTRAP_RESAMPLES_V1,
       lower: status === 'ok' ? nearestRankV1(sorted, 0.025) : null,
       upper: status === 'ok' ? nearestRankV1(sorted, 0.975) : null,
-      unit: input.unit,
+      unit,
       hierarchy: ['balance-block', 'pair-cell'],
-      topLevelClusters, runs: 0, iterations: 0, events: 0,
+      topLevelClusters: clusterCount, runs: 0, iterations: 0, events: 0,
       masterSeedHex: input.masterSeedHex, seedMaterialDigest: derived.seedMaterialDigest,
       derivedSeedHex: derived.derivedSeedHex,
       replicateVectorDigest: status === 'ok' ? sha256OfCanonicalV1(sorted) : null,
@@ -494,23 +506,21 @@ export function bootstrapPairedV1(input: Br04PairedBootstrapInputV1): Br04Paired
     return {
       differenceReplicates: [],
       ratioReplicates: [],
-      differenceInterval: finish(differenceEstimatorId, differenceDerived, [], 'no-data'),
-      ratioInterval: finish(ratioEstimatorId, ratioDerived, [], 'no-data'),
+      differenceInterval: finish(differenceEstimatorId, differenceDerived, [], 'no-data', input.unit, 0),
+      ratioInterval: finish(ratioEstimatorId, ratioDerived, [], 'no-data', 'ratio', 0),
     };
   }
   if (topLevelClusters < BR04_MINIMUM_TOP_LEVEL_CLUSTERS_V1) {
     return {
       differenceReplicates: [],
       ratioReplicates: [],
-      differenceInterval: finish(differenceEstimatorId, differenceDerived, [], 'insufficient-clusters'),
-      ratioInterval: finish(ratioEstimatorId, ratioDerived, [], 'insufficient-clusters'),
+      differenceInterval: finish(differenceEstimatorId, differenceDerived, [], 'insufficient-clusters', input.unit, topLevelClusters),
+      ratioInterval: finish(ratioEstimatorId, ratioDerived, [], 'insufficient-clusters', 'ratio', topLevelClusters),
     };
   }
   const differenceReplicates: number[] = [];
-  const ratioReplicates: number[] = [];
   for (let replicate = 0; replicate < BR04_BOOTSTRAP_RESAMPLES_V1; replicate += 1) {
     const differences: number[] = [];
-    const ratios: number[] = [];
     for (let copy = 0; copy < clusters.length; copy += 1) {
       const cluster = clusters[drawIndexV1(differenceDerived.state, clusters.length)] as Br04PairedClusterInputV1;
       for (let pairCopy = 0; pairCopy < cluster.pairs.length; pairCopy += 1) {
@@ -518,29 +528,48 @@ export function bootstrapPairedV1(input: Br04PairedBootstrapInputV1): Br04Paired
           readonly referenceScalar: number; readonly candidateScalar: number;
         };
         differences.push(pair.candidateScalar - pair.referenceScalar);
-        if (pair.referenceScalar > 0 && pair.candidateScalar > 0) {
+      }
+    }
+    differenceReplicates.push(nearestRankV1(sortedAscendingV1(differences), 0.5));
+  }
+  const positiveClusters: Br04PairedClusterInputV1[] = [];
+  for (const cluster of clusters) {
+    const positivePairs = cluster.pairs.filter(
+      (pair) => pair.referenceScalar > 0 && pair.candidateScalar > 0,
+    );
+    if (positivePairs.length > 0) {
+      positiveClusters.push({ balanceBlockId: cluster.balanceBlockId, pairs: positivePairs });
+    }
+  }
+  const ratioReplicates: number[] = [];
+  let ratioStatus: Br04BootstrapIntervalV1['status'] = 'no-data';
+  if (positiveClusters.length > 0) {
+    ratioStatus = 'ok';
+    for (let replicate = 0; replicate < BR04_BOOTSTRAP_RESAMPLES_V1; replicate += 1) {
+      const ratios: number[] = [];
+      for (let copy = 0; copy < positiveClusters.length; copy += 1) {
+        const cluster = positiveClusters[drawIndexV1(ratioDerived.state, positiveClusters.length)] as Br04PairedClusterInputV1;
+        for (let pairCopy = 0; pairCopy < cluster.pairs.length; pairCopy += 1) {
+          const pair = cluster.pairs[drawIndexV1(ratioDerived.state, cluster.pairs.length)] as {
+            readonly referenceScalar: number; readonly candidateScalar: number;
+          };
           ratios.push(pair.candidateScalar / pair.referenceScalar);
         }
       }
+      const ratio = geometricMeanV1(ratios);
+      if (ratio === null) {
+        ratioStatus = 'no-data';
+        ratioReplicates.length = 0;
+        break;
+      }
+      ratioReplicates.push(ratio);
     }
-    const difference = nearestRankV1(sortedAscendingV1(differences), 0.5);
-    differenceReplicates.push(difference);
-    const ratio = geometricMeanV1(ratios);
-    if (ratio === null) {
-      return {
-        differenceReplicates: [],
-        ratioReplicates: [],
-        differenceInterval: finish(differenceEstimatorId, differenceDerived, [], 'no-data'),
-        ratioInterval: finish(ratioEstimatorId, ratioDerived, [], 'no-data'),
-      };
-    }
-    ratioReplicates.push(ratio);
   }
   return {
     differenceReplicates,
     ratioReplicates,
-    differenceInterval: finish(differenceEstimatorId, differenceDerived, differenceReplicates, 'ok'),
-    ratioInterval: finish(ratioEstimatorId, ratioDerived, ratioReplicates, 'ok'),
+    differenceInterval: finish(differenceEstimatorId, differenceDerived, differenceReplicates, 'ok', input.unit, topLevelClusters),
+    ratioInterval: finish(ratioEstimatorId, ratioDerived, ratioReplicates, ratioStatus, 'ratio', positiveClusters.length),
   };
 }
 

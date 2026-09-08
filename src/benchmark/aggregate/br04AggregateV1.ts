@@ -374,17 +374,81 @@ interface Br04RunMetricDataV1 {
   }[];
 }
 
+/**
+ * Compatibility boundaries already covered by the cell coordinates
+ * themselves (report section 6.1); every other metric group tag splits
+ * the population by its observed sample-tag values (R2/B2).
+ */
+const BR04_CELL_COVERED_GROUP_TAGS_V1: ReadonlySet<string> = new Set([
+  'hardware-profile', 'hardwareProfile', 'phase', 'candidate',
+]);
+
+function extraGroupTagsV1(metric: Br04MetricDefinitionV1): string[] {
+  return metric.groupByTags.filter((tag) => !BR04_CELL_COVERED_GROUP_TAGS_V1.has(tag)).sort();
+}
+
+function tagSignatureV1(
+  extraTags: readonly string[],
+  samples: readonly { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[],
+): string {
+  if (extraTags.length === 0) return '';
+  const parts: string[] = [];
+  for (const tag of extraTags) {
+    const distinct = [...new Set(samples.map((sample) => JSON.stringify(sample.tags[tag] ?? null)))].sort();
+    parts.push(`${tag}=${distinct.join(',')}`);
+  }
+  return parts.join(';');
+}
+
+export interface Br04CompatibilityKeyV1 {
+  readonly key: string;
+  readonly tagSignature: string;
+}
+
+export function compatibilityKeyV1(
+  envelope: Br04ValidatedRunEnvelopeV1,
+  tagSignature: string,
+): Br04CompatibilityKeyV1 {
+  const run = envelope.run;
+  const key = [
+    run.environmentCellId, run.phase, run.candidateId,
+    run.scenarioId, String(run.scenarioVersion), String(run.workloadSeed),
+    run.source.sourceTreeSha, run.source.buildSha256, run.source.fixtureDigest,
+    run.environmentFingerprint, tagSignature,
+  ].join('\0');
+  return { key, tagSignature };
+}
+
+function fingerprintForKeyV1(envelope: Br04ValidatedRunEnvelopeV1, tagSignature: string): Br04Sha256 {
+  const run = envelope.run;
+  return sha256OfCanonicalV1({
+    environmentCellId: run.environmentCellId,
+    phase: run.phase,
+    candidateId: run.candidateId,
+    scenarioId: run.scenarioId,
+    scenarioVersion: run.scenarioVersion,
+    workloadSeed: run.workloadSeed,
+    sourceTreeSha: run.source.sourceTreeSha,
+    buildSha256: run.source.buildSha256,
+    fixtureDigest: run.source.fixtureDigest,
+    environmentFingerprint: run.environmentFingerprint,
+    tagSignature,
+  });
+}
+
 function groupCellDataV1(
   eligible: readonly Br04EligibleRunV1[],
   metrics: readonly Br04MetricDefinitionV1[],
-): Map<string, { environmentCellId: string; phase: Br04Phase; candidateId: string; metrics: Map<Br04MetricRef, Br04RunMetricDataV1> }> {
-  const cells = new Map<string, { environmentCellId: string; phase: Br04Phase; candidateId: string; metrics: Map<Br04MetricRef, Br04RunMetricDataV1> }>();
+): Map<string, { environmentCellId: string; phase: Br04Phase; candidateId: string; compatKey: string; fingerprint: Br04Sha256; metrics: Map<Br04MetricRef, Br04RunMetricDataV1> }> {
+  const cells = new Map<string, { environmentCellId: string; phase: Br04Phase; candidateId: string; compatKey: string; fingerprint: Br04Sha256; metrics: Map<Br04MetricRef, Br04RunMetricDataV1> }>();
   for (const metric of metrics) {
     const ref = `${metric.metricId}@${metric.metricVersion}` as Br04MetricRef;
+    const extraTags = extraGroupTagsV1(metric);
     for (const item of eligible) {
       if (item.metricEligibility[ref] !== 'valid') continue;
       const values: number[] = [];
       const iterations: (readonly number[])[] = [];
+      const taggedSamples: { readonly tags: Readonly<Record<string, string | number | boolean | null>> }[] = [];
       for (const iteration of item.envelope.run.iterations) {
         const iterationValues: number[] = [];
         for (const sample of iteration.samples) {
@@ -392,17 +456,21 @@ function groupCellDataV1(
           if (!metric.allowedPhases.includes(item.envelope.run.phase)) continue;
           values.push(sample.value);
           iterationValues.push(sample.value);
+          taggedSamples.push(sample);
         }
         if (iterationValues.length > 0) iterations.push(iterationValues);
       }
       if (values.length === 0) continue;
-      const key = `${item.envelope.run.environmentCellId}\0${item.envelope.run.phase}\0${item.envelope.run.candidateId}`;
+      const signature = tagSignatureV1(extraTags, taggedSamples);
+      const { key } = compatibilityKeyV1(item.envelope, `${ref}\0${signature}`);
       let cell = cells.get(key);
       if (cell === undefined) {
         cell = {
           environmentCellId: item.envelope.run.environmentCellId,
           phase: item.envelope.run.phase,
           candidateId: item.envelope.run.candidateId,
+          compatKey: key,
+          fingerprint: fingerprintForKeyV1(item.envelope, `${ref}\0${signature}`),
           metrics: new Map(),
         };
         cells.set(key, cell);
@@ -467,7 +535,7 @@ function buildAggregateV1(
   const environmentCells: Br04EnvironmentCellAggregateV1[] = [];
   let environmentCellIndex = 0;
   for (const cellKey of sortedCellKeys) {
-    const cell = cells.get(cellKey) as { environmentCellId: string; phase: Br04Phase; candidateId: string; metrics: Map<Br04MetricRef, Br04RunMetricDataV1> };
+    const cell = cells.get(cellKey) as { environmentCellId: string; phase: Br04Phase; candidateId: string; compatKey: string; fingerprint: Br04Sha256; metrics: Map<Br04MetricRef, Br04RunMetricDataV1> };
     const metricCells: Br04MetricCellV1[] = [];
     const sortedRefs = [...cell.metrics.keys()].sort();
     for (const ref of sortedRefs) {
@@ -516,7 +584,7 @@ function buildAggregateV1(
         .map((summary) => summary.comparisonScalar)
         .filter((scalar): scalar is number => scalar !== null);
       const cellPointEstimate = cellEstimatorV1(scalars, metric.cellEstimator);
-      const groupKey = `${cell.environmentCellId}\0${cell.phase}\0${cell.candidateId}\0${ref}`;
+      const groupKey = cell.compatKey;
       const bootstrap = bootstrapAbsoluteV1({
         metricRef: ref, unit: metric.unit, canonicalGroupKey: groupKey,
         estimatorId: `cell-${metric.cellEstimator}`, estimator: metric.cellEstimator,
@@ -535,9 +603,9 @@ function buildAggregateV1(
         cellPointEstimate: bootstrap.point ?? cellPointEstimate,
         cellInterval: bootstrap.interval,
       });
-      claim(`cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:point`, 'fact',
+      claim(`cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:${cell.fingerprint.slice(7, 15)}:point`, 'fact',
         [`${cellPointer}/cellPointEstimate`, `${cellPointer}/cellInterval`], runDigests, slotIds, ref);
-      claim(`cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:quantiles`, 'fact',
+      claim(`cell:${cell.environmentCellId}:${cell.phase}:${cell.candidateId}:${ref}:${cell.fingerprint.slice(7, 15)}:quantiles`, 'fact',
         [`${cellPointer}/descriptivePooledQuantiles`, `${cellPointer}/maximum`], runDigests, slotIds, ref);
       if (qualification !== 'standard-cell') {
         unknowns.push(`${ref} in ${cell.environmentCellId}/${cell.phase}/${cell.candidateId} is ${qualification}: not a standard performance cell.`);
@@ -549,24 +617,29 @@ function buildAggregateV1(
     }
     environmentCells.push({
       environmentCellId: cell.environmentCellId,
-      environmentFingerprintDigest: sha256OfCanonicalV1({
-        environmentCellId: cell.environmentCellId, phase: cell.phase, candidateId: cell.candidateId,
-      }),
+      environmentFingerprintDigest: cell.fingerprint,
       phase: cell.phase,
       candidateId: cell.candidateId,
       metricCells,
     });
     environmentCellIndex += 1;
   }
-  const pairedComparisons = buildPairedComparisonsV1(bundle, eligible, claim);
+  const { comparisons: pairedComparisons, incompleteDetails } =
+    buildPairedComparisonsV1(bundle, eligible, claim);
   const capabilityCoverage = buildCapabilityCoverageV1(bundle, eligible);
-  applyPairDispositionsV1(ledger, bundle, pairedComparisons);
-  const invalidRuns = buildInvalidSummaryV1(bundle, ledger, missingSlots, slotDigestById, pairedComparisons);
+  applyPairDispositionsV1(ledger, bundle, pairedComparisons, incompleteDetails);
+  const invalidRuns = buildInvalidSummaryV1(bundle, ledger, missingSlots, slotDigestById, incompleteDetails);
   facts.unshift(
     `${validation.counts.observedRuns} of ${validation.counts.plannedSlots} planned runs were observed; ` +
     `${missingSlots.length} planned slots are missing.`,
   );
   const bootstrapPolicyDigest = sha256OfCanonicalV1(bundle.bootstrapPolicy);
+  /**
+   * R2 provenance note: this digest binds the versioned method labels, not
+   * the implementation bytes. A code change under identical labels does
+   * not change this value; it is a schema/method-label hash, and the
+   * aggregate digest above it binds the actual computed content.
+   */
   const aggregatorSourceDigest = sha256OfCanonicalV1({
     aggregator: BR04_AGGREGATOR_VERSION_V1,
     quantileMethod: 'inverse-ecdf-nearest-rank-v1',
@@ -589,7 +662,9 @@ function buildAggregateV1(
       syntheticHardwareProfile: bundle.runPlan.syntheticHardwareProfile,
       performanceClaimEligibility: bundle.runPlan.syntheticHardwareProfile
         ? 'ineligible-synthetic-fixture' as const
-        : 'eligible-measured' as const,
+        : environmentCells.some((cell) => cell.metricCells.length > 0)
+          ? 'eligible-measured' as const
+          : 'ineligible-no-valid-population' as const,
     },
     validation,
     environmentCells,
@@ -615,6 +690,85 @@ interface Br04PairCellStateV1 {
   readonly comparisonSlots: Br04PlannedRunSlotV1[];
 }
 
+export interface Br04IncompletePairDetailV1 {
+  readonly pairCellId: string;
+  readonly balanceBlockId: string;
+  readonly pairOrdinal: number;
+  readonly presentSlotIds: readonly string[];
+  readonly missingOrInvalidSlotIds: readonly string[];
+  readonly reasonCodes: readonly string[];
+}
+
+interface Br04ArmContextV1 {
+  readonly environmentCellId: string;
+  readonly phase: Br04Phase;
+  readonly scenarioId: string;
+  readonly scenarioVersion: number;
+  readonly workloadSeed: number;
+  readonly sourceTreeSha: string | null;
+  readonly buildSha256: string | null;
+  readonly fixtureDigest: string | null;
+  readonly environmentFingerprint: Br04Sha256 | null;
+  readonly tagSignature: string | null;
+}
+
+function armContextFromRunV1(item: Br04EligibleRunV1, metric: Br04MetricDefinitionV1): Br04ArmContextV1 {
+  const run = item.envelope.run;
+  const extraTags = extraGroupTagsV1(metric);
+  const tagged = [];
+  for (const iteration of run.iterations) {
+    for (const sample of iteration.samples) {
+      if (sample.metricRef === `${metric.metricId}@${metric.metricVersion}` && sample.valid) tagged.push(sample);
+    }
+  }
+  return {
+    environmentCellId: run.environmentCellId,
+    phase: run.phase,
+    scenarioId: run.scenarioId,
+    scenarioVersion: run.scenarioVersion,
+    workloadSeed: run.workloadSeed,
+    sourceTreeSha: run.source.sourceTreeSha,
+    buildSha256: run.source.buildSha256,
+    fixtureDigest: run.source.fixtureDigest,
+    environmentFingerprint: run.environmentFingerprint,
+    tagSignature: tagSignatureV1(extraTags, tagged),
+  };
+}
+
+function armContextFromSlotV1(slot: Br04PlannedRunSlotV1): Br04ArmContextV1 {
+  return {
+    environmentCellId: slot.environmentCellId,
+    phase: slot.phase,
+    scenarioId: slot.scenarioId,
+    scenarioVersion: slot.scenarioVersion,
+    workloadSeed: slot.workloadSeed,
+    sourceTreeSha: null,
+    buildSha256: null,
+    fixtureDigest: null,
+    environmentFingerprint: null,
+    tagSignature: null,
+  };
+}
+
+/** Null fields are wildcards from unobserved slot fallbacks; two observed contexts must agree exactly. */
+function contextDivergenceV1(left: Br04ArmContextV1, right: Br04ArmContextV1): string[] {
+  const reasons: string[] = [];
+  if (left.environmentCellId !== right.environmentCellId) reasons.push('environment-cell-diverged');
+  if (left.phase !== right.phase) reasons.push('phase-diverged');
+  if (
+    left.scenarioId !== right.scenarioId || left.scenarioVersion !== right.scenarioVersion
+    || left.workloadSeed !== right.workloadSeed || left.sourceTreeSha !== right.sourceTreeSha
+    || left.buildSha256 !== right.buildSha256 || left.fixtureDigest !== right.fixtureDigest
+    || left.environmentFingerprint !== right.environmentFingerprint
+  ) {
+    reasons.push('compatibility-key-diverged');
+  }
+  if (left.tagSignature !== null && right.tagSignature !== null && left.tagSignature !== right.tagSignature) {
+    reasons.push('group-tags-diverged');
+  }
+  return reasons;
+}
+
 function buildPairedComparisonsV1(
   bundle: Br04AggregateInputBundleV1,
   eligible: readonly Br04EligibleRunV1[],
@@ -622,96 +776,99 @@ function buildPairedComparisonsV1(
     claimId: string, klass: Br04ClaimTraceV1['class'], aggregateJsonPointers: readonly string[],
     sourceRunDigests: readonly Br04Sha256[], planSlotIds: readonly string[], metricRef: Br04MetricRef | null,
   ) => void,
-): Br04PairedComparisonV1[] {
+): { comparisons: Br04PairedComparisonV1[]; incompleteDetails: Br04IncompletePairDetailV1[] } {
   const comparisons: Br04PairedComparisonV1[] = [];
-  if (bundle.runPlan.comparisonMode !== 'reference-paired') return comparisons;
+  const incompleteDetails: Br04IncompletePairDetailV1[] = [];
+  if (bundle.runPlan.comparisonMode !== 'reference-paired') return { comparisons, incompleteDetails };
   const envelopeBySlot = new Map<string, Br04EligibleRunV1>();
   for (const item of eligible) envelopeBySlot.set(item.slot.slotId, item);
   const groups = new Map<string, {
-    environmentCellId: string; phase: Br04Phase; metricRef: Br04MetricRef;
+    environmentCellId: string; phase: Br04Phase; scenarioId: string; scenarioVersion: number;
+    workloadSeed: number; tagSignature: string; metricRef: Br04MetricRef;
     referenceCandidateId: string; candidateId: string; cells: Map<string, Br04PairCellStateV1>;
   }>();
   for (const metric of bundle.metricRegistry) {
     const ref = `${metric.metricId}@${metric.metricVersion}` as Br04MetricRef;
-    const byCandidate = new Map<string, { environmentCellId: string; phase: Br04Phase; slots: Br04PlannedRunSlotV1[] }>();
+    const pairCells = new Map<string, Br04PairCellStateV1>();
     for (const slot of bundle.runPlan.slots) {
       if (slot.referenceCandidateId === null || slot.pairCellId === null || slot.pairOrdinal === null) continue;
       if (armOfV1(slot, 'reference-paired') === 'unpaired') continue;
-      const observed = envelopeBySlot.get(slot.slotId);
-      const environmentCellId = observed !== undefined ? observed.envelope.run.environmentCellId : slot.environmentCellId;
-      const phase = observed !== undefined ? observed.envelope.run.phase : slot.phase;
-      const key = `${slot.candidateId}\0${environmentCellId}\0${phase}`;
-      let group = byCandidate.get(key);
-      if (group === undefined) {
-        group = { environmentCellId, phase, slots: [] };
-        byCandidate.set(key, group);
+      const pairKey = `${slot.balanceBlockId}\0${slot.pairCellId as string}\0${slot.pairOrdinal as number}`;
+      let cell = pairCells.get(pairKey);
+      if (cell === undefined) {
+        cell = {
+          key: pairKey, balanceBlockId: slot.balanceBlockId,
+          pairCellId: slot.pairCellId as string, pairOrdinal: slot.pairOrdinal as number,
+          referenceSlots: [], comparisonSlots: [],
+        };
+        pairCells.set(pairKey, cell);
       }
-      group.slots.push(slot);
+      const mutable = cell as { referenceSlots: Br04PlannedRunSlotV1[]; comparisonSlots: Br04PlannedRunSlotV1[] };
+      if (slot.candidateId === slot.referenceCandidateId) mutable.referenceSlots.push(slot);
+      else mutable.comparisonSlots.push(slot);
     }
-    const referenceGroups = new Map<string, typeof byCandidate>();
-    for (const [key, group] of byCandidate) {
-      const sample = group.slots[0] as Br04PlannedRunSlotV1;
-      const cellKey = `${group.environmentCellId}\0${group.phase}\0${sample.referenceCandidateId ?? ''}`;
-      let bucket = referenceGroups.get(cellKey);
-      if (bucket === undefined) {
-        bucket = new Map();
-        referenceGroups.set(cellKey, bucket);
-      }
-      bucket.set(key, group);
-    }
-    for (const [, bucket] of referenceGroups) {
-      let referenceKey: string | null = null;
-      for (const [key, group] of bucket) {
-        const sample = group.slots[0] as Br04PlannedRunSlotV1;
-        if (sample.referenceCandidateId !== null && sample.candidateId === sample.referenceCandidateId) {
-          referenceKey = key;
+    let observedAny = false;
+    for (const cellState of pairCells.values()) {
+      for (const slot of [...cellState.referenceSlots, ...cellState.comparisonSlots]) {
+        const item = envelopeBySlot.get(slot.slotId);
+        if (
+          item !== undefined
+          && item.envelope.run.iterations.some((iteration) =>
+            iteration.samples.some((sample) => sample.metricRef === ref && sample.valid))
+        ) {
+          observedAny = true;
           break;
         }
       }
-      if (referenceKey === null) continue;
-      const referenceGroup = bucket.get(referenceKey) as { environmentCellId: string; phase: Br04Phase; slots: Br04PlannedRunSlotV1[] };
-      for (const [candidateKey, candidateGroup] of bucket) {
-        if (candidateKey === referenceKey) continue;
-        const candidateSample = candidateGroup.slots[0] as Br04PlannedRunSlotV1;
-        const groupKey = `${referenceGroup.environmentCellId}\0${referenceGroup.phase}\0${ref}\0${candidateSample.referenceCandidateId ?? ''}\0${candidateSample.candidateId}`;
-        let group = groups.get(groupKey);
-        if (group === undefined) {
-          group = {
-            environmentCellId: referenceGroup.environmentCellId, phase: referenceGroup.phase,
-            metricRef: ref,
-            referenceCandidateId: candidateSample.referenceCandidateId as string,
-            candidateId: candidateSample.candidateId, cells: new Map(),
-          };
-          groups.set(groupKey, group);
-        }
-        const register = (slot: Br04PlannedRunSlotV1, arm: 'reference' | 'comparison'): void => {
-          const pairKey = `${slot.balanceBlockId}\0${slot.pairCellId as string}\0${slot.pairOrdinal as number}`;
-          let cell = group.cells.get(pairKey);
-          if (cell === undefined) {
-            cell = {
-              key: pairKey, balanceBlockId: slot.balanceBlockId,
-              pairCellId: slot.pairCellId as string, pairOrdinal: slot.pairOrdinal as number,
-              referenceSlots: [], comparisonSlots: [],
-            };
-            group.cells.set(pairKey, cell);
-          }
-          if (arm === 'reference') cell.referenceSlots.push(slot);
-          else cell.comparisonSlots.push(slot);
+      if (observedAny) break;
+    }
+    if (!observedAny) continue;
+    for (const cellState of pairCells.values()) {
+      const refSlot = cellState.referenceSlots.length === 1
+        ? (cellState.referenceSlots[0] as Br04PlannedRunSlotV1) : undefined;
+      const cmpSlot = cellState.comparisonSlots.length === 1
+        ? (cellState.comparisonSlots[0] as Br04PlannedRunSlotV1) : undefined;
+      const refRun = refSlot === undefined ? undefined : envelopeBySlot.get(refSlot.slotId);
+      const cmpRun = cmpSlot === undefined ? undefined : envelopeBySlot.get(cmpSlot.slotId);
+      const refContext = refRun !== undefined
+        ? armContextFromRunV1(refRun, metric)
+        : refSlot !== undefined ? armContextFromSlotV1(refSlot) : null;
+      const cmpContext = cmpRun !== undefined
+        ? armContextFromRunV1(cmpRun, metric)
+        : cmpSlot !== undefined ? armContextFromSlotV1(cmpSlot) : null;
+      const primary = refContext ?? cmpContext;
+      if (primary === null) continue;
+      const groupKey = [
+        primary.environmentCellId, primary.phase, primary.scenarioId,
+        String(primary.scenarioVersion), String(primary.workloadSeed),
+        primary.sourceTreeSha ?? '', primary.buildSha256 ?? '', primary.fixtureDigest ?? '',
+        primary.environmentFingerprint ?? '', ref,
+        refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '',
+        cmpSlot?.candidateId ?? refSlot?.candidateId ?? '',
+        primary.tagSignature ?? '',
+      ].join('\0');
+      let group = groups.get(groupKey);
+      if (group === undefined) {
+        group = {
+          environmentCellId: primary.environmentCellId, phase: primary.phase,
+          scenarioId: primary.scenarioId, scenarioVersion: primary.scenarioVersion,
+          workloadSeed: primary.workloadSeed, tagSignature: primary.tagSignature ?? '',
+          metricRef: ref,
+          referenceCandidateId: (refSlot?.referenceCandidateId ?? cmpSlot?.referenceCandidateId ?? '') as string,
+          candidateId: (cmpSlot?.candidateId ?? refSlot?.candidateId ?? '') as string,
+          cells: new Map(),
         };
-        for (const slot of referenceGroup.slots) {
-          if (slot.candidateId === group.referenceCandidateId) register(slot, 'reference');
-        }
-        for (const slot of candidateGroup.slots) {
-          if (slot.candidateId === group.candidateId) register(slot, 'comparison');
-        }
+        groups.set(groupKey, group);
       }
+      group.cells.set(cellState.key, cellState);
     }
   }
   const sortedGroupKeys = [...groups.keys()].sort();
   let comparisonIndex = 0;
   for (const groupKey of sortedGroupKeys) {
     const group = groups.get(groupKey) as {
-      environmentCellId: string; phase: Br04Phase; metricRef: Br04MetricRef;
+      environmentCellId: string; phase: Br04Phase; scenarioId: string; scenarioVersion: number;
+      workloadSeed: number; tagSignature: string; metricRef: Br04MetricRef;
       referenceCandidateId: string; candidateId: string; cells: Map<string, Br04PairCellStateV1>;
     };
     const metric = bundle.metricRegistry.find(
@@ -731,26 +888,25 @@ function buildPairedComparisonsV1(
       const cmpRun = cellState.comparisonSlots.length === 1
         ? envelopeBySlot.get((cellState.comparisonSlots[0] as Br04PlannedRunSlotV1).slotId)
         : undefined;
-      const reasons: string[] = [];
+      const cellReasons: string[] = [];
       if (cellState.referenceSlots.length !== 1 || cellState.comparisonSlots.length !== 1) {
-        reasons.push('pair-cell-arm-count');
+        cellReasons.push('pair-cell-arm-count');
+      }
+      if (refRun !== undefined && cmpRun !== undefined && cellReasons.length === 0) {
+        cellReasons.push(...contextDivergenceV1(
+          armContextFromRunV1(refRun, metric), armContextFromRunV1(cmpRun, metric),
+        ));
       }
       let refScalar: number | null = null;
       let cmpScalar: number | null = null;
-      if (refRun !== undefined && cmpRun !== undefined && reasons.length === 0) {
-        if (refRun.envelope.run.environmentCellId !== cmpRun.envelope.run.environmentCellId) {
-          reasons.push('environment-cell-diverged');
-        }
-        if (refRun.envelope.run.phase !== cmpRun.envelope.run.phase) {
-          reasons.push('phase-diverged');
-        }
+      if (refRun !== undefined && cmpRun !== undefined && cellReasons.length === 0) {
         if (refRun.metricEligibility[group.metricRef] !== 'valid') {
-          reasons.push(`reference-${refRun.metricEligibility[group.metricRef]}`);
+          cellReasons.push(`reference-${refRun.metricEligibility[group.metricRef]}`);
         }
         if (cmpRun.metricEligibility[group.metricRef] !== 'valid') {
-          reasons.push(`candidate-${cmpRun.metricEligibility[group.metricRef]}`);
+          cellReasons.push(`candidate-${cmpRun.metricEligibility[group.metricRef]}`);
         }
-        if (reasons.length === 0) {
+        if (cellReasons.length === 0) {
           const refValues: number[] = [];
           for (const iteration of refRun.envelope.run.iterations) {
             for (const sample of iteration.samples) {
@@ -763,29 +919,52 @@ function buildPairedComparisonsV1(
               if (sample.metricRef === group.metricRef && sample.valid) cmpValues.push(sample.value);
             }
           }
-          refScalar = perRunScalarV1(refValues, metric.perRunStatistic);
-          cmpScalar = perRunScalarV1(cmpValues, metric.perRunStatistic);
-          if (refScalar === null || cmpScalar === null) reasons.push('scalar-unavailable');
+          if (refValues.length === 0 || cmpValues.length === 0) {
+            cellReasons.push('scalar-unavailable');
+          } else {
+            refScalar = perRunScalarV1(refValues, metric.perRunStatistic);
+            cmpScalar = perRunScalarV1(cmpValues, metric.perRunStatistic);
+            if (refScalar === null || cmpScalar === null) cellReasons.push('scalar-unavailable');
+          }
         }
-      } else if (reasons.length === 0) {
-        reasons.push(refRun === undefined ? 'reference-missing-or-invalid' : 'candidate-missing-or-invalid');
+      } else if (cellReasons.length === 0) {
+        cellReasons.push(refRun === undefined ? 'reference-missing-or-invalid' : 'candidate-missing-or-invalid');
       }
-      if (reasons.length > 0) {
+      if (cellReasons.length > 0) {
         incompletePairCellIds.push(cellState.pairCellId);
-        for (const slot of cellState.referenceSlots) incompleteSlotIds.push(slot.slotId);
-        for (const slot of cellState.comparisonSlots) incompleteSlotIds.push(slot.slotId);
+        const present: string[] = [];
+        const missing: string[] = [];
+        for (const slot of cellState.referenceSlots) {
+          incompleteSlotIds.push(slot.slotId);
+          (envelopeBySlot.has(slot.slotId) ? present : missing).push(slot.slotId);
+        }
+        for (const slot of cellState.comparisonSlots) {
+          incompleteSlotIds.push(slot.slotId);
+          (envelopeBySlot.has(slot.slotId) ? present : missing).push(slot.slotId);
+        }
+        incompleteDetails.push({
+          pairCellId: cellState.pairCellId,
+          balanceBlockId: cellState.balanceBlockId,
+          pairOrdinal: cellState.pairOrdinal,
+          presentSlotIds: [...present].sort(),
+          missingOrInvalidSlotIds: [...missing].sort(),
+          reasonCodes: [...cellReasons].sort(),
+        });
         continue;
       }
       const referenceValue = refScalar as number;
       const candidateValue = cmpScalar as number;
-      const ratioStatus: 'ok' | 'non-positive-reference' | 'domain-invalid' = referenceValue > 0
-        ? (metric.numericDomain === 'positive-duration' && candidateValue <= 0 ? 'domain-invalid' : 'ok')
-        : 'non-positive-reference';
+      const ratioStatus: 'ok' | 'non-positive-reference' | 'domain-invalid' =
+        checkDomainV1(metric.numericDomain, referenceValue) !== null
+        || checkDomainV1(metric.numericDomain, candidateValue) !== null
+          ? 'domain-invalid'
+          : referenceValue > 0 ? 'ok' : 'non-positive-reference';
       const ratio = ratioStatus === 'ok' ? candidateValue / referenceValue : null;
       const refItem = refRun as Br04EligibleRunV1;
       const cmpItem = cmpRun as Br04EligibleRunV1;
       pairValues.push({
         pairCellId: cellState.pairCellId,
+        pairOrdinal: cellState.pairOrdinal,
         balanceBlockId: cellState.balanceBlockId,
         bootstrapClusterId: refItem.envelope.run.browserProcessId,
         referenceValue, candidateValue,
@@ -796,20 +975,29 @@ function buildPairedComparisonsV1(
         candidateRunDigest: cmpItem.envelope.canonicalContentDigest,
       });
       completePairCellIds.push(cellState.pairCellId);
-      let cluster = pairClusters.get(cellState.balanceBlockId);
-      if (cluster === undefined) {
-        cluster = { balanceBlockId: cellState.balanceBlockId, pairs: [] };
-        pairClusters.set(cellState.balanceBlockId, cluster);
+      if (
+        checkDomainV1(metric.numericDomain, referenceValue) === null
+        && checkDomainV1(metric.numericDomain, candidateValue) === null
+      ) {
+        let cluster = pairClusters.get(cellState.balanceBlockId);
+        if (cluster === undefined) {
+          cluster = { balanceBlockId: cellState.balanceBlockId, pairs: [] };
+          pairClusters.set(cellState.balanceBlockId, cluster);
+        }
+        (cluster.pairs as { pairCellId: string; pairOrdinal: number; referenceScalar: number; candidateScalar: number }[]).push({
+          pairCellId: cellState.pairCellId, pairOrdinal: cellState.pairOrdinal,
+          referenceScalar: referenceValue, candidateScalar: candidateValue,
+        });
       }
-      (cluster.pairs as { pairCellId: string; pairOrdinal: number; referenceScalar: number; candidateScalar: number }[]).push({
-        pairCellId: cellState.pairCellId, pairOrdinal: cellState.pairOrdinal,
-        referenceScalar: referenceValue, candidateScalar: candidateValue,
-      });
     }
     completePairCellIds.sort();
     incompletePairCellIds.sort();
-    const differences = pairValues.map((pair) => pair.differenceCandidateMinusReference);
-    const positiveRatios = pairValues
+    const domainPairs = pairValues.filter(
+      (pair) => checkDomainV1(metric.numericDomain, pair.referenceValue) === null
+        && checkDomainV1(metric.numericDomain, pair.candidateValue) === null,
+    );
+    const differences = domainPairs.map((pair) => pair.differenceCandidateMinusReference);
+    const positiveRatios = domainPairs
       .map((pair) => pair.ratioCandidateOverReference)
       .filter((ratio): ratio is number => ratio !== null && ratio > 0);
     const differencePointEstimate = differences.length === 0
@@ -821,9 +1009,10 @@ function buildPairedComparisonsV1(
       return Math.exp(logSum / positiveRatios.length);
     })();
     const canonicalGroupKey =
-      `${group.environmentCellId}\0${group.phase}\0${group.referenceCandidateId}\0${group.candidateId}\0${group.metricRef}`;
+      `${group.environmentCellId}\0${group.phase}\0${group.scenarioId}\0${group.scenarioVersion}\0` +
+      `${group.workloadSeed}\0${group.referenceCandidateId}\0${group.candidateId}\0${group.metricRef}\0${group.tagSignature}`;
     const estimatorId = `paired:${group.referenceCandidateId}-vs-${group.candidateId}`;
-    const differenceBootstrap = pairValues.length === 0
+    const pairedBootstrap = pairClusters.size === 0
       ? null
       : bootstrapPairedV1({
         metricRef: group.metricRef, unit: metric.unit, canonicalGroupKey, estimatorId,
@@ -831,30 +1020,13 @@ function buildPairedComparisonsV1(
         masterSeedHex: bundle.bootstrapPolicy.masterSeedHex,
         normalizedInputDigest: bundle.manifest.normalizedInputDigest,
       });
-    const ratioClusters: Br04PairedClusterInputV1[] = [];
-    for (const cluster of pairClusters.values()) {
-      const positivePairs = cluster.pairs.filter(
-        (pair) => pair.referenceScalar > 0 && pair.candidateScalar > 0,
-      );
-      if (positivePairs.length > 0) {
-        ratioClusters.push({ balanceBlockId: cluster.balanceBlockId, pairs: positivePairs });
-      }
-    }
-    const ratioBootstrap = ratioClusters.length === 0
-      ? null
-      : bootstrapPairedV1({
-        metricRef: group.metricRef, unit: metric.unit, canonicalGroupKey, estimatorId,
-        clusters: ratioClusters,
-        masterSeedHex: bundle.bootstrapPolicy.masterSeedHex,
-        normalizedInputDigest: bundle.manifest.normalizedInputDigest,
-      });
     const bootstrap = {
-      differenceInterval: differenceBootstrap === null
+      differenceInterval: pairedBootstrap === null
         ? emptyPairedIntervalV1(bundle, group.metricRef, metric.unit, canonicalGroupKey, `${estimatorId}:difference-median`, 'no-data')
-        : differenceBootstrap.differenceInterval,
-      ratioInterval: ratioBootstrap === null
-        ? emptyPairedIntervalV1(bundle, group.metricRef, metric.unit, canonicalGroupKey, `${estimatorId}:ratio-geomean`, 'no-data')
-        : ratioBootstrap.ratioInterval,
+        : pairedBootstrap.differenceInterval,
+      ratioInterval: pairedBootstrap === null
+        ? emptyPairedIntervalV1(bundle, group.metricRef, 'ratio', canonicalGroupKey, `${estimatorId}:ratio-geomean`, 'no-data')
+        : pairedBootstrap.ratioInterval,
     };
     const comparisonPointer = `/pairedComparisons/${comparisonIndex}`;
     const practicalEffect = practicalEffectV1(
@@ -862,9 +1034,12 @@ function buildPairedComparisonsV1(
       bootstrap.ratioInterval.lower, bootstrap.ratioInterval.upper,
       bootstrap.ratioInterval.status === 'ok',
     );
+    const comparisonId =
+      `cmp:${group.environmentCellId}:${group.phase}:${group.scenarioId}:${group.workloadSeed}:` +
+      `${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}`;
     comparisons.push({
       schemaVersion: 1,
-      comparisonId: `cmp:${group.environmentCellId}:${group.phase}:${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}`,
+      comparisonId,
       metricRef: group.metricRef,
       environmentCellId: group.environmentCellId,
       phase: group.phase,
@@ -887,19 +1062,19 @@ function buildPairedComparisonsV1(
       practicalEffect,
       decision: null,
     });
-    claim(`cmp:${group.environmentCellId}:${group.phase}:${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}:estimates`, 'fact',
+    claim(`${comparisonId}:estimates`, 'fact',
       [`${comparisonPointer}/differencePointEstimate`, `${comparisonPointer}/ratioPointEstimate`,
         `${comparisonPointer}/differenceInterval`, `${comparisonPointer}/ratioInterval`],
       [...new Set(pairValues.flatMap((pair) => [pair.referenceRunDigest, pair.candidateRunDigest]))].sort(),
       [...new Set(groupCellsSlotIdsV1(group))].sort(), group.metricRef);
     if (incompletePairCellIds.length > 0) {
-      claim(`cmp:${group.environmentCellId}:${group.phase}:${group.metricRef}:${group.referenceCandidateId}-vs-${group.candidateId}:incomplete`, 'unknown',
+      claim(`${comparisonId}:incomplete`, 'unknown',
         [`${comparisonPointer}/pairs`], [],
         [...new Set(incompleteSlotIds)].sort(), group.metricRef);
     }
     comparisonIndex += 1;
   }
-  return comparisons;
+  return { comparisons, incompleteDetails };
 }
 
 function groupCellsSlotIdsV1(group: {
@@ -1025,7 +1200,7 @@ function buildInvalidSummaryV1(
   ledger: readonly Br04RunLedgerEntryV1[],
   missingSlots: readonly string[],
   slotDigestById: ReadonlyMap<string, Br04Sha256>,
-  pairedComparisons: readonly Br04PairedComparisonV1[],
+  incompleteDetails: readonly Br04IncompletePairDetailV1[],
 ): Br04InvalidRunSummaryV1 {
   const counts: Record<Br04RunDispositionV1, number> = {
     valid: 0, 'infrastructure-invalid': 0, 'capability-unsupported': 0,
@@ -1060,18 +1235,25 @@ function buildInvalidSummaryV1(
       : left.scope < right.scope ? -1 : 1,
   );
   const incompletePairs: Br04IncompletePairV1[] = [];
-  const seenPairCells = new Set<string>();
-  for (const comparison of pairedComparisons) {
-    for (const pairCellId of comparison.pairs.incompletePairCellIds) {
-      if (seenPairCells.has(pairCellId)) continue;
-      seenPairCells.add(pairCellId);
-      incompletePairs.push({
-        pairCellId, presentSlotIds: [], missingOrInvalidSlotIds: [],
-        reasonCodes: ['incomplete-pair'],
-      });
-    }
+  const seenPairTriples = new Set<string>();
+  for (const detail of incompleteDetails) {
+    const triple = `${detail.balanceBlockId}\0${detail.pairCellId}\0${detail.pairOrdinal}`;
+    if (seenPairTriples.has(triple)) continue;
+    seenPairTriples.add(triple);
+    incompletePairs.push({
+      pairCellId: detail.pairCellId,
+      balanceBlockId: detail.balanceBlockId,
+      pairOrdinal: detail.pairOrdinal,
+      presentSlotIds: [...detail.presentSlotIds],
+      missingOrInvalidSlotIds: [...detail.missingOrInvalidSlotIds],
+      reasonCodes: [...detail.reasonCodes],
+    });
   }
-  incompletePairs.sort((left, right) => left.pairCellId < right.pairCellId ? -1 : 1);
+  incompletePairs.sort((left, right) =>
+    left.balanceBlockId < right.balanceBlockId ? -1 : left.balanceBlockId > right.balanceBlockId ? 1
+      : left.pairCellId < right.pairCellId ? -1 : left.pairCellId > right.pairCellId ? 1
+        : left.pairOrdinal - right.pairOrdinal,
+  );
   return {
     schemaVersion: 1,
     plannedSlots: bundle.runPlan.slots.length,
@@ -1087,12 +1269,17 @@ function applyPairDispositionsV1(
   ledger: Br04MutableLedgerRowV1[],
   bundle: Br04AggregateInputBundleV1,
   pairedComparisons: readonly Br04PairedComparisonV1[],
+  incompleteDetails: readonly Br04IncompletePairDetailV1[],
 ): void {
-  const completePairs = new Set<string>();
-  const incompletePairs = new Set<string>();
+  const completeTriples = new Set<string>();
+  const incompleteTriples = new Set<string>();
   for (const comparison of pairedComparisons) {
-    for (const pairCellId of comparison.pairs.completePairCellIds) completePairs.add(pairCellId);
-    for (const pairCellId of comparison.pairs.incompletePairCellIds) incompletePairs.add(pairCellId);
+    for (const pair of comparison.pairValues) {
+      completeTriples.add(`${pair.balanceBlockId}\0${pair.pairCellId}\0${pair.pairOrdinal}`);
+    }
+  }
+  for (const detail of incompleteDetails) {
+    incompleteTriples.add(`${detail.balanceBlockId}\0${detail.pairCellId}\0${detail.pairOrdinal}`);
   }
   const slotById = new Map<string, Br04PlannedRunSlotV1>();
   for (const slot of bundle.runPlan.slots) slotById.set(slot.slotId, slot);
@@ -1106,8 +1293,9 @@ function applyPairDispositionsV1(
       row.pairDisposition = 'not-applicable';
       continue;
     }
-    if (completePairs.has(slot.pairCellId)) row.pairDisposition = 'complete';
-    else if (incompletePairs.has(slot.pairCellId)) row.pairDisposition = 'incomplete-pair';
+    const triple = `${slot.balanceBlockId}\0${slot.pairCellId}\0${slot.pairOrdinal as number}`;
+    if (completeTriples.has(triple)) row.pairDisposition = 'complete';
+    else if (incompleteTriples.has(triple)) row.pairDisposition = 'incomplete-pair';
     else row.pairDisposition = 'not-applicable';
   }
 }

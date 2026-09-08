@@ -4,13 +4,19 @@
  */
 import { describe, expect, it } from 'vitest';
 import { validateAndAggregateBundleV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
-import type { Br04MetricRef } from '../../../../src/benchmark/aggregate/br04ContractV1';
+import type { Br04MetricRef, Br04Sha256 } from '../../../../src/benchmark/aggregate/br04ContractV1';
 import {
   buildTestBundleV1,
   chunkMetricV1,
   iterationV1,
+  R2_COUNT_V1,
+  r2BundleV1,
+  r2EntryV1,
+  r2PlanV1,
   type Br04TestRunSpecV1,
   type Br04TestSlotSpecV1,
+  type R2RunSpecV1,
+  type R2UnitSpecV1,
 } from '../../../fixtures/benchmark/aggregate/br04FixtureBuildersV1';
 
 const CHUNK = 'chunk.mesh.cpu.ms@1' as Br04MetricRef;
@@ -181,5 +187,126 @@ describe('BR04 paired goldens', () => {
     const comparison = aggregate?.pairedComparisons[0];
     expect(comparison?.pairs.complete).toBe(0);
     expect(comparison?.pairs.incomplete).toBe(2);
+  });
+});
+
+describe('BR04 R2 paired regressions (B2 pairing, B4-B6)', () => {
+  it('B2: pairing honors the same compatibility boundaries', () => {
+    const plan = r2PlanV1('r2-b2p', [
+      { slot: 'slot-r', candidate: 'ref', seed: 7, pairCell: 'pc-1', pairOrdinal: 1 },
+      { slot: 'slot-c', candidate: 'cmp', seed: 8, pairCell: 'pc-1', pairOrdinal: 1 },
+    ], { comparisonMode: 'reference-paired', referenceCandidateId: 'ref' });
+    const { bundle } = r2BundleV1('r2-b2p', plan, [
+      r2EntryV1(plan, { runId: 'run-r', slot: 'slot-r', candidate: 'ref', values: [10] }),
+      r2EntryV1(plan, { runId: 'run-c', slot: 'slot-c', candidate: 'cmp', values: [12] }),
+    ]);
+    const { aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    const comparison = aggregate?.pairedComparisons[0];
+    expect(comparison?.pairs.complete).toBe(0);
+    expect(comparison?.pairs.incomplete).toBe(1);
+    expect(aggregate?.invalidRuns.incompletePairs[0]?.reasonCodes).toContain('compatibility-key-diverged');
+  });
+
+  it('B4: a missing arm is incomplete with causes, the counterpart stays descriptive', () => {
+    const plan = r2PlanV1('r2-b4', [
+      { slot: 'slot-r', candidate: 'ref', pairCell: 'pc-1', pairOrdinal: 1 },
+      { slot: 'slot-c', candidate: 'cmp', pairCell: 'pc-1', pairOrdinal: 1 },
+    ], { comparisonMode: 'reference-paired', referenceCandidateId: 'ref' });
+    const { bundle } = r2BundleV1('r2-b4', plan, [
+      r2EntryV1(plan, { runId: 'run-r', slot: 'slot-r', candidate: 'ref', values: [10] }),
+    ]);
+    expect(bundle).not.toBeNull();
+    const { validation, aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(validation.status).toBe('valid');
+    const comparison = aggregate?.pairedComparisons[0];
+    expect(comparison?.pairs.planned).toBe(1);
+    expect(comparison?.pairs.complete).toBe(0);
+    expect(comparison?.pairs.incomplete).toBe(1);
+    const refCell = aggregate?.environmentCells.find((cell) => cell.candidateId === 'ref');
+    expect(refCell?.metricCells[0]?.maximum).toBe(10);
+    expect(validation.runLedger.find((row) => row.slotId === 'slot-r')?.pairDisposition).toBe('incomplete-pair');
+    expect(validation.runLedger.find((row) => row.slotId === 'slot-c')?.pairDisposition).toBe('incomplete-pair');
+    const incomplete = aggregate?.invalidRuns.incompletePairs[0];
+    expect(incomplete?.pairCellId).toBe('pc-1');
+    expect(incomplete?.presentSlotIds).toEqual(['slot-r']);
+    expect(incomplete?.missingOrInvalidSlotIds).toEqual(['slot-c']);
+    expect(incomplete?.reasonCodes).toContain('candidate-missing-or-invalid');
+  });
+
+  it('B5: an undefined ratio suppresses only the ratio CI across three clusters', () => {
+    const units: R2UnitSpecV1[] = [];
+    const specs: R2RunSpecV1[] = [];
+    for (let block = 1; block <= 3; block += 1) {
+      units.push(
+        { slot: `slot-r${block}`, candidate: 'ref', block: `bb-${block}`, pairCell: `pc-${block}`, pairOrdinal: 1 },
+        { slot: `slot-c${block}`, candidate: 'cmp', block: `bb-${block}`, pairCell: `pc-${block}`, pairOrdinal: 1 },
+      );
+      specs.push(
+        {
+          runId: `run-r${block}`, slot: `slot-r${block}`, candidate: 'ref', block: `bb-${block}`,
+          metric: R2_COUNT_V1, values: [0], dims: [{ key: 'observation-window-id', value: 'window-0' }],
+          capabilities: ['long-tasks'],
+        },
+        {
+          runId: `run-c${block}`, slot: `slot-c${block}`, candidate: 'cmp', block: `bb-${block}`,
+          metric: R2_COUNT_V1, values: [1], dims: [{ key: 'observation-window-id', value: 'window-0' }],
+          capabilities: ['long-tasks'],
+        },
+      );
+    }
+    const plan = r2PlanV1('r2-b5', units, { comparisonMode: 'reference-paired', referenceCandidateId: 'ref' });
+    const { bundle, issues } = r2BundleV1('r2-b5', plan, specs.map((spec) => r2EntryV1(plan, spec)));
+    expect(issues).toEqual([]);
+    const { validation, aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    expect(validation.status).toBe('valid');
+    expect(aggregate?.pairedComparisons.length).toBe(1);
+    const comparison = aggregate?.pairedComparisons.find((entry) => entry.metricRef === R2_COUNT_V1);
+    expect(comparison?.pairs.complete).toBe(3);
+    expect(comparison?.differencePointEstimate).toBe(1);
+    expect(comparison?.differenceInterval.status).toBe('ok');
+    expect(comparison?.differenceInterval.lower).toBe(1);
+    expect(comparison?.differenceInterval.upper).toBe(1);
+    expect(comparison?.ratioInterval.status).toBe('no-data');
+    expect(comparison?.ratioInterval.unit).toBe('ratio');
+  });
+
+  it('B6: difference and ratio use their own declared streams with known answers', () => {
+    const units: R2UnitSpecV1[] = [];
+    const specs: R2RunSpecV1[] = [];
+    for (let block = 1; block <= 3; block += 1) {
+      units.push(
+        { slot: `slot-r${block}`, candidate: 'ref', block: `bb-${block}`, pairCell: `pc-${block}`, pairOrdinal: 1 },
+        { slot: `slot-c${block}`, candidate: 'cmp', block: `bb-${block}`, pairCell: `pc-${block}`, pairOrdinal: 1 },
+      );
+      specs.push(
+        {
+          runId: `run-r${block}`, slot: `slot-r${block}`, candidate: 'ref', block: `bb-${block}`,
+          metric: R2_COUNT_V1, values: [0], dims: [{ key: 'observation-window-id', value: 'window-0' }],
+          capabilities: ['long-tasks'],
+        },
+        {
+          runId: `run-c${block}`, slot: `slot-c${block}`, candidate: 'cmp', block: `bb-${block}`,
+          metric: R2_COUNT_V1, values: [1], dims: [{ key: 'observation-window-id', value: 'window-0' }],
+          capabilities: ['long-tasks'],
+        },
+      );
+    }
+    const plan = r2PlanV1('r2-b6', units, { comparisonMode: 'reference-paired', referenceCandidateId: 'ref' });
+    const { bundle } = r2BundleV1('r2-b6', plan, specs.map((spec) => r2EntryV1(plan, spec)));
+    const { aggregate } = validateAndAggregateBundleV1(bundle ?? (() => {
+      throw new Error('missing bundle');
+    })());
+    const comparison = aggregate?.pairedComparisons.find((entry) => entry.metricRef === R2_COUNT_V1);
+    expect(comparison?.differenceInterval.derivedSeedHex).not.toBe(comparison?.ratioInterval.derivedSeedHex);
+    expect(comparison?.differenceInterval.seedMaterialDigest).not.toBe(comparison?.ratioInterval.seedMaterialDigest);
+    expect(comparison?.differenceInterval.replicateVectorDigest).toBe(
+      'sha256:12d8ed70a040902b24b59ae42eefb205aaabef21414470f2678bf27e8ec1dd85' as Br04Sha256,
+    );
   });
 });

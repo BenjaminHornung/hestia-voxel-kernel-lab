@@ -113,3 +113,25 @@ keine Browser-/Hardware-Benchmarks).
 - Feinere Zeitblock-Tags unterhalb der Iterationsebene werden in v1 als
   ganze Iterationen resampled (BL-01); `pairingKeySuffix` wird
   aufgezeichnet, die Punktschätzer folgen §9.6 auf Run-Scalar-Ebene.
+
+## R2-Fixes (P-BR04-FIX, Audit B1–B6, Evidence `br04-fixes-r2.md`)
+
+- XW-Name-01: einzige versionierte Namensgrenze Registry↔Samples
+  (`memory-kind`→`memoryKind`, `observation-window-id`→`observationWindowId`,
+  `stale-reason`→`staleReason`, `drop-kind`→`dropKind`,
+  `checkpoint-id`→`checkpointId`); BR01-Verträge unverändert.
+- Kompatibilitätsschlüssel für absolute Zellen und Paarung:
+  Umgebung, Phase, Kandidat, Szenario + Version, Workload-Seed,
+  Source-Tree/Build/Fixture, Umgebungs-Fingerprint, metrische
+  Tag-Signatur aus `groupByTags`. Die Hardwarezelle allein genügt nicht.
+- Crosswalk projiziert den dokument-eingebetteten Run (kanonische
+  Gleichheit, sonst `RUN_DOCUMENT_MISMATCH`) und prüft fail-closed:
+  Run-/Sample-Bindung, Szenario, Eligibility, Statistikpolicy-Konstanten.
+- Paarung plan-first über `(balanceBlockId, pairCellId, pairOrdinal)`;
+  Missing-Slots → `incomplete-pair` mit Ursachen, Gegenlauf deskriptiv,
+  kein Ersatzpaaren; Dispositionen per Tripel, nicht per `pairCellId`.
+- Difference/Ratio getrennt (eigene Streams, eigene Status); Ratio-Unit
+  `ratio`; `eligible-measured` nur bei messfähigem Bestand;
+  ECDF/`run-dotplot`/`ci-forest` deklarieren `includesAllValidPoints: false`.
+- `aggregatorSourceDigest` ist ein Methoden-Label-Hash (kein Byte-Hash);
+  der Umgebungs-Fingerprint bindet den vollen Schlüssel.

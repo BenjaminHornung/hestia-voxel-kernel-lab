@@ -50,7 +50,8 @@ export type Br04PopulationQualificationV1 =
 
 export type Br04PerformanceClaimEligibilityV1 =
   | 'eligible-measured'
-  | 'ineligible-synthetic-fixture';
+  | 'ineligible-synthetic-fixture'
+  | 'ineligible-no-valid-population';
 
 export interface Br04ContractIssueV1 {
   readonly severity: 'error' | 'warning' | 'info';
@@ -157,6 +158,22 @@ export interface Br04RunProjectionV1 {
   readonly browserProcessId: string;
   readonly candidateId: string;
   readonly phase: Br04Phase;
+  /**
+   * Compatibility key (R2, report sections 6.1-6.2): the BR03-planned
+   * scenario binding plus the workload seed. Absolute cells and paired
+   * comparisons must separate on these boundaries; the hardware cell
+   * alone is not a complete experimental key.
+   */
+  readonly scenarioId: string;
+  readonly scenarioVersion: number;
+  readonly workloadSeed: number;
+  /**
+   * Content digest of the full frozen BR01 environment manifest
+   * (browser, os, cpu, gpu, display, power, runtime state, capabilities).
+   * Part of the compatibility key; capabilities stay separately visible
+   * through metric eligibility.
+   */
+  readonly environmentFingerprint: Br04Sha256;
   readonly measurementEligible: boolean;
   readonly declaredDisposition: Br04RunDispositionV1;
   readonly declaredReasonCode: string | null;
@@ -291,6 +308,7 @@ export interface Br04PairedComparisonV1 {  readonly schemaVersion: 1;
   };
   readonly pairValues: readonly {
     readonly pairCellId: string;
+    readonly pairOrdinal: number;
     readonly balanceBlockId: string;
     readonly bootstrapClusterId: string;
     readonly referenceValue: number;
@@ -371,6 +389,9 @@ export interface Br04InvalidRunSummaryV1 {
   readonly missingSlots: readonly string[];
   readonly incompletePairs: readonly {
     readonly pairCellId: string;
+    /** Full planned pair identity (R2): pairCellId alone can collide across blocks. */
+    readonly balanceBlockId: string;
+    readonly pairOrdinal: number;
     readonly presentSlotIds: readonly string[];
     readonly missingOrInvalidSlotIds: readonly string[];
     readonly reasonCodes: readonly string[];
@@ -478,7 +499,12 @@ export interface Br04AllowedChartSpecV1 {
   readonly chartId: string;
   readonly kind: 'ecdf' | 'run-dotplot' | 'paired-ratio' | 'ci-forest' | 'time-series';
   readonly sourceJsonPointers: readonly string[];
-  readonly includesAllValidPoints: true;
+  /**
+   * True only when the referenced sources actually carry every valid
+   * point (R2: an ECDF declared from three pooled quantiles plus maximum
+   * is not reconstructible and must say false).
+   */
+  readonly includesAllValidPoints: boolean;
   readonly showsInvalidCount: true;
   readonly truncatedAxis: false;
   readonly declaresPhase: true;

@@ -5,9 +5,18 @@
  * aggregation contract only.
  */
 import { canonicalBundleBodyDigestV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
+import { crosswalkToBundleV1 } from '../../../../src/benchmark/aggregate/br04CrosswalkV1';
 import { sha256OfCanonicalV1, sha256OfUtf8V1 } from '../../../../src/benchmark/aggregate/br04StatisticsV1';
+import { BENCHMARK_METRIC_REGISTRY_V1 } from '../../../../src/benchmark/contracts';
+import type {
+  BenchmarkRunDocumentV1,
+  BenchmarkRunV1,
+  BenchmarkValidationReceiptV1,
+} from '../../../../src/benchmark/contracts';
+import type { BuiltRunPlanV1 } from '../../../../src/benchmark/runner/contractsV1';
 import type {
   Br04AggregateInputBundleV1,
+  Br04BootstrapPolicyV1,
   Br04InfrastructureInvalidationRuleV1,
   Br04MetricDefinitionV1,
   Br04MetricRef,
@@ -103,6 +112,9 @@ export interface Br04TestRunSpecV1 {
   readonly candidateId?: string;
   readonly phase?: Br04Phase;
   readonly environmentCellId?: string;
+  readonly scenarioId?: string;
+  readonly workloadSeed?: number;
+  readonly environmentFingerprint?: Br04Sha256;
   readonly disposition?: Br04RunDispositionV1;
   readonly reasonCode?: string | null;
   readonly ruleId?: string | null;
@@ -121,6 +133,8 @@ export interface Br04TestSlotSpecV1 {
   readonly bootstrapClusterId?: string;
   readonly environmentCellId?: string;
   readonly scenarioId?: string;
+  readonly scenarioVersion?: number;
+  readonly workloadSeed?: number;
   readonly phase?: Br04Phase;
 }
 
@@ -169,6 +183,7 @@ export function buildTestBundleV1(spec: Br04TestBundleSpecV1): Br04AggregateInpu
   const envelopes = runSpecs.map((run) => {
     const rawByteDigest = fakeDigestV1(`raw:${run.runId}`);
     const canonicalContentDigest = fakeDigestV1(`canonical:${run.runId}`);
+    const slot = slotSpecs.find((entry) => entry.slotId === run.slotId);
     const receipt = {
       receiptVersion: 1 as const,
       validatorId: 'br01-validator-v1',
@@ -202,6 +217,10 @@ export function buildTestBundleV1(spec: Br04TestBundleSpecV1): Br04AggregateInpu
         browserProcessId: run.processId ?? `process-${run.slotId}`,
         candidateId: run.candidateId ?? slotSpecs.find((slot) => slot.slotId === run.slotId)?.candidateId ?? 'candidate-a',
         phase: run.phase ?? 'measurement',
+        scenarioId: run.scenarioId ?? slot?.scenarioId ?? 'mesh-density-sweep-v1',
+        scenarioVersion: 1,
+        workloadSeed: run.workloadSeed ?? slot?.workloadSeed ?? 7,
+        environmentFingerprint: run.environmentFingerprint ?? fakeDigestV1('env:default'),
         measurementEligible: run.eligible ?? true,
         declaredDisposition: run.disposition ?? 'valid',
         declaredReasonCode: run.reasonCode ?? null,
@@ -255,9 +274,9 @@ export function buildTestBundleV1(spec: Br04TestBundleSpecV1): Br04AggregateInpu
         referenceCandidateId: spec.referenceCandidateId ?? null,
         environmentCellId: slot.environmentCellId ?? 'cell-h1',
         scenarioId: slot.scenarioId ?? 'mesh-density-sweep-v1',
-        scenarioVersion: 1,
+        scenarioVersion: slot.scenarioVersion ?? 1,
         phase: slot.phase ?? 'measurement',
-        workloadSeed: 7,
+        workloadSeed: slot.workloadSeed ?? 7,
         requiredCapabilities: [],
       })),
       invalidationRegistry: spec.rules ?? [],
@@ -296,4 +315,209 @@ export function rangeV1(from: number, to: number): number[] {
 
 export function repeatV1(value: number, count: number): number[] {
   return Array.from({ length: count }, () => value);
+}
+
+/**
+ * R2 contract-fixture builders: genuine frozen BR01/BR03 contract shapes
+ * (real BENCHMARK_METRIC_REGISTRY_V1, real scenario ids, kebab-case
+ * dimensions, document-embedded runs) for Crosswalk -> Aggregator -> Report
+ * regressions. Runs are synthetic (fixed SHAs) and stay
+ * ineligible-synthetic-fixture unless a test opts out.
+ */
+export const R2_COMMIT_V1 = 'b'.repeat(40);
+export const R2_BUILD_V1 = fakeDigestV1('r2-build');
+export const R2_FIXTURE_V1 = fakeDigestV1('r2-fixture');
+export const R2_BINDING_V1 = fakeDigestV1('r2-binding');
+export const R2_CHUNK_V1 = 'chunk.mesh.cpu.ms@1' as Br04MetricRef;
+export const R2_MEMORY_V1 = 'memory.bytes@1' as Br04MetricRef;
+export const R2_COUNT_V1 = 'longtask.count@1' as Br04MetricRef;
+
+export const R2_POLICY_V1: Br04BootstrapPolicyV1 = {
+  method: 'hierarchical-percentile-v1',
+  confidenceLevel: 0.95,
+  resamples: 10000,
+  minimumTopLevelClusters: 3,
+  masterSeedHex: BR04_SYNTHETIC_SEED_00_V1,
+  seedDerivation: 'sha256-bound-xoshiro128ss-v1',
+  prng: 'xoshiro128**-32-v1',
+  indexSampling: 'uint32-rejection-v1',
+};
+
+export interface R2UnitSpecV1 {
+  readonly slot: string;
+  readonly candidate: string;
+  readonly scenario?: string;
+  readonly seed?: number;
+  readonly block?: string;
+  readonly pairCell?: string | null;
+  readonly pairOrdinal?: number | null;
+}
+
+export interface R2RunSpecV1 {
+  readonly runId: string;
+  readonly slot: string;
+  readonly candidate: string;
+  readonly block?: string;
+  readonly scenario?: string;
+  readonly metric?: Br04MetricRef;
+  readonly unit?: string;
+  readonly values: readonly number[];
+  readonly dims?: readonly { readonly key: string; readonly value: string }[];
+  readonly sampleBinding?: Br04Sha256 | null;
+  readonly capabilities?: readonly string[];
+  readonly validity?: { status: 'valid' } | { status: 'invalid'; reasons: { code: string; detail: string; phase: string }[] };
+  readonly eligible?: boolean;
+  readonly eligibilityReasons?: { code: string; detail: string; phase: string }[];
+}
+
+export interface R2CrosswalkEntryV1 {
+  readonly document: BenchmarkRunDocumentV1;
+  readonly run: BenchmarkRunV1;
+  readonly receipt: BenchmarkValidationReceiptV1;
+}
+
+export function r2PlanV1(
+  planId: string,
+  units: readonly R2UnitSpecV1[],
+  options?: {
+    comparisonMode?: 'reference-paired' | 'unpaired-only';
+    referenceCandidateId?: string | null;
+    synthetic?: boolean;
+  },
+): BuiltRunPlanV1 {
+  return {
+    runPlanId: planId,
+    runPlanSha256: fakeDigestV1(`r2-plan:${planId}`),
+    core: {
+      expectedSourceCommitSha: R2_COMMIT_V1,
+      expectedBuildSha256: R2_BUILD_V1,
+      fixtureContractId: 'fixture-r2',
+      fixtureSemanticSha256: R2_FIXTURE_V1,
+      syntheticHardwareProfile: options?.synthetic ?? true,
+      comparisonMode: options?.comparisonMode ?? 'unpaired-only',
+      referenceCandidateId: options?.referenceCandidateId ?? null,
+      orderSeed: 7,
+      processUnits: units.map((spec) => ({
+        processOrdinal: 0,
+        processContainer: 'warm-measurement',
+        scenarioId: spec.scenario ?? 'mesh-density-sweep-v1',
+        scenarioParameters: [{ key: 'seed', value: spec.seed ?? 7 }],
+        candidateId: spec.candidate,
+        comparisonArm: 'unpaired',
+        balanceBlockId: spec.block ?? 'bb-1',
+        rowOrdinal: 0,
+        sequencePosition: 0,
+        measurementIterations: 1,
+        measurementEligible: false,
+        freshBrowserProcess: true,
+        freshProfile: true,
+        ids: {
+          slotId: spec.slot,
+          browserProcessId: `process-${spec.slot}`,
+          bootstrapClusterId: `cluster-${spec.slot}`,
+          pairCellId: spec.pairCell ?? 'pc-x',
+          pairOrdinal: spec.pairOrdinal ?? 1,
+          ownership: {
+            slotId: 'BR03', browserProcessId: 'BR03', bootstrapClusterId: 'BR03',
+            pairCellId: 'BR03', pairOrdinal: 'BR03',
+          },
+        },
+      })),
+    },
+  } as unknown as BuiltRunPlanV1;
+}
+
+export function r2EntryV1(
+  plan: BuiltRunPlanV1,
+  spec: R2RunSpecV1,
+  mutateRun?: (run: Record<string, unknown>) => void,
+): R2CrosswalkEntryV1 {
+  const metric = spec.metric ?? R2_CHUNK_V1;
+  const unitValue = spec.unit ?? (metric === R2_MEMORY_V1 ? 'bytes' : metric === R2_COUNT_V1 ? 'count' : 'ms');
+  const run = {
+    runId: spec.runId,
+    ids: { slotId: spec.slot, bootstrapClusterId: `cluster-${spec.slot}` },
+    hardwareCellId: 'cell-h1',
+    browserProcessId: `process-${spec.slot}`,
+    execution: {
+      order: { candidateId: spec.candidate, blockId: spec.block ?? 'bb-1' },
+      phase: 'measurement',
+      validity: spec.validity ?? { status: 'valid' },
+    },
+    environment: {
+      capabilities: (spec.capabilities ?? []).map((id) => ({
+        id, value: { status: 'observed', value: true },
+      })),
+    },
+    iterations: [{
+      iterationId: `iter-${spec.runId}`,
+      phase: 'measurement',
+      samples: spec.values.map((value, index) => ({
+        sampleId: `sample-${index}`,
+        phase: 'measurement',
+        metricRef: metric,
+        unit: unitValue,
+        result: { status: 'valid', value },
+        dimensions: [...(spec.dims ?? [])],
+        runBindingSha256: spec.sampleBinding === undefined ? R2_BINDING_V1 : spec.sampleBinding,
+      })),
+    }],
+    source: {
+      repositoryUrl: 'BenjaminHornung/hestia-voxel-kernel-lab',
+      commitTreeSha: R2_COMMIT_V1,
+      commitSha: R2_COMMIT_V1,
+      build: { sha256: R2_BUILD_V1 },
+      fixture: {
+        id: 'fixture-r2',
+        version: 1,
+        semanticSha256: { status: 'observed', value: R2_FIXTURE_V1 },
+        sourceFileSetSha256: { status: 'observed', value: R2_FIXTURE_V1 },
+      },
+    },
+    scenario: { id: spec.scenario ?? 'mesh-density-sweep-v1', version: 1 },
+    measurementEligible: spec.eligible ?? true,
+    measurementEligibilityReasons: spec.eligibilityReasons ?? [],
+    runBindingSha256: R2_BINDING_V1,
+  } as unknown as BenchmarkRunV1;
+  const document = {
+    browserProcesses: [{ runs: [run], ids: { bootstrapClusterId: `cluster-${spec.slot}` } }],
+  } as unknown as BenchmarkRunDocumentV1;
+  if (mutateRun !== undefined) mutateRun(run as unknown as Record<string, unknown>);
+  const receipt = {
+    status: 'schema-and-integrity-valid',
+    runId: spec.runId,
+    slotId: spec.slot,
+    benchmarkRunRawByteSha256: fakeDigestV1(`r2-raw:${spec.runId}`),
+    benchmarkRunCanonicalSha256: fakeDigestV1(`r2-canonical:${spec.runId}`),
+    planDigest: plan.runPlanSha256,
+    metricRegistrySha256: BENCHMARK_METRIC_REGISTRY_V1.metricRegistrySha256,
+    runBindingSha256: R2_BINDING_V1,
+    validator: { id: 'br01-validator-v1', sourceFileSetSha256: fakeDigestV1('r2-validator') },
+    schemaVersion: 'benchmark-validation-receipt-v1',
+    schemaSetSha256: fakeDigestV1('r2-schema'),
+  } as unknown as BenchmarkValidationReceiptV1;
+  return { document, run, receipt };
+}
+
+export function r2BundleV1(
+  bundleId: string,
+  plan: BuiltRunPlanV1,
+  entries: readonly R2CrosswalkEntryV1[],
+  policy: Br04BootstrapPolicyV1 = R2_POLICY_V1,
+) {
+  return crosswalkToBundleV1({
+    acceptedBr03Sha: R2_COMMIT_V1,
+    bundleId,
+    reportAsOfUtc: '2026-09-07T00:00:00.000Z',
+    plan,
+    registry: BENCHMARK_METRIC_REGISTRY_V1,
+    bootstrapPolicy: policy,
+    runs: entries.map((entry) => ({
+      document: entry.document,
+      run: entry.run,
+      receipt: entry.receipt,
+      rawByteDigest: entry.receipt.benchmarkRunRawByteSha256 as string as Br04Sha256,
+      canonicalContentDigest: entry.receipt.benchmarkRunCanonicalSha256 as string as Br04Sha256,
+    })),
+  });
 }

@@ -125,14 +125,17 @@ export function buildReportModelV1(aggregate: Br04BenchmarkAggregateV1): Br04Mar
           chartId: `ecdf-${cellIndex}-${metricIndex}`,
           kind: 'ecdf',
           sourceJsonPointers: [`${base}/descriptivePooledQuantiles`, `${base}/maximum`],
-          includesAllValidPoints: true, showsInvalidCount: true,
+          // R2: three pooled quantiles plus maximum do not reconstruct a
+          // full empirical distribution function.
+          includesAllValidPoints: false, showsInvalidCount: true,
           truncatedAxis: false, declaresPhase: true,
         },
         {
           chartId: `run-dotplot-${cellIndex}-${metricIndex}`,
           kind: 'run-dotplot',
           sourceJsonPointers: [`${base}/perRunSummaries`],
-          includesAllValidPoints: true, showsInvalidCount: true,
+          // R2: per-run summaries aggregate events; they are not the raw points.
+          includesAllValidPoints: false, showsInvalidCount: true,
           truncatedAxis: false, declaresPhase: true,
         },
       );
@@ -155,22 +158,23 @@ export function buildReportModelV1(aggregate: Br04BenchmarkAggregateV1): Br04Mar
       decision: 'null',
       pointer: `${base}/ratioPointEstimate`,
     });
-    chartSpecs.push(
-      {
-        chartId: `paired-ratio-${comparisonIndex}`,
-        kind: 'paired-ratio',
-        sourceJsonPointers: [`${base}/pairValues`, `${base}/ratioPointEstimate`],
-        includesAllValidPoints: true, showsInvalidCount: true,
-        truncatedAxis: false, declaresPhase: true,
-      },
-      {
-        chartId: `ci-forest-${comparisonIndex}`,
-        kind: 'ci-forest',
-        sourceJsonPointers: [`${base}/differenceInterval`, `${base}/ratioInterval`],
-        includesAllValidPoints: true, showsInvalidCount: true,
-        truncatedAxis: false, declaresPhase: true,
-      },
-    );
+      chartSpecs.push(
+        {
+          chartId: `paired-ratio-${comparisonIndex}`,
+          kind: 'paired-ratio',
+          sourceJsonPointers: [`${base}/pairValues`, `${base}/ratioPointEstimate`],
+          includesAllValidPoints: true, showsInvalidCount: true,
+          truncatedAxis: false, declaresPhase: true,
+        },
+        {
+          chartId: `ci-forest-${comparisonIndex}`,
+          kind: 'ci-forest',
+          sourceJsonPointers: [`${base}/differenceInterval`, `${base}/ratioInterval`],
+          // R2: interval endpoints alone are not the replicate points.
+          includesAllValidPoints: false, showsInvalidCount: true,
+          truncatedAxis: false, declaresPhase: true,
+        },
+      );
   });
   const ledgerRows = aggregate.validation.runLedger.map((row, index) => ({
     slot: row.slotId,
@@ -336,6 +340,12 @@ export function renderMarkdownReportV1(model: Br04MarkdownReportModelV1): string
     lines.push(
       '> Synthetic fixture report: numeric values verify the aggregation contract only.',
       '> All numeric performance claims are refused for synthetic fixtures.',
+      '',
+    );
+  } else if (model.performanceClaimEligibility === 'ineligible-no-valid-population') {
+    lines.push(
+      '> No valid measured population: numeric values verify the aggregation contract only.',
+      '> All numeric performance claims are refused without a measured population.',
       '',
     );
   }
