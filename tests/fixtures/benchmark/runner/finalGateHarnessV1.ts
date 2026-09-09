@@ -30,6 +30,20 @@ const allowedPaths = new Set([
   'tests/unit/benchmark/runner/invocation-warmup-v1.test.ts', 'tests/unit/benchmark/runner/lifecycle-smoke-v1.test.ts', 'tests/unit/benchmark/runner/process-supervisors-v1.test.ts',
   'tests/unit/benchmark/runner/process-unit-result-ledger-v1.test.ts', 'tests/unit/benchmark/runner/run-assembly-receipt-v1.test.ts', 'tests/unit/benchmark/runner/run-plan-v1.test.ts',
   'tests/unit/benchmark/runner/scenario-driver-registry-v1.test.ts',
+  'docs/benchmark/aggregator-v1.md', 'docs/benchmark/br04-fixes-r2.md', 'docs/benchmark/br04-fixes-r2.summary.json',
+  'docs/benchmark/br04-fixes-r3.md', 'docs/benchmark/br04-fixes-r3.summary.json', 'docs/benchmark/br04-fixes-r4.md',
+  'docs/benchmark/br04-fixes-r4.summary.json', 'src/benchmark/aggregate/br04AggregateV1.ts', 'src/benchmark/aggregate/br04ContractV1.ts',
+  'src/benchmark/aggregate/br04CrosswalkV1.ts', 'src/benchmark/aggregate/br04StatisticsV1.ts', 'src/benchmark/reports/br04MarkdownReportV1.ts',
+  'tests/fixtures/benchmark/aggregate/br04FixtureBuildersV1.ts', 'tests/fixtures/benchmark/aggregate/br04GoldenDigestsV1.ts',
+  'tests/unit/benchmark/aggregate/br04-crosswalk.test.ts', 'tests/unit/benchmark/aggregate/br04-effect-decision.test.ts',
+  'tests/unit/benchmark/aggregate/br04-hierarchy-bootstrap.test.ts', 'tests/unit/benchmark/aggregate/br04-markdown-report.test.ts',
+  'tests/unit/benchmark/aggregate/br04-negative-golden.test.ts', 'tests/unit/benchmark/aggregate/br04-paired-golden.test.ts',
+  'tests/unit/benchmark/aggregate/br04-phase-capability-golden.test.ts', 'tests/unit/benchmark/aggregate/br04-population-qualification.test.ts',
+  'tests/unit/benchmark/aggregate/br04-properties.test.ts', 'tests/unit/benchmark/aggregate/br04-quantile-golden.test.ts',
+  'tests/unit/benchmark/aggregate/br04-validation-ledger.test.ts', 'tests/unit/benchmark/aggregate/br04-ratio-minimum.test.ts',
+  'tests/unit/benchmark/aggregate/br04-ratio-seed-golden.test.ts', 'tests/unit/benchmark/aggregate/br04-receipt-binding.test.ts',
+  'tests/unit/benchmark/aggregate/br04-same-run-partition.test.ts', 'src/voxel/sparseChunkWorld.ts', 'tests/unit/chunk-world.test.ts',
+  'docs/benchmark/gate-scope-p01p02.md', 'docs/benchmark/gate-scope-p01p02.summary.json',
 ]);
 
 async function nativeCandidateGuards(): Promise<string> {
