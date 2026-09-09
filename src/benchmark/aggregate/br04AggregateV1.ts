@@ -109,6 +109,7 @@ function metricEligibilityForV1(
   if (base === 'provenance-mismatch') return 'provenance-mismatch';
   if (base === 'candidate-failure') return 'candidate-failure';
   if (base === 'trace-only') return 'trace-only';
+  if (!metric.allowedPhases.includes(run.phase)) return 'trace-only';
   if (base === 'infrastructure-invalid') {
     if (run.declaredReasonCode === 'gpu-disjoint' && metric.metricId === 'gpu.time.ms' && metric.metricVersion === 1) {
       return 'infrastructure-invalid';
@@ -123,7 +124,6 @@ function metricEligibilityForV1(
     return missing.length === 0 ? 'valid' : 'capability-unsupported';
   }
   if (!run.measurementEligible) return 'trace-only';
-  if (!metric.allowedPhases.includes(run.phase)) return 'trace-only';
   const missingCapability = metric.capabilityRequirement.filter(
     (required) => run.capabilities[required] !== 'supported',
   );

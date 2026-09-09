@@ -98,6 +98,76 @@ describe('BR04 phase and capability goldens', () => {
     expect(serialised).not.toContain('"gpu.time.ms@1","unit":"ms","nProcesses"');
   });
 
+  it('B02 applies phase eligibility before capability and GPU-disjoint salvage', () => {
+    const gpuDisjointRule = {
+      ruleId: 'gpu-disjoint', version: 1, scope: 'whole-run' as const,
+      detectionStage: 'during-run-independent-monitor' as const,
+      machineCheckablePredicateId: 'gpu-disjoint-v1',
+      candidateIndependent: true as const, valueBlind: true as const,
+      retryAllowed: false, maxRetries: 0 as const,
+    };
+    const cases = [
+      {
+        name: 'allowed capability salvage', phase: 'measurement' as const,
+        disposition: 'capability-unsupported' as const,
+        reasonCode: 'capability-unsupported:timestamp-query', ruleId: null,
+        capabilities: { 'timestamp-query': 'unsupported' as const },
+        expectedChunk: 'valid' as const, expectedGpu: 'capability-unsupported' as const,
+        hasChunkCell: true, hasGpuCell: false,
+      },
+      {
+        name: 'disallowed capability salvage', phase: 'trace' as const,
+        disposition: 'capability-unsupported' as const,
+        reasonCode: 'capability-unsupported:timestamp-query', ruleId: null,
+        capabilities: { 'timestamp-query': 'unsupported' as const },
+        expectedChunk: 'trace-only' as const, expectedGpu: 'trace-only' as const,
+        hasChunkCell: false, hasGpuCell: false,
+      },
+      {
+        name: 'allowed GPU-disjoint salvage', phase: 'measurement' as const,
+        disposition: 'infrastructure-invalid' as const,
+        reasonCode: 'gpu-disjoint', ruleId: 'gpu-disjoint',
+        capabilities: { 'timestamp-query': 'supported' as const }, expectedChunk: 'valid' as const,
+        expectedGpu: 'infrastructure-invalid' as const,
+        hasChunkCell: true, hasGpuCell: false,
+      },
+      {
+        name: 'disallowed GPU-disjoint salvage', phase: 'trace' as const,
+        disposition: 'infrastructure-invalid' as const,
+        reasonCode: 'gpu-disjoint', ruleId: 'gpu-disjoint',
+        capabilities: { 'timestamp-query': 'supported' as const }, expectedChunk: 'trace-only' as const,
+        expectedGpu: 'trace-only' as const,
+        hasChunkCell: false, hasGpuCell: false,
+      },
+    ];
+    for (const testCase of cases) {
+      const { validation, aggregate } = validateAndAggregateBundleV1(buildTestBundleV1({
+        bundleId: `b02-${testCase.name.replaceAll(' ', '-')}`,
+        metrics: [chunkMetricV1(), gpuMetricV1()],
+        rules: testCase.ruleId === null ? [] : [gpuDisjointRule],
+        slots: [{ slotId: 'slot-a', candidateId: 'candidate-a', phase: testCase.phase }],
+        runs: [{
+          runId: 'run-a', slotId: 'slot-a', phase: testCase.phase,
+          disposition: testCase.disposition, reasonCode: testCase.reasonCode, ruleId: testCase.ruleId,
+          capabilities: testCase.capabilities,
+          iterations: [{
+            iterationId: 'iter-a', samples: [
+              { metric: CHUNK, value: 10 },
+              { metric: GPU, value: 12 },
+            ],
+          }],
+        }],
+      }));
+      expect(validation.status, testCase.name).toBe('valid');
+      const row = validation.runLedger.find((entry) => entry.slotId === 'slot-a');
+      expect(row?.metricEligibility[CHUNK], testCase.name).toBe(testCase.expectedChunk);
+      expect(row?.metricEligibility[GPU], testCase.name).toBe(testCase.expectedGpu);
+      const metricRefs = new Set((aggregate?.environmentCells ?? []).flatMap((cell) => cell.metricCells.map((metric) => metric.metricRef)));
+      expect(metricRefs.has(CHUNK), testCase.name).toBe(testCase.hasChunkCell);
+      expect(metricRefs.has(GPU), testCase.name).toBe(testCase.hasGpuCell);
+    }
+  });
+
   it('I01 infrastructure-invalid run retained: valid summary has one run, ledger complete', () => {
     const rule = {
       ruleId: 'host-suspend-resume', version: 1, scope: 'whole-run' as const,

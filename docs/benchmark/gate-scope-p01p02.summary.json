@@ -1,0 +1,43 @@
+{
+  "package": "P-LAB-P01P02",
+  "baseSha": "0937844d9576b3819f9e5d6b5678168eb09a4515",
+  "frozenGateReference": "e88978cbcd5504789a804fb25e353e08aaec1bd6",
+  "p01": {
+    "status": "closed",
+    "finding": "B01",
+    "preFix": {
+      "nativePathCount": 50,
+      "unitPathCount": 81,
+      "onlyInNative": 0,
+      "onlyInUnit": 31,
+      "controlPathRejected": true,
+      "reproduction": "Native/unit set comparison failed before synchronization."
+    },
+    "fix": "Synchronized the native and unit exact cumulative path sets and added a drift regression with rejected controls.",
+    "tests": [
+      "tests/unit/benchmark/runner/br03-gate-allowlist-v1.test.ts"
+    ],
+    "legitimacy": "All 31 inherited paths are contained in the e88978c... to 0937844d... merge diff and correspond to owner-approved BR04/L1 evidence, implementation, fixture, or regression files."
+  },
+  "p02": {
+    "status": "closed",
+    "finding": "B02",
+    "preFix": {
+      "tracePairComplete": 1,
+      "tracePairExpectedComplete": 0,
+      "matrixFailures": 1,
+      "reproduction": "Trace-phase capability salvage published a CPU absolute cell and a complete numeric pair before the phase gate."
+    },
+    "fix": "Applied allowedPhases before capability-unsupported and gpu-disjoint salvage, retaining allowed CPU salvage and removing the duplicate later phase check.",
+    "tests": [
+      "tests/unit/benchmark/aggregate/br04-paired-golden.test.ts",
+      "tests/unit/benchmark/aggregate/br04-phase-capability-golden.test.ts"
+    ],
+    "matrix": [
+      "measurement x capability-unsupported: CPU valid, GPU capability-unsupported",
+      "trace x capability-unsupported: CPU and GPU trace-only",
+      "measurement x gpu-disjoint: CPU valid, GPU infrastructure-invalid",
+      "trace x gpu-disjoint: CPU and GPU trace-only"
+    ]
+  }
+}

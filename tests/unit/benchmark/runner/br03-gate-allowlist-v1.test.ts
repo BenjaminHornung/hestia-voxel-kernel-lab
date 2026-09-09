@@ -43,6 +43,7 @@ const ALLOWED_PATHS = new Set([
   'tests/unit/benchmark/aggregate/br04-ratio-minimum.test.ts', 'tests/unit/benchmark/aggregate/br04-ratio-seed-golden.test.ts',
   'tests/unit/benchmark/aggregate/br04-receipt-binding.test.ts', 'tests/unit/benchmark/aggregate/br04-same-run-partition.test.ts',
   'src/voxel/sparseChunkWorld.ts', 'tests/unit/chunk-world.test.ts',
+  'docs/benchmark/gate-scope-p01p02.md', 'docs/benchmark/gate-scope-p01p02.summary.json',
 ]);
 
 function git(args: readonly string[]): string {
@@ -58,6 +59,12 @@ function git(args: readonly string[]): string {
     throw new Error('Bounded BR03 Git allowlist inspection failed.');
   }
   return result.stdout;
+}
+
+function extractAllowedPaths(source: string): Set<string> {
+  const block = source.match(/(?:allowedPaths|ALLOWED_PATHS)\s*=\s*new Set\(\[([\s\S]*?)\]\)/u)?.[1];
+  if (block === undefined) throw new Error('Could not locate a gate allowlist literal.');
+  return new Set([...block.matchAll(/'([^']+)'/gu)].map((match) => match[1] as string));
 }
 
 describe('BR03 cumulative gate allowlist', () => {
@@ -78,4 +85,14 @@ describe('BR03 cumulative gate allowlist', () => {
     expect({ dependencies: candidatePackage.dependencies, devDependencies: candidatePackage.devDependencies })
       .toEqual({ dependencies: acceptedPackage.dependencies, devDependencies: acceptedPackage.devDependencies });
   }, 30_000);
+
+  it('keeps the native and unit cumulative allowlists synchronized and selective', () => {
+    const nativeSource = readFileSync('tests/fixtures/benchmark/runner/finalGateHarnessV1.ts', 'utf8');
+    const nativePaths = extractAllowedPaths(nativeSource);
+    expect(nativePaths).toEqual(ALLOWED_PATHS);
+    for (const controlPath of ['src/benchmark/contracts/unapproved.ts', 'src/anything-new.ts']) {
+      expect(nativePaths.has(controlPath)).toBe(false);
+      expect(ALLOWED_PATHS.has(controlPath)).toBe(false);
+    }
+  });
 });

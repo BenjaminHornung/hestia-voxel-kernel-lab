@@ -188,6 +188,41 @@ describe('BR04 paired goldens', () => {
     expect(comparison?.pairs.complete).toBe(0);
     expect(comparison?.pairs.incomplete).toBe(2);
   });
+
+  it('B02 trace-phase pair is never a complete numeric CPU comparison after capability salvage', () => {
+    const { validation, aggregate } = validateAndAggregateBundleV1(buildTestBundleV1({
+      bundleId: 'b02-trace-pair',
+      comparisonMode: 'reference-paired',
+      referenceCandidateId: 'ref',
+      metrics: [chunkMetricV1()],
+      slots: [
+        { slotId: 'slot-r', candidateId: 'ref', phase: 'trace', pairCellId: 'pc-1', pairOrdinal: 1, balanceBlockId: 'bb-1', bootstrapClusterId: 'cluster-r' },
+        { slotId: 'slot-c', candidateId: 'cmp', phase: 'trace', pairCellId: 'pc-1', pairOrdinal: 1, balanceBlockId: 'bb-1', bootstrapClusterId: 'cluster-c' },
+      ],
+      runs: [
+        {
+          runId: 'run-r', slotId: 'slot-r', processId: 'process-r', candidateId: 'ref', phase: 'trace',
+          disposition: 'capability-unsupported', reasonCode: 'capability-unsupported:timestamp-query',
+          capabilities: { 'timestamp-query': 'unsupported' },
+          iterations: [iterationV1('iter-r', CHUNK, [10])],
+        },
+        {
+          runId: 'run-c', slotId: 'slot-c', processId: 'process-c', candidateId: 'cmp', phase: 'trace',
+          disposition: 'capability-unsupported', reasonCode: 'capability-unsupported:timestamp-query',
+          capabilities: { 'timestamp-query': 'unsupported' },
+          iterations: [iterationV1('iter-c', CHUNK, [12])],
+        },
+      ],
+    }));
+    expect(validation.status).toBe('valid');
+    const comparison = aggregate?.pairedComparisons[0];
+    expect(comparison?.pairs.complete).toBe(0);
+    expect(comparison?.pairs.incomplete).toBe(1);
+    expect(comparison?.pairValues).toEqual([]);
+    expect(comparison?.differencePointEstimate).toBeNull();
+    expect(comparison?.ratioPointEstimate).toBeNull();
+    expect(validation.runLedger.every((row) => row.metricEligibility[CHUNK] === 'trace-only')).toBe(true);
+  });
 });
 
 describe('BR04 R2 paired regressions (B2 pairing, B4-B6)', () => {
