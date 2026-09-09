@@ -6,20 +6,26 @@
  * - Hand-built bundles with a wrong manifestDigest, dirty=true as valid,
  *   candidate-vs-slot conflict, wrong validator digest, or resamples=7
  *   must be refused by the public bundle validator.
+ * - P08 separates stale plan/flag tampering, which is fail-closed, from a
+ *   fully self-consistent metadata re-forgery, which needs an external trust
+ *   root and is therefore an explicitly documented boundary.
  */
 import { describe, expect, it } from 'vitest';
 import { canonicalBundleBodyDigestV1, validateAndAggregateBundleV1 } from '../../../../src/benchmark/aggregate/br04AggregateV1';
 import { sha256OfCanonicalV1 } from '../../../../src/benchmark/aggregate/br04StatisticsV1';
 import type { Br04AggregateInputBundleV1 } from '../../../../src/benchmark/aggregate/br04ContractV1';
 import type { BenchmarkRunV1 } from '../../../../src/benchmark/contracts';
+import { buildRunPlanV1, verifyBuiltRunPlanV1 } from '../../../../src/benchmark/runner/plan/runPlanV1';
 import {
   buildTestBundleV1,
   chunkMetricV1,
+  fakeDigestV1,
   iterationV1,
   r2BundleV1,
   r2EntryV1,
   r2PlanV1,
 } from '../../../fixtures/benchmark/aggregate/br04FixtureBuildersV1';
+import { runPlanInputV1 } from '../../../fixtures/benchmark/runner/runPlanInputV1';
 
 function setSampleValue(run: BenchmarkRunV1, value: number): void {
   const iterations = (run as unknown as {
@@ -41,6 +47,19 @@ function mutableBundle(): Br04AggregateInputBundleV1 {
     }],
   });
   return structuredClone(bundle);
+}
+
+function recomputeManifestV1(bundle: Br04AggregateInputBundleV1): Br04AggregateInputBundleV1 {
+  const normalizedInputDigest = canonicalBundleBodyDigestV1(bundle as Omit<Br04AggregateInputBundleV1, 'manifest'>);
+  const orderedRawRunDigests = bundle.runs.map((envelope) => envelope.rawByteDigest).sort();
+  return {
+    ...bundle,
+    manifest: {
+      orderedRawRunDigests,
+      normalizedInputDigest,
+      manifestDigest: sha256OfCanonicalV1({ orderedRawRunDigests, normalizedInputDigest }),
+    },
+  };
 }
 
 describe('br04 R3 B3-Rest receipt binding', () => {
@@ -152,5 +171,60 @@ describe('br04 R3 B3-Rest receipt binding', () => {
     expect(result.validation.status).toBe('invalid');
     expect(result.aggregate).toBeNull();
     expect(result.validation.issues.some((issue) => issue.code === 'PROJECTION_DIGEST_MISMATCH')).toBe(true);
+  });
+
+  it('P08 rejects a stale synthetic-flag plan mutation before claim publication', () => {
+    const plan = buildRunPlanV1(runPlanInputV1());
+    const tampered = {
+      ...plan,
+      core: { ...plan.core, syntheticHardwareProfile: false },
+    };
+
+    expect(verifyBuiltRunPlanV1(tampered)).toEqual(expect.arrayContaining([
+      'runPlanSha256 mismatch.',
+      'Canonical plan bytes mismatch.',
+    ]));
+  });
+
+  it('P08 rejects a run and receipt bound to a swapped plan', () => {
+    const acceptedPlan = r2PlanV1('p08-plan-a', [{ slot: 'slot-doc', candidate: 'candidate-a' }]);
+    const swappedPlan = r2PlanV1('p08-plan-b', [{ slot: 'slot-doc', candidate: 'candidate-a' }]);
+    const entry = r2EntryV1(acceptedPlan, {
+      runId: 'p08-run', slot: 'slot-doc', candidate: 'candidate-a', values: [5],
+    });
+
+    const result = r2BundleV1('p08-swapped-plan', swappedPlan, [entry]);
+
+    expect(result.bundle).toBeNull();
+    expect(result.issues.some((issue) => issue.code === 'PLAN_DIGEST_MISMATCH')).toBe(true);
+  });
+
+  it('P08 refuses an inconsistent synthetic-flag flip at the public bundle boundary', () => {
+    const bundle = mutableBundle();
+    (bundle.runPlan as { syntheticHardwareProfile: boolean }).syntheticHardwareProfile = false;
+
+    const result = validateAndAggregateBundleV1(bundle);
+
+    expect(result.validation.status).toBe('invalid');
+    expect(result.aggregate).toBeNull();
+    expect(result.validation.issues.some((issue) => issue.code === 'NORMALIZED_INPUT_DIGEST_MISMATCH')).toBe(true);
+  });
+
+  it('P08 records the N05 trust boundary for a fully self-consistent metadata re-forgery', () => {
+    const forged = mutableBundle() as Br04AggregateInputBundleV1 & {
+      runPlan: { planId: string; planDigest: string; syntheticHardwareProfile: boolean };
+      runs: { br01ValidationReceipt: { planDigest: string } }[];
+    };
+    forged.runPlan.planId = 'p08-forged-plan';
+    forged.runPlan.planDigest = fakeDigestV1('p08-forged-plan');
+    forged.runPlan.syntheticHardwareProfile = false;
+    for (const run of forged.runs) {
+      run.br01ValidationReceipt.planDigest = forged.runPlan.planDigest;
+    }
+
+    const result = validateAndAggregateBundleV1(recomputeManifestV1(forged));
+
+    expect(result.validation.status).toBe('valid');
+    expect(result.aggregate?.inputProvenance.performanceClaimEligibility).toBe('eligible-measured');
   });
 });
