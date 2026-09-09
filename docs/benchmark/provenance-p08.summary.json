@@ -1,0 +1,47 @@
+{
+  "package": "P-LAB-P08",
+  "baseSha": "92c747bb1bb5859188e68089cb72bc7d47195db5",
+  "branch": "agent/benchmark-provenance-p08",
+  "scope": "benchmark provenance and method/source rest-point status",
+  "changedFiles": [
+    "docs/benchmark/provenance-p08.md",
+    "docs/benchmark/provenance-p08.summary.json",
+    "tests/unit/benchmark/aggregate/br04-receipt-binding.test.ts"
+  ],
+  "claimBoundary": {
+    "synthetic": "ineligible-synthetic-fixture",
+    "measured": "eligible-measured only after existing validations",
+    "authenticity": "deferred; metadata eligibility is not an independent hardware attestation"
+  },
+  "restPointStatuses": {
+    "N05": "ACCEPTED",
+    "crosswalkResearchDecisionSources": "DEFERRED",
+    "architectureAuditSource": "DEFERRED",
+    "O2": "DEFERRED",
+    "O4": "DEFERRED",
+    "O5": "DEFERRED",
+    "BL-01": "DEFERRED",
+    "aggregatorSourceDigestSemantics": "ACCEPTED"
+  },
+  "remainingOwnerPoints": [
+    {
+      "id": "BR03-cumulative-allowlist",
+      "status": "REMAINING/OWNER",
+      "paths": [
+        "docs/benchmark/provenance-p08.md",
+        "docs/benchmark/provenance-p08.summary.json"
+      ],
+      "fullSuite": "930/931; only br03-gate-allowlist-v1.test.ts fails",
+      "disposition": "Separate Owner-Amendment round; Unit-Allowlist and native Harness remain unchanged in P08."
+    }
+  ],
+  "verification": {
+    "focusedTamperTests": "PASS: 12/12",
+    "aggregateVerify": "PASS: 15 files / 111 tests",
+    "fullSuite": "REMAINING/OWNER: 930/931; only br03-gate-allowlist-v1.test.ts fails",
+    "typescript": "PASS",
+    "e2e": "NOT_RUN",
+    "hardware": "NOT_RUN",
+    "br03Gate": "NOT_RUN"
+  }
+}

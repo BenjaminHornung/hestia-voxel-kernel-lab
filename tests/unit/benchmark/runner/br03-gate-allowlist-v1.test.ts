@@ -44,6 +44,7 @@ const ALLOWED_PATHS = new Set([
   'tests/unit/benchmark/aggregate/br04-receipt-binding.test.ts', 'tests/unit/benchmark/aggregate/br04-same-run-partition.test.ts',
   'src/voxel/sparseChunkWorld.ts', 'tests/unit/chunk-world.test.ts',
   'docs/benchmark/gate-scope-p01p02.md', 'docs/benchmark/gate-scope-p01p02.summary.json',
+  'docs/benchmark/provenance-p08.md', 'docs/benchmark/provenance-p08.summary.json',
 ]);
 
 function git(args: readonly string[]): string {
