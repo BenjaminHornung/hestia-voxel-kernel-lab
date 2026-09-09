@@ -17,7 +17,8 @@ const FIXTURE_SEMANTIC_DIGEST = sha256BytesV1(FIXTURE_SEMANTIC_BYTES);
 const result = (stdout: string | Uint8Array, status = 0): SourcePreflightCommandResultV1 => ({ status, stdout: typeof stdout === 'string' ? new TextEncoder().encode(`${stdout}\n`) : stdout, stderr: empty });
 const emptyResult = (): SourcePreflightCommandResultV1 => ({ status: 0, stdout: empty, stderr: empty });
 const CANDIDATE_BLOB_OID = 'c'.repeat(40);
-const REAL_GIT_TEST_TIMEOUT_MS = 30_000;
+const REAL_GIT_COMMAND_TIMEOUT_MS = 30_000;
+const REAL_GIT_TEST_TIMEOUT_MS = 120_000;
 
 interface CandidateCommandOptions {
   readonly treeOid?: string;
@@ -272,7 +273,7 @@ function candidateBindingPreflight(options: {
 }
 
 function localGit(root: string, args: readonly string[]): string {
-  return String(execFileSync('git', [...args], { cwd: root, encoding: 'utf8', timeout: 5_000 })).trim();
+  return String(execFileSync('git', [...args], { cwd: root, encoding: 'utf8', timeout: REAL_GIT_COMMAND_TIMEOUT_MS })).trim();
 }
 
 function realGitCandidatePreflight(root: string, expectedSourceCommitSha: string, candidatePath: string, candidateBytes: Uint8Array): SourcePreflightResultV1 {

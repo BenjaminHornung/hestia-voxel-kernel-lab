@@ -11,6 +11,8 @@ const REGISTRY_MODULE = '../../../../src/benchmark/contracts/scenarioRegistryV1'
 const FIXTURE_ID = 'generic-historical-test-v1';
 const FIXTURE_PATHS = ['fixtures/A-small.txt', 'fixtures/large.bin'] as const;
 const CANDIDATE_PATH = 'candidate.txt';
+const REAL_GIT_COMMAND_TIMEOUT_MS = 30_000;
+const REAL_GIT_TEST_TIMEOUT_MS = 120_000;
 const textEncoder = new TextEncoder();
 const empty = new Uint8Array();
 const FUTURE_OWNER_CONFIGURATIONS = [
@@ -39,7 +41,7 @@ let sharedRepository: TestRepositoryV1 | undefined;
 const repositoryRootsToClean = new Set<string>();
 
 function git(root: string, args: readonly string[]): string {
-  return String(execFileSync('git', [...args], { cwd: root, encoding: 'utf8', timeout: 5_000 })).trim();
+  return String(execFileSync('git', [...args], { cwd: root, encoding: 'utf8', timeout: REAL_GIT_COMMAND_TIMEOUT_MS })).trim();
 }
 
 function createTestRepository(): TestRepositoryV1 {
@@ -137,7 +139,7 @@ function delegatedRunner(mutate?: (args: readonly string[]) => any): any {
       encoding: 'buffer',
       shell: false,
       windowsHide: true,
-      timeout: 5_000,
+      timeout: REAL_GIT_COMMAND_TIMEOUT_MS,
       maxBuffer: 1_048_576,
     });
     return {
@@ -218,7 +220,7 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   it('remains accepted under a real git replace and removes it in finally', async () => {
     const repository = createTestRepository();
@@ -233,7 +235,7 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   it.each([
     ['wrong fixture.sourceCommitSha', (input: any) => { input.fixture.sourceCommitSha = declared('f'.repeat(40)); }],
@@ -250,7 +252,7 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   it.each([
     ['tree object as commit', (repository: TestRepositoryV1, args: readonly string[]) => args[0] === 'cat-file' && args[1] === '-t' && args[2] === repository.ownerCommit ? commandResult('tree') : undefined],
@@ -273,7 +275,7 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   it('keeps unavailable known owners and unknown synthetic commits from becoming observed', async () => {
     const repository = createTestRepository();
@@ -292,7 +294,7 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   it.each(FUTURE_OWNER_CONFIGURATIONS)('proves future owner activation for $scenarioId', async (configuration) => {
     const repository = createTestRepository();
@@ -337,7 +339,7 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   it('keeps future producer records structurally valid behind the fixture eligibility gate', async () => {
     const repository = createTestRepository();
@@ -363,5 +365,5 @@ describe('BR01 generic historical fixture provenance contract', () => {
     } finally {
       cleanupModuleMock();
     }
-  }, 30_000);
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 });

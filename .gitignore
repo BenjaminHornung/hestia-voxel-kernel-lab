@@ -145,3 +145,5 @@ vite.config.ts.timestamp-*
 # Local test output
 playwright-report/
 test-results/
+.benchmark-runner/
+.benchmark-results/
